@@ -60,3 +60,11 @@ Clipboard history and PC-specific settings are never uploaded.
 
 - File > Import: PhraseForge JSON, CSV, folder of .txt files.
 - File > Import > From TextExpander: TextExpander CSV export or `.textexpander` group file.
+
+## License
+
+MIT, see [LICENSE](LICENSE). Third-party parts keep their own licenses: PySide6 (LGPL),
+QtAwesome icon fonts (MIT / SIL OFL), Google API client libraries (Apache 2.0).
+Capture2Text (GPLv3) is not included; PhraseForge only starts its command-line tool
+if you have it installed. PhraseExpress and TextExpander are trademarks of their owners;
+PhraseForge is an independent project and contains none of their code.
