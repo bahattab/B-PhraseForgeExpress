@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 
 from phraseforge.db import DEFAULT_SETTINGS
+from phraseforge.onenote import DEFAULT_EXE as _ONENOTE_EXE
 
 DEFAULT_PRESETS = [
     {"name": "Correct grammar", "prompt": "Correct the grammar and spelling of this text. Keep its meaning and language."},
@@ -24,12 +25,10 @@ DEFAULT_PRESETS = [
 ]
 
 SCHEMA: dict[str, str] = {
-    # Features
-    "features.clipboard_cache": "1",
+    # Features ("Clipboard Cache" checkbox edits clipboard_history.enabled below)
     "features.last_used_folder": "1",
     "features.usage_statistics": "1",
     "features.detect_unwanted_replacements": "0",
-    "features.suggest_gender": "1",
     "features.disable_capslock": "0",
     "autocorrect.capitalize_sentences": "1",
     "autocorrect.two_initial_capitals": "0",
@@ -45,13 +44,13 @@ SCHEMA: dict[str, str] = {
     "popup.hotkey": DEFAULT_SETTINGS["popup.hotkey"],
     "hotkey.clear_clipboard_cache": "",
     "hotkey.pause": "",
+    "hotkey.popup_search": "",
     "pause.repetitions": "1",
     "pause.seconds": "10",
     "clipboard_history.hotkey": DEFAULT_SETTINGS["clipboard_history.hotkey"],
     # Display
     "ui.language": "auto",
     "display.prompt_after_new_phrase": "1",
-    "display.highlight_unedited_languages": "1",
     "ui.theme": DEFAULT_SETTINGS["ui.theme"],
     # Sounds (enabled flag + optional .wav file per event)
     **{f"sound.{k}.{f}": ("0" if f == "enabled" else "")
@@ -70,7 +69,6 @@ SCHEMA: dict[str, str] = {
     "backup.keep_enabled": "1",
     "backup.keep_count": "7",
     "backup.directory": "",            # empty = paths.backups_dir()
-    "cache.mode": "first_use",         # none | preload | first_use
     # AI
     "ai.provider": DEFAULT_SETTINGS["ai.provider"],
     "ai.model": "",
@@ -90,14 +88,19 @@ SCHEMA: dict[str, str] = {
     "net.proxy_port": "80",
     "net.proxy_user": "",
     "net.proxy_password": "",
-    "updates.channel": "important",    # important | all | never
-    "updates.beta": "0",
-    "updates.auto": "1",
     # Screen OCR (Capture2Text)
     "ocr.cli_path": DEFAULT_SETTINGS["ocr.cli_path"],
     "ocr.language": DEFAULT_SETTINGS["ocr.language"],
     "ocr.keep_line_breaks": "1",
     "ocr.hotkey": DEFAULT_SETTINGS["ocr.hotkey"],
+    # OneNote (desktop app, official COM API)
+    "onenote.exe": _ONENOTE_EXE,
+    "onenote.default_target": "",          # page/section path; "" = Quick Notes
+    "onenote.send_hotkey": "",
+    "onenote.clip_hotkey": "",
+    "onenote.clip_tool": "phraseforge",    # phraseforge | onenote (onenotecapture.exe)
+    "onenote.clip_action": "image",        # image | ocr | both
+    "onenote.include_ocr": "0",            # include text OneNote recognised in images
     # Phrase menu
     "menu.contents": "description_quickkey",
     "menu.sort_enabled": "1",
@@ -105,7 +108,6 @@ SCHEMA: dict[str, str] = {
     "menu.sort_method": "alpha",
     "menu.sort_order": "asc",
     "menu.show_preview": "1",
-    "menu.show_language_buttons": "1",
     "menu.hide_restricted": "1",
     "smartcomplete.min_chars": "3",
     "menu.position": "caret",
@@ -117,7 +119,6 @@ SCHEMA: dict[str, str] = {
     "menu.quickkey_modifier": "none",
     "menu.quickkey_keys": "numpad",
     "menu.search_hotkey": "f3",
-    "menu.language_hotkey": "ctrl+right",
     "quicksearch.descriptions": "1",
     "quicksearch.match_case": "0",
     "quicksearch.subfolders": "1",
@@ -134,6 +135,9 @@ SCHEMA: dict[str, str] = {
     "autotext.leading_delimiters": "\x00\n\t\r \"'<{([/\\-_",
     "autotext.delimiters": DEFAULT_SETTINGS["autotext.delimiters"],  # trailing delimiters
     "autotext.route_enter_tab": "0",
+    # ms without typing that counts as a "pause" (autotext "When pausing") and the
+    # window for "When continue typing quickly"; read by the trigger layer
+    "autotext.pause_ms": "700",
     "app.restrict_enabled": "0",
     "app.restrict_programs": "",
     "mail.method": "mailto",           # mapi | outlook | gmail | mailto
@@ -146,6 +150,7 @@ SCHEMA: dict[str, str] = {
     "output.format": "auto",           # auto | plain | rich | html
     "output.restore_clipboard": DEFAULT_SETTINGS["output.restore_clipboard"],
     "output.per_app_method": "1",
+    "output.app_methods": "{}",        # {"winword.exe": "type" | "paste"}
     "output.force_focus": "1",
     "output.minimize_main": "1",
     "output.uppercase_if": "0",
@@ -162,9 +167,62 @@ SCHEMA: dict[str, str] = {
 }
 
 
+# Keys only the Settings dialog itself needs (no runtime reader is expected).
+# tests/test_settings_dialog.py fails if any other SCHEMA key has no runtime reader.
+UI_ONLY_KEYS: set[str] = set()
+
+# Old key -> (new key, value mapping or None to copy). Applied once, when the new key
+# is not stored yet: earlier builds of the popup read popup.*, the stats window
+# stats.enabled and the Features page features.clipboard_cache.
+LEGACY_KEYS: dict[str, tuple[str, dict | None]] = {
+    "popup.width": ("menu.width", None),
+    "popup.position": ("menu.position", None),
+    "popup.sort": ("menu.sort_by", {"usage": "usage", "description": "description"}),
+    "popup.search_match_case": ("quicksearch.match_case", None),
+    "popup.search_subfolders": ("quicksearch.subfolders", None),
+    "popup.search_content": ("quicksearch.descriptions", {"1": "0", "0": "1"}),
+    "popup.show_last_used": ("features.last_used_folder", None),
+    "popup.show_clipboard_cache": ("clipboard_history.enabled", None),
+    "features.clipboard_cache": ("clipboard_history.enabled", None),
+    "stats.enabled": ("features.usage_statistics", None),
+}
+
+
+# On/off switches whose new key always exists (db defaults): an old "0" wins once,
+# then the old key is set to "1" so it no longer matters to anyone still reading it.
+LEGACY_OFF_SWITCHES = ("features.clipboard_cache", "popup.show_clipboard_cache", "stats.enabled")
+
+
+def migrate_legacy(store, have: dict[str, str] | None = None) -> int:
+    """Copy values of old keys to their canonical keys (only where the new key is unset)."""
+    have = store.settings() if have is None else have
+    done = 0
+    for old in LEGACY_OFF_SWITCHES:
+        if have.get(old) == "0":
+            new = LEGACY_KEYS[old][0]
+            store.set_setting(new, "0")
+            store.set_setting(old, "1")
+            have[new], have[old] = "0", "1"
+            done += 1
+    for old, (new, mapping) in LEGACY_KEYS.items():
+        if old in have and new not in have and have[old] != "":
+            val = have[old] if mapping is None else mapping.get(have[old])
+            if val is None:
+                continue
+            store.set_setting(new, val)
+            have[new] = val
+            done += 1
+            if old == "popup.sort" and val == "usage":
+                store.set_setting("menu.sort_order", "desc")
+                have["menu.sort_order"] = "desc"
+    return done
+
+
 def ensure_defaults(store) -> int:
-    """Insert every missing schema key with its default. Returns how many were added."""
+    """Migrate legacy keys, then insert every missing schema key with its default.
+    Returns how many defaults were added."""
     have = store.settings()
+    migrate_legacy(store, have)
     added = 0
     for k, v in SCHEMA.items():
         if k not in have:

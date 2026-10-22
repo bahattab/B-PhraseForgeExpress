@@ -59,7 +59,8 @@ def test_menu_items_match_reference(app):
     out = _texts(menus["Output"])
     assert out[0] == "Keypress >" and out[-1] == "Set language" and len(out) == 12
     ext = _texts(menus["External data"])
-    assert ext[0] == "Outlook email >" and ext[-1] == "ActiveDirectory value >"
+    # PhraseExpress's items end with ActiveDirectory; PhraseForge adds OneNote after a separator
+    assert ext[0] == "Outlook email >" and ext[-3:] == ["ActiveDirectory value >", "-", "OneNote page"]
     shortcut = next(a for a in menus["Date/Time"].actions() if a.text() == "Date/Time").shortcut().toString()
     assert shortcut == "Ctrl+D"
 

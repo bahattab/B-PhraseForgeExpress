@@ -400,7 +400,8 @@ def _document(rt, args, opts):
 def _mail_ex(rt, args, opts):
     """{#mail} with -attach and -send via Outlook when available; mailto otherwise."""
     attach = opts.get("attach", "")
-    if attach or _flag(opts, "send") or _flag(opts, "outlook"):
+    method = rt.setting("mail.method", "mailto")   # Settings > Expert Options > Email Delivery Method
+    if attach or _flag(opts, "send") or _flag(opts, "outlook") or method in ("outlook", "mapi"):
         try:
             import win32com.client  # type: ignore
             app = win32com.client.Dispatch("Outlook.Application")
@@ -652,3 +653,41 @@ def _truthy(v) -> bool:
 
 
 _register_field_aliases()
+
+
+# ---------------------------------------------------------------- Microsoft OneNote
+@macro("onenote", "External data", '{#onenote "Notebook/Section/Page" -title -ocr}',
+       "Insert the text of a OneNote page (desktop OneNote, official API). -title adds the page title; "
+       "-ocr adds text OneNote recognised in images.")
+def _onenote(rt, args, opts):
+    ref = _arg(args, 0)
+    if not ref:
+        raise MacroError("onenote: page path missing")
+    host = rt.host
+    fn = getattr(host, "onenote_page_text", None)
+    setting = getattr(host, "setting", lambda k, d="": d)
+    include_ocr = _flag(opts, "ocr") or setting("onenote.include_ocr", "0") == "1"
+    if fn is not None:
+        return fn(ref, include_title=_flag(opts, "title"), include_ocr=include_ocr)
+    from phraseforge.onenote import OneNote, DEFAULT_EXE
+    return OneNote(setting("onenote.exe", DEFAULT_EXE) or DEFAULT_EXE).page_text(
+        ref, include_title=_flag(opts, "title"), include_ocr=include_ocr)
+
+
+# ---------------------------------------------------------------- Microsoft Sticky Notes
+@macro("stickynote", "External data", '{#stickynote "first line or search word" -all -sep "\\n---\\n"}',
+       "Insert the text of a Sticky Notes note (matched by its first line, else the newest note "
+       "containing the words). -all inserts every note. Reads a copy of your notes file; Sticky Notes "
+       "itself is never changed.")
+def _stickynote(rt, args, opts):
+    from phraseforge import stickynotes
+    notes = stickynotes.read_notes()
+    if not notes:
+        raise MacroError("stickynote: no Sticky Notes found")
+    if _flag(opts, "all"):
+        sep = opts.get("sep", "\n\n---\n\n").replace("\\n", "\n")
+        return sep.join(n.text for n in notes)
+    note = stickynotes.find(notes, _arg(args, 0))
+    if note is None:
+        raise MacroError(f"stickynote: no note matches {_arg(args, 0)!r}")
+    return note.text

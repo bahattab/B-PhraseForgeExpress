@@ -1,15 +1,11 @@
 """Trigger rows like PhraseExpress's editor: one row per trigger, any of 8 types.
 
-Row data is a plain dict (see default_row()). Rows map to models.Trigger for the
-database; options the model has no field for (word position, execution mode,
-delimiters, SmartComplete, window scope) are kept in the JSON setting
-"ui.trigger_extras" via ExtrasStore, keyed per owner ("p:<phrase id>",
-"f:<folder id>", "s:<special folder>").
+Row data is a plain dict (see triggers.rows.default_row()). Every option (word
+position, execution mode, delimiters, SmartComplete, window scope) is stored in
+the trigger's own database columns; triggers belong to a phrase, a folder or a
+special folder (Store.set_folder_triggers / set_special_triggers).
 """
 from __future__ import annotations
-
-import json
-from typing import Any
 
 from PySide6.QtCore import QTime, Qt, Signal
 from PySide6.QtGui import QAction
@@ -18,109 +14,26 @@ from PySide6.QtWidgets import (
     QMessageBox, QPushButton, QStackedWidget, QTimeEdit, QToolButton, QVBoxLayout, QWidget,
 )
 
-from phraseforge.models import AutotextMode, Trigger, TriggerKind
+from phraseforge.models import DELIMITER_CHOICES, Trigger
+from phraseforge.triggers.rows import (  # noqa: F401  (re-exported for older imports)
+    KIND_FOR_TYPE, TYPE_FOR_KIND, TYPES, VALUELESS_OK, default_row, row_to_trigger, trigger_to_row,
+)
 from phraseforge.ui.hotkey_picker import HotkeyPicker
 from phraseforge.ui.iconset import icon
 from phraseforge.ui.pe_style import caption
 
-# UI trigger types, in PhraseExpress order.
-TYPES = [
-    ("autotext", "Autotext"),
-    ("smartcomplete", "SmartComplete"),
-    ("regex_autotext", "RegEx Autotext"),
-    ("hotkey", "Hotkey"),
-    ("window", "Window"),
-    ("time", "Time"),
-    ("clipboard", "Clipboard"),
-    ("regex_clipboard", "RegEx Clipboard"),
-]
 TYPE_LABELS = dict(TYPES)
-KIND_FOR_TYPE = {
-    "autotext": TriggerKind.AUTOTEXT, "regex_autotext": TriggerKind.REGEX,
-    "hotkey": TriggerKind.HOTKEY, "window": TriggerKind.APP_FOCUS, "time": TriggerKind.TIME,
-    "clipboard": TriggerKind.CLIPBOARD, "regex_clipboard": TriggerKind.CLIPBOARD_REGEX,
-    "smartcomplete": None,   # suggestion-only; no database trigger
-}
-TYPE_FOR_KIND = {v: k for k, v in KIND_FOR_TYPE.items() if v is not None}
-
 WORD_POSITIONS = [("start", "Start of a word (default)"), ("end", "End of a word"),
                   ("middle", "Middle of a word"), ("entire", "Entire word")]
 EXEC_MODES = [("immediate", "Execute immediately after autotext input"),
               ("confirm", "After manual confirmation"),
               ("pause", "When pausing after autotext input"),
               ("continue", "When continue typing quickly after autotext")]
-MODE_FOR_EXEC = {"immediate": AutotextMode.IMMEDIATE, "confirm": AutotextMode.CONFIRM,
-                 "pause": AutotextMode.DELIMITER, "continue": AutotextMode.DELIMITER}
-WINDOW_SCOPES = [("any", "any program"), ("program", "specific program")]
-DELIMITERS = ["Default", "None", "Space", "Enter", "Tab", "Punctuation", "Any non-letter"]
+WINDOW_SCOPES = [("any", "window title contains"), ("program", "program (exe name)")]
+DELIMITERS = list(DELIMITER_CHOICES)
 
 
-def default_row(type_: str = "autotext") -> dict[str, Any]:
-    return {"type": type_, "value": "", "case_sensitive": False, "word_pos": "start",
-            "exec": "immediate" if type_ == "autotext" else "immediate",
-            "lead_delim": "Default", "trail_delim": "None", "remove_trailing": False,
-            "window_scope": "any", "enabled": True}
-
-
-def row_to_trigger(row: dict) -> Trigger | None:
-    kind = KIND_FOR_TYPE.get(row.get("type"))
-    value = (row.get("value") or "").strip() if row.get("type") != "autotext" else (row.get("value") or "")
-    if kind is None or not value:
-        return None
-    t = Trigger(kind=kind, value=value, enabled=row.get("enabled", True))
-    if kind == TriggerKind.AUTOTEXT:
-        t.mode = MODE_FOR_EXEC.get(row.get("exec", "immediate"), AutotextMode.DELIMITER)
-        t.case_sensitive = bool(row.get("case_sensitive"))
-        t.word_start_only = row.get("word_pos", "start") in ("start", "entire")
-    return t
-
-
-def trigger_to_row(t: Trigger) -> dict:
-    row = default_row(TYPE_FOR_KIND.get(TriggerKind(t.kind), "autotext"))
-    row["value"] = t.value
-    row["enabled"] = t.enabled
-    if TriggerKind(t.kind) == TriggerKind.AUTOTEXT:
-        row["case_sensitive"] = t.case_sensitive
-        row["word_pos"] = "start" if t.word_start_only else "middle"
-        row["exec"] = {AutotextMode.IMMEDIATE: "immediate", AutotextMode.CONFIRM: "confirm",
-                       AutotextMode.DELIMITER: "pause"}[AutotextMode(t.mode)]
-    return row
-
-
-class ExtrasStore:
-    """Small JSON side-store in a settings key for data the models lack."""
-
-    def __init__(self, store, key: str = "ui.trigger_extras"):
-        self.store, self.key = store, key
-
-    def _all(self) -> dict:
-        try:
-            return json.loads(self.store.setting(self.key, "") or "{}")
-        except (ValueError, TypeError):
-            return {}
-
-    def get(self, owner: str, default=None):
-        return self._all().get(owner, default)
-
-    def put(self, owner: str, value) -> None:
-        d = self._all()
-        if value in (None, {}, []):
-            d.pop(owner, None)
-        else:
-            d[owner] = value
-        self.store.set_setting(self.key, json.dumps(d, ensure_ascii=False))
-
-
-def rows_for_owner(extras: ExtrasStore, owner: str, db_triggers: list[Trigger]) -> list[dict]:
-    """Prefer saved UI rows if they still agree with the database triggers."""
-    saved = extras.get(owner) or {}
-    rows = saved.get("rows") if isinstance(saved, dict) else None
-    if rows:
-        derived = [(TriggerKind(t.kind).value, t.value) for t in
-                   (row_to_trigger(r) for r in rows) if t is not None]
-        actual = [(TriggerKind(t.kind).value, t.value) for t in db_triggers]
-        if derived == actual:
-            return [dict(default_row(r.get("type", "autotext")), **r) for r in rows]
+def rows_for_triggers(db_triggers: list[Trigger]) -> list[dict]:
     return [trigger_to_row(t) for t in db_triggers]
 
 
@@ -262,7 +175,10 @@ class TriggerRow(QWidget):
         self.autotext_edit.textEdited.connect(lambda t: self._set("value", t))
         self._add_page("autotext", self.autotext_edit)
 
-        self._add_page("smartcomplete", QWidget())   # no value; suggestion based on content
+        self.smart_edit = QLineEdit()
+        self.smart_edit.setPlaceholderText("text to complete (empty: the beginning of the phrase content)")
+        self.smart_edit.textEdited.connect(lambda t: self._set("value", t))
+        self._add_page("smartcomplete", self.smart_edit)
 
         self.regex_edit = QComboBox(); self.regex_edit.setEditable(True)
         self.regex_edit.lineEdit().textEdited.connect(lambda t: self._set("value", t))
@@ -375,7 +291,7 @@ class TriggerRow(QWidget):
     def _refresh_icons(self):
         t = self.data["type"]
         self.stack.setCurrentWidget(self._pages[t])
-        self.exec_button.setVisible(t != "hotkey")
+        self.exec_button.setVisible(t in ("autotext", "regex_autotext"))
         self.case_action.blockSignals(True)
         self.case_action.setChecked(bool(self.data.get("case_sensitive")))
         self.case_action.blockSignals(False)
@@ -390,12 +306,14 @@ class TriggerRow(QWidget):
     def _load_value(self):
         t, v = self.data["type"], self.data.get("value", "")
         widgets = [self.autotext_edit, self.regex_edit, self.hotkey, self.window_edit,
-                   self.window_scope, self.time_edit, self.clip_edit, self.clip_regex_edit]
+                   self.window_scope, self.time_edit, self.clip_edit, self.clip_regex_edit, self.smart_edit]
         for w in widgets:
             w.blockSignals(True)
         try:
             if t == "autotext":
                 self.autotext_edit.setText(v)
+            elif t == "smartcomplete":
+                self.smart_edit.setText(v)
             elif t == "regex_autotext":
                 self.regex_edit.setEditText(v)
             elif t == "hotkey":
@@ -498,6 +416,4 @@ class TriggerList(QWidget):
 
     def meaningful_rows(self) -> list[dict]:
         """Rows worth remembering (drops the empty default autotext row)."""
-        return [r for r in self.get_rows()
-                if r.get("value") or r.get("type") not in ("autotext", "regex_autotext", "clipboard",
-                                                            "regex_clipboard", "window")]
+        return [r for r in self.get_rows() if r.get("value") or r.get("type") in VALUELESS_OK]
