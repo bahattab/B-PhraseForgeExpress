@@ -692,6 +692,35 @@ spec(MacroSpec("env_var", "Windows environment variable", lambda v: call("env", 
                              default="ALLUSERSPROFILE"),
                        Preview(big=False, fn=lambda v: os.environ.get(str(v.get("var") or ""), ""))]))
 
+def _truthy(v) -> bool:
+    return v not in (None, "", False, 0, "0", "false", "False")
+
+
+def build_onenote(v: dict) -> str:
+    """{#onenote "Notebook/Section/Page" [-title] [-ocr]}: inserts the text of a OneNote page."""
+    return call("onenote", v.get("page"), title=_truthy(v.get("title")), ocr=_truthy(v.get("ocr")))
+
+
+def _browse_onenote_page(dlg) -> None:
+    from phraseforge.ui.onenote_picker import OneNotePicker, default_client_factory
+    store = get_store()
+    exe = store.setting("onenote.exe", "") if store is not None else ""
+    cur = (dlg.values().get("page") or "")
+    picker = OneNotePicker(dlg, mode="page", current=cur, client_factory=default_client_factory(exe))
+    if picker.exec() and picker.selected_ref():
+        dlg.set_values({"page": picker.selected_ref()})
+
+
+spec(MacroSpec("onenote_page", "OneNote page", build_onenote, commands=("onenote",),
+               description="Inserts the current text of a OneNote page (OneNote desktop app).",
+               parse=lambda a, o: {"page": a[0] if a else "", "title": "title" in o, "ocr": "ocr" in o},
+               name_fn=lambda v: (v.get("page") or "OneNote page").replace("\\", "/").rsplit("/", 1)[-1],
+               fields=[Line("page", "Page (Notebook/Section/Page):", required=True,
+                            placeholder="Notebook/Section/Page"),
+                       Button(label="Browse OneNote...", action=_browse_onenote_page),
+                       Check("title", "Include the page title"),
+                       Check("ocr", "Include text OneNote recognised in pictures")]))
+
 AD_OPTIONS = [("Name", "name"), ("Email", "email"), ("Nickname", "nickname"), ("Telephone number", "telephone"),
               ("Street", "street"), ("ZIP code", "zip"), ("City", "city"), ("Company", "company"),
               ("Department", "department"), ("Job title", "title"), ("First name", "firstname"),

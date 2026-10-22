@@ -59,19 +59,22 @@ def test_menu_items_match_reference(app):
     out = _texts(menus["Output"])
     assert out[0] == "Keypress >" and out[-1] == "Set language" and len(out) == 12
     ext = _texts(menus["External data"])
-    assert ext[0] == "Outlook email >" and ext[-1] == "ActiveDirectory value >"
+    # PhraseExpress's items end with ActiveDirectory; PhraseForge adds OneNote after a separator
+    assert ext[0] == "Outlook email >" and ext[-3:] == ["ActiveDirectory value >", "-", "OneNote page"]
     shortcut = next(a for a in menus["Date/Time"].actions() if a.text() == "Date/Time").shortcut().toString()
     assert shortcut == "Ctrl+D"
 
 
 @pytest.mark.parametrize("kind", macro_ui.all_menu_kinds())
-def test_every_dialog_builds_runnable_macro(app, kind):
+def test_every_dialog_builds_runnable_macro(app, kind, tmp_path):
     s = SPECS[kind]
+    # file macros really write, so keep their paths inside pytest's temp folder
+    sample = {**SAMPLE, "path": str(tmp_path / "a.txt"), "file": str(tmp_path / "a.xlsx")}
     if s.direct:
         text = s.build({})
     else:
         d = MacroDialog(s)
-        d.set_values({k: v for k, v in SAMPLE.items() if k in d.setters})
+        d.set_values({k: v for k, v in sample.items() if k in d.setters})
         text = d.build_text()
         d.close()
     assert text.startswith("{#")

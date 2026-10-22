@@ -1,6 +1,7 @@
 """Two simulated PCs syncing through a folder and through a fake Google Drive."""
 import itertools
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -164,6 +165,7 @@ def test_snapshot_is_valid_and_hash_ignores_usage(tmp_path, remote_factory):
     assert any(f.name == SYNC_NAME for f in sa.remote.list())
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="DPAPI is Windows only")
 def test_dpapi_roundtrip():
     secret = b'{"refresh_token": "abc"}'
     enc = protect(secret)

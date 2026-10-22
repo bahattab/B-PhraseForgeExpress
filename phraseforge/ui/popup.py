@@ -13,11 +13,21 @@ Clicking a folder opens a cascading sub-menu beside the row (same style, folder
 name in the header). Typing a letter, or clicking the search icon, switches the
 root menu to quick search across all phrases; matches are highlighted.
 
-Settings read (all optional):
-  popup.max_items (30)  popup.show_icons (1)  popup.font_size (9)  popup.width (350)
-  popup.position ("caret" | "mouse" | "center")  popup.sort ("description" | "usage")
-  popup.search_content (0)  popup.search_match_case (0)  popup.search_subfolders (1)
-  popup.show_clipboard_cache (1)  popup.show_last_used (1)
+Settings read (keys written by Settings > Phrase Menu; defaults in ui/settings_schema.py):
+  menu.contents          right-hand text: description_quickkey | description |
+                         description_autotext | description_autotext_hotkey
+  menu.sort_enabled/sort_by/sort_method/sort_order   phrase order inside a folder
+  menu.show_preview      tooltip with the phrase text
+  menu.hide_restricted   hide phrases/folders restricted to other programs
+  menu.position (+ menu.position_fallback when no caret)   caret | mouse | center
+  menu.width             root menu width in px ("" = 350)
+  menu.appearance        JSON colors (background, description, autotext, hotkey,
+                         quickkey, selection) and "font"; menu.dim_dark dims them in dark mode
+  menu.confirm_hotkey    extra key that inserts the selected phrase (besides Enter)
+  menu.quickkey_modifier + menu.quickkey_keys   QuickKeys on the first rows
+  menu.search_hotkey     opens quick search inside the menu (default F3)
+  quicksearch.descriptions/match_case/subfolders/quick_jump
+  features.last_used_folder + last_used.max, clipboard_history.enabled (folders shown)
 """
 from __future__ import annotations
 
@@ -38,9 +48,30 @@ ROLE_ID = Qt.UserRole + 1        # folder id / phrase id / clipboard entry id / 
 ROLE_RIGHT = Qt.UserRole + 2     # grey secondary text on the right (autotext, path)
 ROLE_QUERY = Qt.UserRole + 3     # text to highlight
 ROLE_TEXT = Qt.UserRole + 4      # clipboard text
+ROLE_QK = Qt.UserRole + 5        # QuickKey label shown on the right ("NumPad1")
 
 CLIPBOARD = "clipboard"
 LAST_USED = "last_used"
+STICKY = "sticky_notes"          # Microsoft Sticky Notes (read-only, phraseforge.stickynotes)
+STICKY_MAX = 200
+
+
+def _sticky_available() -> bool:
+    """Sticky Notes installed on this PC (tests monkeypatch this)."""
+    try:
+        from phraseforge import stickynotes
+        return stickynotes.installed()
+    except Exception:
+        return False
+
+
+def _sticky_notes() -> list:
+    """The user's sticky notes, newest first (tests monkeypatch this)."""
+    try:
+        from phraseforge import stickynotes
+        return stickynotes.read_notes()
+    except Exception:
+        return []
 
 ROW_H = 32
 HEADER_H = 32
@@ -49,7 +80,10 @@ SELECT = QColor("#cde3f6")
 MATCH = QColor("#1565c0")
 
 
-def _setting(store: Store, key: str, default: str) -> str:
+def _setting(store: Store, key: str, default: str | None = None) -> str:
+    if default is None:
+        from phraseforge.ui.settings_schema import SCHEMA
+        default = SCHEMA.get(key, "")
     try:
         v = store.setting(key, default)
     except Exception:
@@ -62,6 +96,67 @@ def _int_setting(store: Store, key: str, default: int) -> int:
         return int(float(_setting(store, key, str(default))))
     except ValueError:
         return default
+
+
+QUICKKEY_COUNTS = {"numpad": 9, "digits": 9, "fkeys": 12, "letters": 26}
+
+
+def quickkey_label(keys: str, index: int) -> str:
+    """Name shown for the QuickKey of row `index` (0-based); "" if it has none."""
+    if index >= QUICKKEY_COUNTS.get(keys, 0):
+        return ""
+    if keys == "numpad":
+        return f"NumPad{index + 1}"
+    if keys == "digits":
+        return str(index + 1)
+    if keys == "fkeys":
+        return f"F{index + 1}"
+    return chr(ord("A") + index)
+
+
+def quickkey_index(keys: str, qt_key: int, keypad: bool) -> int:
+    """Row index for a pressed key, or -1."""
+    if keys in ("numpad", "digits") and Qt.Key_1 <= qt_key <= Qt.Key_9:
+        if (keys == "numpad") != keypad:
+            return -1
+        return qt_key - Qt.Key_1
+    if keys == "fkeys" and Qt.Key_F1 <= qt_key <= Qt.Key_F12:
+        return qt_key - Qt.Key_F1
+    if keys == "letters" and Qt.Key_A <= qt_key <= Qt.Key_Z:
+        return qt_key - Qt.Key_A
+    return -1
+
+
+def key_matches(spec: str, e) -> bool:
+    """Does a key event match a stored key name like "tab", "f3", "space", "ctrl+enter"?"""
+    if not spec or spec.lower() in ("none", ""):
+        return False
+    from PySide6.QtGui import QKeySequence
+    parts = [p for p in spec.lower().replace(" ", "").split("+") if p]
+    names = {"ctrl": "Ctrl", "alt": "Alt", "shift": "Shift", "win": "Meta", "enter": "Return",
+             "esc": "Escape", "pgup": "PgUp", "pgdn": "PgDown", "del": "Del", "ins": "Ins"}
+    text = "+".join(names.get(p, p.capitalize()) for p in parts)
+    seq = QKeySequence(text)
+    if seq.isEmpty():
+        return False
+    want = seq[0]
+    mods = e.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.ShiftModifier | Qt.MetaModifier)
+    return want.key() == Qt.Key(e.key()) and want.keyboardModifiers() == mods
+
+
+def natural_key(text: str):
+    """Sort key that orders "item 2" before "item 10"."""
+    import re
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", text or "")]
+
+
+def _dim(color: str, factor: float = 0.55) -> str:
+    c = QColor(color)
+    if c.lightness() > 128:      # light colors get darker, dark text gets lighter
+        c = c.darker(int(100 / factor))
+    else:
+        c = c.lighter(170)
+    return c.name()
 
 
 def highlight_spans(text: str, query: str, match_case: bool = False) -> list[tuple[str, bool]]:
@@ -96,19 +191,27 @@ class _RowDelegate(QStyledItemDelegate):
         p.save()
         r = option.rect
         kind = index.data(ROLE_KIND)
+        colors = self.panel.popup.colors
         if option.state & QStyle.State_Selected and kind != "empty":
-            p.fillRect(r, SELECT)
+            p.fillRect(r, QColor(colors["selection"]))
+        else:
+            p.fillRect(r, QColor(colors["background"]))
         x = r.left() + 8
-        if self.panel.popup.show_icons and kind in ("folder", "phrase", "special", "clip"):
-            name = {"folder": "folder", "phrase": "phrase", "clip": "clipboard_cache"}.get(kind)
+        if self.panel.popup.show_icons and kind in ("folder", "phrase", "special", "clip", "note"):
+            name = {"folder": "folder", "phrase": "phrase", "clip": "clipboard_cache",
+                    "note": "sticky_notes"}.get(kind)
             if kind == "special":
-                name = "clipboard_cache" if index.data(ROLE_ID) == CLIPBOARD else "last_used"
+                name = {CLIPBOARD: "clipboard_cache", STICKY: "sticky_notes"}.get(index.data(ROLE_ID), "last_used")
             icon(name).paint(p, QRect(x, r.top() + (ROW_H - 16) // 2, 16, 16))
             x += 22
         font = QFont(self.panel.font())
         p.setFont(font)
         fm = QFontMetrics(font)
         right_text = index.data(ROLE_RIGHT) or ""
+        qk = index.data(ROLE_QK) or ""
+        if qk and not right_text:
+            right_text = qk
+        is_qk = bool(qk) and right_text == qk
         chevron = kind in ("folder", "special")
         right_w = 18 if chevron else 6
         if right_text:
@@ -131,18 +234,18 @@ class _RowDelegate(QStyledItemDelegate):
             if cx + m.horizontalAdvance(seg) > x + avail:      # elide the tail
                 seg = m.elidedText(seg, Qt.ElideRight, max(0, x + avail - cx))
             p.setFont(f)
-            p.setPen(MATCH if hit else QColor("#1f1f1f"))
+            p.setPen(MATCH if hit else QColor(colors["description"]))
             p.drawText(cx, base_y, seg)
             cx += m.horizontalAdvance(seg)
             if cx >= x + avail:
                 break
         p.setFont(font)
         if right_text:
-            p.setPen(QColor("#7a7a7a"))
+            p.setPen(QColor(colors["quickkey" if is_qk else "autotext"]))
             rr = QRect(r.right() - right_w, r.top(), right_w - (18 if chevron else 6), r.height())
             p.drawText(rr, Qt.AlignVCenter | Qt.AlignRight, fm.elidedText(right_text, Qt.ElideMiddle, rr.width()))
         if chevron:
-            p.setPen(QPen(QColor("#505050"), 1.3))
+            p.setPen(QPen(QColor(colors["description"]), 1.3))
             cx, cy = r.right() - 10, r.center().y()
             p.setRenderHint(QPainter.Antialiasing)
             p.drawLine(cx - 3, cy - 4, cx + 1, cy)
@@ -269,8 +372,7 @@ class _Panel(QFrame):
         self.depth = depth
         self.setObjectName("PopupPanel")
         self.setStyleSheet("#PopupPanel{background:white;border:1px solid #8c8c8c}")
-        size = _int_setting(store or popup.store, "popup.font_size", 9)
-        self.setFont(QFont("Segoe UI", size))
+        self.setFont(QFont("Segoe UI", 9))
         self.outer = QVBoxLayout(self)
         self.outer.setContentsMargins(1, 1, 1, 1)
         self.outer.setSpacing(0)
@@ -314,6 +416,29 @@ class _Panel(QFrame):
         if depth > 0:
             self.pin_button = self.band.add_button("pin", "Keep the menu open", checkable=True)
             self.pin_button.toggled.connect(self.popup.set_pinned)
+            self.apply_appearance()
+
+    def apply_appearance(self) -> None:
+        """Font and background from menu.appearance (see PhrasePopup._load_settings)."""
+        pop = self.popup
+        colors = getattr(pop, "colors", None)
+        if not colors:
+            return
+        f = QFont("Segoe UI", 9)
+        if getattr(pop, "menu_font", ""):
+            f.fromString(pop.menu_font)
+        self.setFont(f)
+        self.footer.setFont(f)
+        bg = colors["background"]
+        # the app-wide style sheet sets a font on every widget ("* {font-family...}"),
+        # which beats setFont(); repeat the menu font in this panel's own style sheet
+        font_css = f'font-family:"{f.family()}"; font-size:{f.pointSizeF():g}pt;'
+        self.setStyleSheet(f"#PopupPanel{{background:{bg};border:1px solid #8c8c8c}}"
+                           f"#PopupPanel QListWidget, #PopupPanel QLabel{{{font_css}}}")
+        self.list.setStyleSheet(f"QListWidget{{background:{bg};border:none;outline:0;{font_css}}}"
+                                "QListWidget::item{border:none}")
+        self.list.setFont(f)
+        self.footer.setStyleSheet(f"color:{colors['description']};")
 
     # -------------------------------------------- rows
     def add_row(self, kind: str, ident, text: str, right: str = "", query: str = "",
@@ -327,8 +452,47 @@ class _Panel(QFrame):
         it.setSizeHint(QSize(10, ROW_H))
         if kind == "empty":
             it.setFlags(Qt.NoItemFlags)
+        elif self.popup.show_preview:
+            tip = clip_text[:600] if kind in ("clip", "note") else self.popup.preview_text(kind, ident)
+            if tip:
+                it.setToolTip(tip)
         self.list.addItem(it)
         return it
+
+    def assign_quickkeys(self) -> None:
+        """Number the first rows with QuickKeys (menu.quickkey_keys)."""
+        pop = self.popup
+        n = 0
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            if it.data(ROLE_KIND) == "empty":
+                continue
+            label = quickkey_label(pop.quickkey_keys, n) if pop.contents == "description_quickkey" else ""
+            if label and pop.quickkey_modifier != "none":
+                label = f"{pop.quickkey_modifier.capitalize()}+{label}"
+            it.setData(ROLE_QK, label)
+            n += 1
+
+    def quickkey_row(self, e) -> QListWidgetItem | None:
+        """The row a QuickKey press selects, if the key and modifier match."""
+        pop = self.popup
+        mods = e.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.ShiftModifier)
+        want = {"none": Qt.NoModifier, "ctrl": Qt.ControlModifier, "alt": Qt.AltModifier,
+                "shift": Qt.ShiftModifier}.get(pop.quickkey_modifier, Qt.NoModifier)
+        if mods != want:
+            return None
+        idx = quickkey_index(pop.quickkey_keys, e.key(), bool(e.modifiers() & Qt.KeypadModifier))
+        if idx < 0:
+            return None
+        n = 0
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            if it.data(ROLE_KIND) == "empty":
+                continue
+            if n == idx:
+                return it
+            n += 1
+        return None
 
     def fill(self) -> None:
         """(Re)build the rows for this panel's folder."""
@@ -338,7 +502,7 @@ class _Panel(QFrame):
         self.footer.setText("New phrase...")
         self._set_footer(True)
         if key == CLIPBOARD:
-            entries = st.clipboard_entries(limit=max(1, pop.max_items))
+            entries = st.clipboard_entries(limit=max(1, pop.clipboard_max))
             for e in entries:
                 one = " ".join(e.text.split())
                 self.add_row("clip", e.id, one[:200], clip_text=e.text)
@@ -346,6 +510,14 @@ class _Panel(QFrame):
                 self.add_row("empty", None, "(empty)")
             self.footer.setText("Clear clipboard cache")
             self._set_footer(bool(entries))
+        elif key == STICKY:
+            notes = pop.sticky_notes()
+            for n in notes[:STICKY_MAX]:
+                self.add_row("note", n.id, n.title, clip_text=n.text)
+            if not notes:
+                self.add_row("empty", None, "(no notes)")
+            self.footer.setText("Open Sticky Notes")
+            self._set_footer(True)
         elif key == LAST_USED:
             for p in pop.last_used_phrases():
                 self.add_row("phrase", p.id, p.description, right=pop.right_text(p))
@@ -358,6 +530,7 @@ class _Panel(QFrame):
                 self.add_row(kind, ident, text, right=right)
             if not entries:
                 self.add_row("empty", None, "(empty)")
+        self.assign_quickkeys()
         self._select_first()
         self.update_geometry()
 
@@ -403,7 +576,7 @@ class _Panel(QFrame):
             self.popup.open_submenu(self, it)
         elif kind == "phrase":
             self.popup.choose_phrase(it.data(ROLE_ID))
-        elif kind == "clip":
+        elif kind in ("clip", "note"):
             self.popup.choose_clip(it.data(ROLE_TEXT))
 
     def _footer_clicked(self) -> None:
@@ -411,13 +584,30 @@ class _Panel(QFrame):
             self.popup.store.clear_clipboard(keep_pinned=True)
             self.fill()
             return
+        if self.folder_key == STICKY:
+            self.popup.hide_all(force=True)
+            try:
+                from phraseforge import stickynotes
+                stickynotes.open_app()
+            except Exception:
+                pass
+            return
         self.popup.request_new_phrase(self.folder_key if isinstance(self.folder_key, int) else None)
 
     def handle_key(self, e) -> bool:
         k = e.key()
         cur = self.list.currentItem()
-        if k in (Qt.Key_Return, Qt.Key_Enter):
+        pop = self.popup
+        if k in (Qt.Key_Return, Qt.Key_Enter) or key_matches(pop.confirm_hotkey, e):
             self._activate(cur)
+            return True
+        if key_matches(pop.search_hotkey, e):
+            pop.start_search("")
+            return True
+        qk = self.quickkey_row(e)
+        if qk is not None:
+            self.list.setCurrentItem(qk)
+            self._activate(qk)
             return True
         if k == Qt.Key_Right and cur is not None and cur.data(ROLE_KIND) in ("folder", "special"):
             self.popup.open_submenu(self, cur, focus=True)
@@ -430,8 +620,8 @@ class _Panel(QFrame):
             return True
         text = e.text()
         if text and text.isprintable() and not (e.modifiers() & (Qt.ControlModifier | Qt.AltModifier)):
-            if self.depth == 0 and self.popup.quick_jump_mode == "search":
-                self.popup.start_search(text)
+            if self.depth == 0 and not self.popup.quick_jump:
+                self.popup.start_search(text)       # Quick Jump off: typing searches
                 return True
             self._typed += text.lower()       # quick jump inside a menu
             self._typed_timer.start()
@@ -470,7 +660,7 @@ class PhrasePopup(_Panel):
         self.pinned = False
         self.subs: list[_Panel] = []
         self.new_phrase_folder_id: int | None = None
-        self.quick_jump_mode = "search"
+        self.max_items = 30          # visible rows before the menu scrolls
         self._load_settings()
         # header: band with search + pin, or the search bar
         self.search_button = self.band.add_button("search", "Search [F3]")
@@ -501,21 +691,78 @@ class PhrasePopup(_Panel):
         self.header.addWidget(bar)
         self.search_bar = bar
         self.band.setToolTip("PhraseForge")
+        self.apply_appearance()
 
     # -------------------------------------------- settings / data
     def _load_settings(self) -> None:
+        import json
         st = self.store
-        self.max_items = max(3, _int_setting(st, "popup.max_items", 30))
-        self.show_icons = _setting(st, "popup.show_icons", "1") == "1"
-        self.menu_width = max(200, _int_setting(st, "popup.width", 350))
-        self.position = _setting(st, "popup.position", "caret")
-        self.sort = _setting(st, "popup.sort", "description")
-        self.search_content = _setting(st, "popup.search_content", "0") == "1"
-        self.match_case = _setting(st, "popup.search_match_case", "0") == "1"
-        self.search_subfolders = _setting(st, "popup.search_subfolders", "1") == "1"
-        self.show_clipboard = (_setting(st, "popup.show_clipboard_cache", "1") == "1"
-                               and _setting(st, "clipboard_history.enabled", "1") == "1")
-        self.show_last_used = _setting(st, "popup.show_last_used", "1") == "1"
+        on = lambda key: _setting(st, key) == "1"   # noqa: E731
+        self.show_icons = True
+        self.menu_width = max(200, _int_setting(st, "menu.width", 350))
+        self.position = _setting(st, "menu.position")
+        self.position_fallback = _setting(st, "menu.position_fallback")
+        self.contents = _setting(st, "menu.contents")
+        self.sort_enabled = on("menu.sort_enabled")
+        self.sort_by = _setting(st, "menu.sort_by")
+        self.sort_method = _setting(st, "menu.sort_method")
+        self.sort_order = _setting(st, "menu.sort_order")
+        self.show_preview = on("menu.show_preview")
+        self.hide_restricted = on("menu.hide_restricted")
+        self.confirm_hotkey = _setting(st, "menu.confirm_hotkey")
+        self.quickkey_modifier = _setting(st, "menu.quickkey_modifier")
+        self.quickkey_keys = _setting(st, "menu.quickkey_keys")
+        self.search_hotkey = _setting(st, "menu.search_hotkey")
+        self.search_descriptions = on("quicksearch.descriptions")
+        self.match_case = on("quicksearch.match_case")
+        self.search_subfolders = on("quicksearch.subfolders")
+        self.quick_jump = on("quicksearch.quick_jump")
+        self.show_clipboard = on("clipboard_history.enabled")
+        self.clipboard_max = max(1, _int_setting(st, "clipboard_history.max", 200))
+        self.show_last_used = on("features.last_used_folder")
+        self.last_used_max = max(1, _int_setting(st, "last_used.max", 20))
+        self.show_sticky = on("stickynotes.show_folder") and _sticky_available()
+        self._notes_cache: list | None = None          # read lazily, once per menu opening
+        try:
+            app = json.loads(_setting(st, "menu.appearance") or "{}")
+            app = app if isinstance(app, dict) else {}
+        except ValueError:
+            app = {}
+        colors = {"background": "#ffffff", "description": "#1f1f1f", "autotext": "#7a7a7a",
+                  "hotkey": "#7a7a7a", "quickkey": "#7a7a7a", "selection": SELECT.name()}
+        colors.update({k: v for k, v in app.items() if k in colors and QColor(v).isValid()})
+        if on("menu.dim_dark") and self._dark_mode():
+            colors = {k: _dim(v) for k, v in colors.items()}
+        self.colors = colors
+        self.menu_font = app.get("font", "") if isinstance(app.get("font", ""), str) else ""
+
+    def _dark_mode(self) -> bool:
+        theme = _setting(self.store, "ui.theme", "system")
+        if theme == "dark":
+            return True
+        if theme == "light":
+            return False
+        try:
+            return QGuiApplication.styleHints().colorScheme() == Qt.ColorScheme.Dark
+        except Exception:
+            return False
+
+    def preview_text(self, kind: str, ident) -> str:
+        if kind != "phrase":
+            return ""
+        p = self.store.get_phrase(ident)
+        if not p:
+            return ""
+        text = p.content
+        if p.content_format == "html":
+            from PySide6.QtGui import QTextDocument
+            d = QTextDocument()
+            d.setHtml(text)
+            text = d.toPlainText()
+        return text[:600] + ("..." if len(text) > 600 else "")
+
+    def _app_ok(self, p) -> bool:
+        return not self.hide_restricted or self.store.phrase_allowed_in_app(p.id, self.app_exe)
 
     def _allowed(self, p) -> bool:
         if not p.enabled:
@@ -524,12 +771,12 @@ class PhrasePopup(_Panel):
             chain = self.store.folder_chain(p.folder_id)
             if any(not f.enabled or not f.show_in_popup for f in chain):
                 return False
-        return self.store.phrase_allowed_in_app(p.id, self.app_exe)
+        return self._app_ok(p)
 
     def _folder_visible(self, f) -> bool:
         if not (f.enabled and f.show_in_popup):
             return False
-        if self.app_exe:
+        if self.app_exe and self.hide_restricted:
             exe = self.app_exe.lower()
             inc = [a.strip().lower() for a in (f.apps_include or "").split(",") if a.strip()]
             exc = [a.strip().lower() for a in (f.apps_exclude or "").split(",") if a.strip()]
@@ -538,14 +785,37 @@ class PhrasePopup(_Panel):
         return True
 
     def right_text(self, p) -> str:
+        """Grey text right of a phrase, per menu.contents."""
+        if self.contents not in ("description_autotext", "description_autotext_hotkey"):
+            return ""
         abbr = ", ".join(t.value for t in p.autotexts())
-        hot = ", ".join(t.value.upper().replace("+", "-") for t in p.hotkeys())
+        hot = ", ".join(t.value.upper().replace("+", "-") for t in p.hotkeys()) \
+            if self.contents == "description_autotext_hotkey" else ""
         return "   ".join(x for x in (f"[{abbr}]" if abbr else "", f"({hot})" if hot else "") if x)
 
     def _sorted_phrases(self, phrases):
-        if self.sort == "usage":
-            return sorted(phrases, key=lambda p: (-p.use_count, p.description.lower()))
-        return sorted(phrases, key=lambda p: p.description.lower())
+        """Order phrases per menu.sort_*; with sorting off keep the user's manual order."""
+        phrases = list(phrases)
+        if not self.sort_enabled:
+            return sorted(phrases, key=lambda p: (p.sort, p.id or 0))
+
+        def field(p):
+            if self.sort_by == "autotext":
+                return next((t.value for t in p.autotexts()), "")
+            if self.sort_by == "usage":
+                return p.use_count
+            if self.sort_by == "last_used":
+                return p.last_used or ""
+            if self.sort_by == "created":
+                return p.created or ""
+            return p.description
+
+        def key(p):
+            v = field(p)
+            if isinstance(v, int):
+                return (v, natural_key(p.description))
+            return natural_key(v) if self.sort_method == "numeric" else (v or "").lower()
+        return sorted(phrases, key=key, reverse=self.sort_order == "desc")
 
     def folder_entries(self, folder_id) -> list[tuple[str, object, str, str]]:
         """[(kind, id, text, right)] for a folder: folders (incl. specials at root), then phrases."""
@@ -555,14 +825,24 @@ class PhrasePopup(_Panel):
                 folders.append(("special", CLIPBOARD, "Clipboard Cache", ""))
             if self.show_last_used:
                 folders.append(("special", LAST_USED, "Last Used", ""))
+            if self.show_sticky:
+                folders.append(("special", STICKY, "Sticky Notes", ""))
         folders.sort(key=lambda r: r[2].lower())
         phrases = [p for p in self.store.phrases(folder_id) if self._allowed(p)]
         rows = [("phrase", p.id, p.description, self.right_text(p)) for p in self._sorted_phrases(phrases)]
         return folders + rows
 
-    def last_used_phrases(self, limit: int = 20):
+    def sticky_notes(self) -> list:
+        """Sticky notes (read lazily; read_notes itself is cached by file time)."""
+        if not self.show_sticky:
+            return []
+        if self._notes_cache is None:
+            self._notes_cache = list(_sticky_notes())
+        return self._notes_cache
+
+    def last_used_phrases(self, limit: int | None = None):
         used = [p for p in self.store.phrases() if p.last_used and self._allowed(p)]
-        return sorted(used, key=lambda p: p.last_used, reverse=True)[:limit]
+        return sorted(used, key=lambda p: p.last_used, reverse=True)[:limit or self.last_used_max]
 
     def _folder_path(self, folder_id) -> str:
         names = [f.name for f in reversed(self.store.folder_chain(folder_id))]
@@ -582,12 +862,18 @@ class PhrasePopup(_Panel):
         for p in self.store.phrases():
             if not self.search_subfolders and p.folder_id is not None:
                 continue
+            # "Search within descriptions": descriptions + abbreviations; unchecked: phrase text too
             fields = [p.description] + [t.value for t in p.autotexts()]
-            if self.search_content:
+            if not self.search_descriptions:
                 fields.append(p.content)
             if any(hit(x) for x in fields) and self._allowed(p):
                 rows.append(("phrase", p.id, p.description,
                              self._folder_path(p.folder_id) if p.folder_id else ""))
+        self._note_text = {}
+        for n in self.sticky_notes():
+            if hit(n.title) or (not self.search_descriptions and hit(n.text)):
+                self._note_text[n.id] = n.text
+                rows.append(("note", n.id, n.title, "Sticky Notes"))
         # description matches first (starts-with before contains), then the rest
         def rank(r):
             t = r[2] if self.match_case else r[2].lower()
@@ -605,10 +891,13 @@ class PhrasePopup(_Panel):
         self.header.setCurrentWidget(self.search_bar)
         self.list.clear()
         rows = self.search_entries(q)
+        notes = getattr(self, "_note_text", {})
         for kind, ident, text, right in rows:
-            self.add_row(kind, ident, text, right=right, query=q)
+            self.add_row(kind, ident, text, right=right, query=q,
+                         clip_text=notes.get(ident, "") if kind == "note" else "")
         if not rows:
             self.add_row("empty", None, "No matching phrases")
+        self.assign_quickkeys()
         self._set_footer(False)
         self._select_first()
         self.update_geometry()
@@ -701,22 +990,69 @@ class PhrasePopup(_Panel):
                 if self.list.item(i).data(ROLE_KIND) == "phrase"]
 
     # -------------------------------------------- show / hide
-    def show_at(self, x: int, y: int, app_exe: str = "") -> None:
+    def placement(self, x: int, y: int, caret: tuple[int, int] | None) -> tuple[str, int, int]:
+        """Where to show the menu: ("caret"|"mouse"|"center", x, y) per menu.position/_fallback.
+        `caret` is the caret position if known (None = no caret); x, y are used if the
+        caller already resolved a point and no caret lookup is possible."""
+        mode = self.position
+        if mode == "caret":
+            if caret is not None:
+                return "caret", caret[0], caret[1]
+            mode = self.position_fallback
+        if mode == "mouse":
+            c = QCursor.pos()
+            return "mouse", c.x(), c.y()
+        if mode == "center":
+            return "center", x, y
+        return "caret", x, y
+
+    @staticmethod
+    def _caret() -> tuple[int, int] | None:
+        try:
+            from phraseforge.platform import windows
+            return windows.caret_position()
+        except Exception:
+            return None
+
+    def set_root_folder(self, folder=None) -> None:
+        """Make the root panel show one folder (folder id, numeric str, "last_used" or
+        "clipboard_cache") instead of the top level; None restores the normal menu."""
+        key, title = None, ""
+        if folder == "clipboard_cache":
+            folder = CLIPBOARD
+        if folder in (LAST_USED, CLIPBOARD, STICKY):
+            key = folder
+            title = {LAST_USED: "Last Used", CLIPBOARD: "Clipboard Cache", STICKY: "Sticky Notes"}[folder]
+        elif folder is not None and str(folder).strip().lstrip("-").isdigit():
+            f = self.store.get_folder(int(folder))
+            if f is not None:
+                key, title = f.id, f.name
+        self.folder_key = key
+        self.band.wordmark = key is None
+        self.band.title = title
+        self.band.update()
+
+    def show_at(self, x: int, y: int, app_exe: str = "", search: bool = False,
+                caret: tuple[int, int] | None | bool = True, folder=None) -> None:
+        """Show the menu. caret=True looks the caret up; pass a (x, y) or None to skip the lookup.
+        search=True opens straight into quick search. folder (id or "last_used" /
+        "clipboard_cache") opens the menu on that folder's contents (folder triggers)."""
         self.app_exe = app_exe or ""
+        self.set_root_folder(folder)
         self._load_settings()
+        self.apply_appearance()
         self.close_from(1)
         self.search.blockSignals(True)
         self.search.clear()
         self.search.blockSignals(False)
         self.refresh()
-        if self.position == "mouse":
-            c = QCursor.pos()
-            x, y = c.x(), c.y()
+        caret_pos = self._caret() if caret is True else caret
+        mode, x, y = self.placement(x, y, caret_pos)
         scr = QGuiApplication.screenAt(QPoint(x, y)) or QGuiApplication.primaryScreen()
         g = scr.availableGeometry()
         h = self.sizeHint().height()
         w = self.width()
-        if self.position == "center":
+        if mode == "center":
             px, py = g.center().x() - w // 2, g.center().y() - h // 2
         else:
             px = min(max(g.left(), x), g.right() - w)
@@ -726,6 +1062,18 @@ class PhrasePopup(_Panel):
         self.raise_()
         self.activateWindow()
         self.list.setFocus()
+        self._play_sound()
+        if search:
+            self.start_search("")
+
+    def _play_sound(self) -> None:
+        """sound.popup_display.*: phraseforge.sounds.play_event(event, store) checks the
+        enabled flag and file itself (module owned by the runtime layer)."""
+        try:
+            from phraseforge import sounds
+            sounds.play_event("popup_display", self.store)
+        except Exception:
+            pass
 
     def hide_all(self, force: bool = False) -> None:
         if self.pinned and not force:
@@ -742,13 +1090,21 @@ class PhrasePopup(_Panel):
             self.hide_all()
 
     def eventFilter(self, obj, e):  # noqa: N802
+        if not hasattr(self, "search"):          # events during construction
+            return False
         if obj is self.search and e.type() == QEvent.KeyPress:
             k = e.key()
             if k in (Qt.Key_Down, Qt.Key_Up, Qt.Key_PageDown, Qt.Key_PageUp):
                 self.list.keyPressEvent(e)
                 return True
-            if k in (Qt.Key_Return, Qt.Key_Enter):
+            if k in (Qt.Key_Return, Qt.Key_Enter) or key_matches(self.confirm_hotkey, e):
                 self._activate(self.list.currentItem())
+                return True
+            qk = self.quickkey_row(e) if self.quickkey_modifier != "none" or \
+                self.quickkey_keys in ("numpad", "fkeys") else None
+            if qk is not None:           # unmodified digits/letters are search text here
+                self.list.setCurrentItem(qk)
+                self._activate(qk)
                 return True
             if k == Qt.Key_Right and self.list.currentItem() is not None \
                     and self.list.currentItem().data(ROLE_KIND) in ("folder", "special"):
@@ -760,7 +1116,4 @@ class PhrasePopup(_Panel):
                 else:
                     self.hide_all(force=True)
                 return True
-        if obj is self.list and e.type() == QEvent.KeyPress and e.key() == Qt.Key_F3:
-            self.start_search("")
-            return True
         return super().eventFilter(obj, e)

@@ -6,7 +6,8 @@ Re-determine typing test, hourly wage), a "Usage statistics" switch, OK/Help,
 plus a "Details" section with per-day chart and top phrases/apps.
 
 Settings: stats.typing_speed (chars/minute, default 200), stats.hourly_wage
-(default 0), stats.currency (default from locale), stats.enabled ("1").
+(default 0), stats.currency (default from locale), features.usage_statistics ("1", shared with
+Settings > Features: when off, expansions are not counted).
 """
 from __future__ import annotations
 
@@ -219,7 +220,7 @@ class StatsWindow(QDialog):
         lay.addWidget(g)
 
         self.usage = QCheckBox("Usage statistics")
-        self.usage.setChecked(store.setting("stats.enabled", "1") != "0")
+        self.usage.setChecked(store.setting("features.usage_statistics", "1") != "0")
         lay.addWidget(self.usage)
 
         # details (our addition): chart + top phrases + apps
@@ -341,7 +342,7 @@ class StatsWindow(QDialog):
     def accept(self) -> None:
         self.store.set_setting("stats.typing_speed", str(self.speed.value()))
         self.store.set_setting("stats.hourly_wage", f"{self.wage.value():g}")
-        self.store.set_setting("stats.enabled", "1" if self.usage.isChecked() else "0")
+        self.store.set_setting("features.usage_statistics", "1" if self.usage.isChecked() else "0")
         super().accept()
 
     def showEvent(self, e):  # noqa: N802

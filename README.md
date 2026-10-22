@@ -20,7 +20,7 @@ Easiest: double-click `PhraseForge.bat` (works from anywhere). Or run from this 
 ```
 C:\venvs\phraseforge\Scripts\python -m phraseforge             # main window + tray icon
 C:\venvs\phraseforge\Scripts\python -m phraseforge --minimized # tray only
-C:\venvs\phraseforge\Scripts\python -m pytest -p no:cacheprovider  # 155 tests
+C:\venvs\phraseforge\Scripts\python -m pytest -p no:cacheprovider  # full test suite
 ```
 
 ## Default hotkeys

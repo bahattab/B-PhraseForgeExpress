@@ -930,10 +930,24 @@ def _open(rt, args, opts):
 @macro("mail", "Internet", '{#mail -to a@b.com -subject "Hi" -body "Text" -cc c@d.com}', "Open a new e-mail.")
 def _mail(rt, args, opts):
     to = opts.get("to", _arg(args, 0))
-    q = {k: opts[k] for k in ("subject", "body", "cc", "bcc") if opts.get(k)}
-    url = "mailto:" + urllib.parse.quote(to, safe="@,") + ("?" + urllib.parse.urlencode(q, quote_via=urllib.parse.quote) if q else "")
-    rt.host.open_target(url)
+    rt.host.open_target(mail_url(to, opts, rt.setting("mail.method", "mailto"),
+                                 rt.setting("mail.utf8", "1") != "0"))
     return None
+
+
+def mail_url(to: str, opts: dict, method: str = "mailto", utf8: bool = True) -> str:
+    """mailto: link (or a Gmail compose URL when Settings > Expert Options says Gmail).
+    utf8=False encodes with the Windows ANSI code page for old mail clients."""
+    fields = {k: opts[k] for k in ("subject", "body", "cc", "bcc") if opts.get(k)}
+    if method == "gmail":
+        q = {"view": "cm", "fs": "1", "to": to, "su": fields.get("subject", ""), "body": fields.get("body", ""),
+             "cc": fields.get("cc", ""), "bcc": fields.get("bcc", "")}
+        return "https://mail.google.com/mail/?" + urllib.parse.urlencode(
+            {k: v for k, v in q.items() if v}, quote_via=urllib.parse.quote)
+    enc = "utf-8" if utf8 else ("mbcs" if os.name == "nt" else "latin-1")
+    quote = lambda s, safe="": urllib.parse.quote(s, safe=safe, encoding=enc, errors="replace")  # noqa: E731
+    query = "&".join(f"{k}={quote(v)}" for k, v in fields.items())
+    return "mailto:" + quote(to, "@,") + ("?" + query if query else "")
 
 
 @macro("waitfor", "System", '{#waitfor "Window title" -timeout 10 -abort}',
@@ -946,20 +960,30 @@ def _waitfor(rt, args, opts):
 
 
 # ====================================================================== AI / OCR
-@macro("ai", "AI", '{#ai "prompt" -provider openai|anthropic|ollama|openrouter -model name -system "role"}',
-       "Insert an AI model's answer.", '{#ai "Rewrite politely: {#clipboard}"}', aliases=("openai", "chatgpt"))
+@macro("ai", "AI", '{#ai "prompt" -provider openai|anthropic|ollama|openrouter -model name -system "role" '
+       '-preset "Summarize"}',
+       "Insert an AI model's answer. -preset uses a prompt from Settings > AI text processing > Custom presets "
+       "(the macro text becomes the input).", '{#ai "Rewrite politely: {#clipboard}"}', aliases=("openai", "chatgpt"))
 def _ai(rt, args, opts):
-    return rt.host.ai_complete(" ".join(args), provider=opts.get("provider", ""), model=opts.get("model", ""),
+    prompt = " ".join(args)
+    if opts.get("preset"):
+        from phraseforge.ai import preset_prompt
+        instruction = preset_prompt({"ai.presets": rt.setting("ai.presets", "[]")}, opts["preset"])
+        prompt = f"{instruction}\n\n{prompt}" if prompt else instruction
+    return rt.host.ai_complete(prompt, provider=opts.get("provider", ""), model=opts.get("model", ""),
                                system=opts.get("system", "")).strip()
 
 
-@macro("translate", "AI", '{#translate text -to Arabic -from English}', "Translate text using the AI provider.",
-       '{#translate {#clipboard} -to Arabic}')
+@macro("translate", "AI", '{#translate text -to Arabic -from English -glossary "Name"}',
+       "Translate text using the translation engine from Settings > Language Translation "
+       "(ignored words and glossaries are applied).", '{#translate {#clipboard} -to Arabic}')
 def _translate(rt, args, opts):
-    src = f" from {opts['from']}" if opts.get("from") else ""
-    system = (f"You are a translator. Translate the user's text{src} to {opts.get('to', 'English')}. "
-              "Output only the translation.")
-    return rt.host.ai_complete(" ".join(args), provider=opts.get("provider", ""), model=opts.get("model", ""),
+    from phraseforge.ai import translation_system
+    keys = ("translation.ignored_words", "translation.glossaries")
+    system = translation_system({k: rt.setting(k, "") for k in keys}, opts.get("to", "English"),
+                                opts.get("from", ""), opts.get("glossary", ""))
+    provider = opts.get("provider", "") or rt.setting("translation.provider", "")
+    return rt.host.ai_complete(" ".join(args), provider=provider, model=opts.get("model", ""),
                                system=system).strip()
 
 
@@ -968,7 +992,13 @@ def _translate(rt, args, opts):
        "{#ocr -lang English}")
 def _ocr(rt, args, opts):
     lang = opts.get("lang") or rt.setting("ocr.language", "English")
-    return rt.host.ocr_region(language=lang, keep_line_breaks=_flag(opts, "linebreaks"))
+    if _flag(opts, "linebreaks"):
+        keep = True
+    elif _flag(opts, "nolinebreaks"):
+        keep = False
+    else:   # Settings > Screen OCR > Keep line breaks
+        keep = rt.setting("ocr.keep_line_breaks", "1") != "0"
+    return rt.host.ocr_region(language=lang, keep_line_breaks=keep)
 
 
 @macro("ocrfile", "OCR", '{#ocrfile "C:\\image.png" -lang English}', "OCR an image file.")
