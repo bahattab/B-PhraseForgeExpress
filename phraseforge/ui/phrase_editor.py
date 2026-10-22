@@ -19,14 +19,14 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QFrame, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMenu,
-    QMessageBox, QPlainTextEdit, QSpinBox, QTextEdit, QToolButton, QVBoxLayout, QWidget,
+    QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTextEdit, QToolButton, QVBoxLayout, QWidget,
 )
 
-from phraseforge.models import Phrase
+from phraseforge.models import Phrase, TriggerKind
 from phraseforge.ui.iconset import icon
 from phraseforge.ui.pe_style import caption
 from phraseforge.ui.trigger_editor import (
-    AddTagDialog, ExtrasStore, TriggerList, default_row, rows_for_owner,
+    AddTagDialog, TriggerList, default_row, rows_for_triggers,
 )
 
 from PySide6.QtCore import QLocale
@@ -37,7 +37,8 @@ TOKEN_PROP = QTextFormat.UserProperty + 1
 OBJ = "￼"
 
 OUTPUT_TARGETS = [("current", "Current application"), ("program", "Specific program"),
-                  ("clipboard", "Clipboard"), ("textfile", "Text file"), ("email", "E-mail")]
+                  ("clipboard", "Clipboard"), ("textfile", "Text file"), ("email", "E-mail"),
+                  ("onenote", "OneNote")]
 
 # Friendly chip labels (PhraseExpress shows macro names, not parameters).
 DISPLAY = {
@@ -57,6 +58,7 @@ DISPLAY = {
     "ai": "AI text processing", "translate": "Translate text", "ocr": "Screen OCR", "ocrfile": "Image OCR",
     "message": "Message box", "waitfor": "Set application focus", "separator": "Separator",
     "ask": "Form input", "askchoice": "Drop down", "askcheck": "Check box", "askdate": "Calendar",
+    "onenote": "OneNote page",
 }
 KEY_NAMES = {"enter", "tab", "esc", "bksp", "del", "up", "down", "left", "right", "home", "end",
              "pgup", "pgdn", "ins"} | {f"f{i}" for i in range(1, 13)}
@@ -435,6 +437,81 @@ def _output_combo() -> QComboBox:
     return c
 
 
+OUTPUT_ARG_HINTS = {"program": "program (e.g. notepad.exe) or window title",
+                    "textfile": r"file path, e.g. C:\Notes\log.txt",
+                    "email": "e-mail address",
+                    "onenote": "OneNote page or section (empty = default from Settings, else Quick Notes)"}
+
+
+class OutputTargetRow(QWidget):
+    """Output target combo + an argument field for targets that need one.
+    For "OneNote" a Browse... button opens the OneNote picker (stores the page/section path)."""
+    changed = Signal()
+
+    def __init__(self, parent=None, picker_factory=None):
+        super().__init__(parent)
+        h = QHBoxLayout(self)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(6)
+        self.combo = _output_combo()
+        self.arg = QLineEdit()
+        self.browse = QPushButton("Browse...")
+        self.browse.setToolTip("Choose a OneNote page or section")
+        self.browse.clicked.connect(self._browse_onenote)
+        self.picker_factory = picker_factory      # tests inject a fake picker
+        h.addWidget(self.combo)
+        h.addWidget(self.arg, 1)
+        h.addWidget(self.browse)
+        h.addStretch(0)
+        self.combo.currentIndexChanged.connect(self._sync)
+        self.combo.currentIndexChanged.connect(lambda *_: self.changed.emit())
+        self.arg.textEdited.connect(lambda *_: self.changed.emit())
+        self._sync()
+
+    def _sync(self, *_):
+        hint = OUTPUT_ARG_HINTS.get(self.combo.currentData())
+        self.arg.setVisible(hint is not None)
+        self.arg.setPlaceholderText(hint or "")
+        self.browse.setVisible(self.combo.currentData() == "onenote")
+        self.arg.setToolTip(self.arg.text() if self.combo.currentData() == "onenote" else "")
+
+    def _browse_onenote(self) -> None:
+        if self.picker_factory is not None:
+            picker = self.picker_factory(self)
+        else:
+            from phraseforge.ui.onenote_picker import OneNotePicker
+            picker = OneNotePicker(self, mode="target", current=self.arg.text())
+        if picker.exec():
+            ref = picker.selected_ref()
+            if ref is not None:
+                self.arg.setText(ref)
+                self._sync()
+                self.changed.emit()
+
+    def set(self, target: str, arg: str = "") -> None:
+        self.combo.blockSignals(True)
+        self.combo.setCurrentIndex(max(0, self.combo.findData(target or "current")))
+        self.combo.blockSignals(False)
+        self.arg.setText(arg or "")
+        self._sync()
+
+    def target(self) -> str:
+        return self.combo.currentData() or "current"
+
+    def target_arg(self) -> str:
+        return self.arg.text().strip() if self.arg.isVisible() or self.target() in OUTPUT_ARG_HINTS else ""
+
+    # QComboBox-compatible bits older callers used
+    def currentData(self):
+        return self.target()
+
+    def setCurrentIndex(self, i: int) -> None:
+        self.combo.setCurrentIndex(i)
+
+    def findData(self, v):
+        return self.combo.findData(v)
+
+
 # ---------------------------------------------------------------- phrase editor
 class PhraseEditor(QWidget):
     saved = Signal(int)
@@ -446,7 +523,6 @@ class PhraseEditor(QWidget):
     def __init__(self, store, parent=None):
         super().__init__(parent)
         self.store = store
-        self.extras = ExtrasStore(store, "ui.trigger_extras")
         self.phrase: Phrase | None = None
         self.dirty = False
         self._loading = False
@@ -486,14 +562,14 @@ class PhraseEditor(QWidget):
         self.triggers = TriggerList("Trigger")
         lay.addWidget(self.triggers)
         lay.addWidget(caption("Output target:"))
-        self.output_target = _output_combo()
+        self.output_target = OutputTargetRow()
         lay.addWidget(self.output_target)
 
         # wiring
         self.description.textEdited.connect(self._mark_dirty)
         self.content_edit.textChanged.connect(self._content_changed)
         self.triggers.changed.connect(self._mark_dirty)
-        self.output_target.currentIndexChanged.connect(self._mark_dirty)
+        self.output_target.changed.connect(self._mark_dirty)
         self.content_edit.focus_changed.connect(self.content_focus_changed)
         self.content_edit.chip_activated.connect(self.edit_chip)
         self.content_edit.cursorPositionChanged.connect(self._emit_status)
@@ -510,6 +586,17 @@ class PhraseEditor(QWidget):
         lab.setText(f"<u>{text[0]}</u>{text[1:]}")
         return lab
 
+    def _apply_default_font(self) -> None:
+        """Settings > Phrase Formatting > font for unformatted phrases ("Family,size")."""
+        spec = self.store.setting("format.font", "Arial,10") or "Arial,10"
+        family, _, size = spec.partition(",")
+        f = QFont(family.strip() or "Arial")
+        try:
+            f.setPointSizeF(float(size.strip() or 10))
+        except ValueError:
+            f.setPointSize(10)
+        self.content_edit.document().setDefaultFont(f)
+
     # -------------------------------------------------- load / save
     def load(self, phrase_id: int | None) -> None:
         if self.phrase is not None and self.dirty:
@@ -523,15 +610,18 @@ class PhraseEditor(QWidget):
                 self.description.clear()
                 self.content_edit.set_content("")
                 self.triggers.set_rows([default_row("autotext")])
-                self.output_target.setCurrentIndex(0)
+                self.output_target.set("current")
                 self._refresh_tags([])
                 return
             self.description.setText(p.description)
-            self.content_edit.set_content(p.content, html=(p.content_format == "html"))
-            extra = self.extras.get(f"p:{p.id}") or {}
-            self.triggers.set_rows(rows_for_owner(self.extras, f"p:{p.id}", p.triggers))
-            i = self.output_target.findData(extra.get("output_target", "current"))
-            self.output_target.setCurrentIndex(max(0, i))
+            self._apply_default_font()
+            fresh = not p.content and p.content_format == "text" and not p.triggers
+            if fresh and self.store.setting("format.default", "plain") == "rich":
+                self.content_edit.set_content("", html=True)     # new phrase starts formatted (saved as HTML)
+            else:
+                self.content_edit.set_content(p.content, html=(p.content_format == "html"))
+            self.triggers.set_rows(rows_for_triggers(p.triggers) or [default_row("autotext")])
+            self.output_target.set(p.output_target, p.output_target_arg)
             self._refresh_tags(p.tags)
         finally:
             self._loading = False
@@ -546,13 +636,9 @@ class PhraseEditor(QWidget):
         p.content = self.content_edit.content()
         p.content_format = "html" if self.content_edit.rich else "text"
         p.triggers = self.triggers.triggers()
+        p.output_target = self.output_target.target()
+        p.output_target_arg = self.output_target.target_arg()
         self.store.update_phrase(p)
-        rows = self.triggers.meaningful_rows()
-        extra = {"rows": rows} if rows else {}
-        target = self.output_target.currentData()
-        if target != "current":
-            extra["output_target"] = target
-        self.extras.put(f"p:{p.id}", extra or None)
         self.dirty = False
         self.saved.emit(p.id)
         return True
@@ -755,7 +841,6 @@ class FolderEditor(QWidget):
     def __init__(self, store, parent=None):
         super().__init__(parent)
         self.store = store
-        self.extras = ExtrasStore(store, "ui.trigger_extras")
         self.folder = None
         self.dirty = False
         self._loading = False
@@ -767,11 +852,15 @@ class FolderEditor(QWidget):
         lay.addWidget(self.description)
         self.triggers = TriggerList("Trigger")
         lay.addWidget(self.triggers)
+        lay.addWidget(caption("Output target for all phrases in this folder:"))
+        self.output_target = OutputTargetRow()
+        lay.addWidget(self.output_target)
         lay.addWidget(caption("Notes:"))
         self.notes = QPlainTextEdit()
         lay.addWidget(self.notes, 1)
         self.description.textEdited.connect(self._mark_dirty)
         self.triggers.changed.connect(self._mark_dirty)
+        self.output_target.changed.connect(self._mark_dirty)
         self.notes.textChanged.connect(self._mark_dirty)
         self._saver = _FocusOutSaver(self._autosave)
         for w in (self.description, self.notes):
@@ -785,10 +874,11 @@ class FolderEditor(QWidget):
         try:
             self.folder = self.store.get_folder(folder_id) if folder_id is not None else None
             self.setEnabled(self.folder is not None)
-            extra = self.extras.get(f"f:{folder_id}") or {} if self.folder else {}
-            self.description.setText(self.folder.name if self.folder else "")
-            self.triggers.set_rows(extra.get("rows") or [default_row("autotext")])
-            self.notes.setPlainText(extra.get("notes", ""))
+            f = self.folder
+            self.description.setText(f.name if f else "")
+            self.triggers.set_rows((rows_for_triggers(f.triggers) if f else []) or [default_row("autotext")])
+            self.output_target.set(f.output_target if f else "current", f.output_target_arg if f else "")
+            self.notes.setPlainText(f.notes if f else "")
         finally:
             self._loading = False
             self.dirty = False
@@ -798,16 +888,14 @@ class FolderEditor(QWidget):
         if f is None or not self.dirty:
             return False
         name = self.description.text().strip()
-        if name and name != f.name:
+        if name:
             f.name = name
-            self.store.update_folder(f)
-        rows = self.triggers.meaningful_rows()
-        extra = {}
-        if rows:
-            extra["rows"] = rows
-        if self.notes.toPlainText():
-            extra["notes"] = self.notes.toPlainText()
-        self.extras.put(f"f:{f.id}", extra or None)
+        f.notes = self.notes.toPlainText()
+        f.output_target = self.output_target.target()
+        f.output_target_arg = self.output_target.target_arg()
+        self.store.update_folder(f)
+        f.triggers = self.triggers.triggers()
+        self.store.set_folder_triggers(f.id, f.triggers)
         self.dirty = False
         self.saved.emit(f.id)
         return True
@@ -836,7 +924,6 @@ class SpecialFolderEditor(QWidget):
         super().__init__(parent)
         assert kind in SPECIAL
         self.store, self.kind = store, kind
-        self.extras = ExtrasStore(store, "ui.trigger_extras")
         self.spec = SPECIAL[kind]
         self._loading = False
         self.dirty = False
@@ -901,7 +988,7 @@ class SpecialFolderEditor(QWidget):
         self._loading = True
         try:
             self.description.setText(s(self._key("description"), self.spec["title"]))
-            rows = (self.extras.get(f"s:{self.kind}") or {}).get("rows")
+            rows = rows_for_triggers(self.store.special_triggers(self.kind))
             if not rows and self.kind == "clipboard_cache":
                 hk = s("clipboard_history.hotkey", "ctrl+alt+v")
                 rows = [dict(default_row("hotkey"), value=hk)] if hk else None
@@ -935,7 +1022,10 @@ class SpecialFolderEditor(QWidget):
         st(self._key("clear_on_exit"), "1" if self.clear_on_exit.isChecked() else "0")
         st(self.spec["max_key"], str(self.max_items.value()))
         rows = self.triggers.meaningful_rows()
-        self.extras.put(f"s:{self.kind}", {"rows": rows} if rows else None)
+        # the Clipboard Cache hotkey is the clipboard_history.hotkey setting, not a trigger row
+        keep = [t for t in self.triggers.triggers()
+                if not (self.kind == "clipboard_cache" and t.kind == TriggerKind.HOTKEY)]
+        self.store.set_special_triggers(self.kind, keep)
         if self.kind == "clipboard_cache":
             hk = next((r["value"] for r in rows if r["type"] == "hotkey"), "")
             st("clipboard_history.hotkey", hk)

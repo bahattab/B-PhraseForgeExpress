@@ -1,10 +1,16 @@
 """AI completions for the {#ai} and {#translate} macros.
 
 Providers: openai, anthropic, ollama, openrouter. Keys and defaults come from
-the settings table (see db.DEFAULT_SETTINGS: ai.provider, ai.model, ai.*_key,
-ai.ollama_url).
+the settings table (ai.provider, ai.model, ai.*_key, ai.ollama_url).
+Settings > AI text processing adds:
+- ai.instructions.about / ai.instructions.respond: always added to the system prompt
+- ai.presets: named prompts ({#ai -preset "Summarize" text})
+Settings > Language Translation: translation.provider, translation.ignored_words,
+translation.glossaries (see translation_system()).
 """
 from __future__ import annotations
+
+import json
 
 import httpx
 
@@ -21,8 +27,10 @@ class AIError(RuntimeError):
 
 
 def _post(url: str, headers: dict, payload: dict, timeout: float) -> dict:
+    from phraseforge.net import client_kwargs
     try:
-        r = httpx.post(url, headers=headers, json=payload, timeout=timeout)
+        with httpx.Client(timeout=timeout, **client_kwargs()) as c:
+            r = c.post(url, headers=headers, json=payload)
     except httpx.HTTPError as e:
         raise AIError(str(e)) from e
     if r.status_code >= 400:
@@ -35,13 +43,68 @@ def _messages(prompt: str, system: str) -> list[dict]:
     return msgs + [{"role": "user", "content": prompt}]
 
 
+def full_system(settings: dict[str, str], system: str = "") -> str:
+    """Macro system prompt + the user's custom instructions."""
+    parts = [system.strip()] if system and system.strip() else []
+    about = (settings.get("ai.instructions.about") or "").strip()
+    respond = (settings.get("ai.instructions.respond") or "").strip()
+    if about:
+        parts.append("About the user:\n" + about)
+    if respond:
+        parts.append("How to respond:\n" + respond)
+    return "\n\n".join(parts)
+
+
+def presets(settings: dict[str, str]) -> list[dict]:
+    try:
+        v = json.loads(settings.get("ai.presets") or "[]")
+        return [p for p in v if isinstance(p, dict) and p.get("name")] if isinstance(v, list) else []
+    except ValueError:
+        return []
+
+
+def preset_prompt(settings: dict[str, str], name: str) -> str:
+    for p in presets(settings):
+        if p["name"].strip().lower() == (name or "").strip().lower():
+            return str(p.get("prompt", ""))
+    raise AIError(f"AI preset '{name}' not found (Settings > AI text processing > Custom presets)")
+
+
+def translation_system(settings: dict[str, str], to: str, src: str = "", glossary: str = "") -> str:
+    """System prompt for {#translate}: target language, ignored words, glossary pairs."""
+    s = f"You are a translator. Translate the user's text{(' from ' + src) if src else ''} to {to}. " \
+        "Output only the translation."
+    ignored = [w.strip() for w in (settings.get("translation.ignored_words") or "").replace(",", "\n").splitlines()
+               if w.strip()]
+    if ignored:
+        s += "\nNever translate these words; keep them exactly as written: " + ", ".join(ignored)
+    try:
+        gl = json.loads(settings.get("translation.glossaries") or "{}")
+    except ValueError:
+        gl = {}
+    names = [glossary] if glossary else list(gl) if isinstance(gl, dict) else []
+    pairs = []
+    for n in names:
+        for line in str(gl.get(n, "")).splitlines() if isinstance(gl, dict) else []:
+            if "=" in line:
+                a, b = line.split("=", 1)
+                if a.strip() and b.strip():
+                    pairs.append(f"{a.strip()} -> {b.strip()}")
+    if pairs:
+        s += "\nAlways use these translations:\n" + "\n".join(pairs)
+    return s
+
+
 def complete(settings: dict[str, str], prompt: str, provider: str = "", model: str = "", system: str = "",
-             timeout_s: float = 120, max_tokens: int = 1024) -> str:
+             timeout_s: float = 120, max_tokens: int = 1024, raw_system: bool = False) -> str:
+    """raw_system=True skips the user's custom instructions (used by translation)."""
     provider = (provider or settings.get("ai.provider") or "openai").lower()
     if provider not in DEFAULT_MODELS:
         raise AIError(f"unknown AI provider '{provider}'")
     same_provider = (settings.get("ai.provider") or "openai").lower() == provider
     model = model or (settings.get("ai.model") if same_provider else "") or DEFAULT_MODELS[provider]
+    if not raw_system:
+        system = full_system(settings, system)
 
     if provider == "anthropic":
         key = settings.get("ai.anthropic_key", "")
