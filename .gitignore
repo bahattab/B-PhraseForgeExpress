@@ -12,6 +12,9 @@ dist/
 *.db-wal
 *.db-shm
 *.log
+*.out
+*.prof
+*.pstats
 google_oauth_client.json
 google_token.bin
 client_secret*.json
