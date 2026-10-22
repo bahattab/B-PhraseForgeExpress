@@ -61,13 +61,42 @@ def _char_inputs(ch: str) -> list[INPUT]:
     return out
 
 
-def type_text(text: str) -> None:
-    """Type text as Unicode keystrokes. \\r\\n and \\r become Enter, \\t becomes Tab."""
+def _scancode_inputs(ch: str) -> list[INPUT] | None:
+    """Key-by-key with real virtual keys + scan codes (Settings > Text Insertion
+    "Scan codes"), for programs that ignore Unicode packets (remote desktops,
+    some games and terminals). None when the current layout has no key for ch."""
+    r = user32.VkKeyScanW(ch)
+    if r == -1 or r & 0xFF == 0xFF:
+        return None
+    vk, shift_state = r & 0xFF, (r >> 8) & 0xFF
+    mods = [m for bit, m in ((1, K.VK_SHIFT), (2, K.VK_CONTROL), (4, K.VK_MENU)) if shift_state & bit]
+    return ([_vk_events(m, False) for m in mods] + [_vk_events(vk, False), _vk_events(vk, True)]
+            + [_vk_events(m, True) for m in reversed(mods)])
+
+
+def type_text(text: str, method: str = "vk_packet", char_delay_ms: int = 0) -> None:
+    """Type text. \\r\\n and \\r become Enter, \\t becomes Tab.
+    method: "vk_packet"/"unicode" = Unicode keystrokes (VK_PACKET), "scancode" =
+    layout keys with scan codes (Unicode fallback for characters the layout lacks).
+    char_delay_ms > 0 sends one character at a time with that pause."""
     text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    def inputs(ch: str) -> list[INPUT]:
+        if method == "scancode" and ch not in "\n\t":
+            seq = _scancode_inputs(ch)
+            if seq:
+                return seq
+        return _char_inputs(ch)
+
+    if char_delay_ms > 0:
+        for ch in text:
+            _send(inputs(ch))
+            time.sleep(char_delay_ms / 1000)
+        return
     for i in range(0, len(text), CHUNK):
         batch: list[INPUT] = []
         for ch in text[i:i + CHUNK]:
-            batch.extend(_char_inputs(ch))
+            batch.extend(inputs(ch))
         _send(batch)
         if i + CHUNK < len(text):
             time.sleep(CHUNK_DELAY_S)
@@ -99,9 +128,10 @@ def parse_chord(spec: str) -> tuple[list[int], int]:
     return mods, key_vk
 
 
-def send_keys(spec: str, repeat: int = 1) -> None:
+def send_keys(spec: str, repeat: int = 1, delay_ms: int = 0) -> None:
     """Press a chord like 'ctrl+a', 'enter', 'f5'. Several chords may be
-    separated by spaces: 'ctrl+a ctrl+c'."""
+    separated by spaces: 'ctrl+a ctrl+c'. delay_ms pauses after each chord
+    (Settings > Delays > Key press simulation delay)."""
     chords = [c for c in spec.split() if c] or [spec]
     for _ in range(max(1, repeat)):
         for chord in chords:
@@ -109,6 +139,8 @@ def send_keys(spec: str, repeat: int = 1) -> None:
             seq = [_vk_events(m, False) for m in mods] + [_vk_events(vk, False), _vk_events(vk, True)]
             seq += [_vk_events(m, True) for m in reversed(mods)]
             _send(seq)
+            if delay_ms > 0:
+                time.sleep(delay_ms / 1000)
 
 
 def backspace(n: int) -> None:

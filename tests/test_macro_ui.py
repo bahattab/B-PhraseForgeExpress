@@ -1,5 +1,6 @@
 """Macro menus and dialogs: every menu item yields macro text the engine accepts."""
 import os
+import tempfile
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -19,8 +20,8 @@ def app():
 
 
 SAMPLE = {
-    "text": "Hello world", "header": "Name", "label": "Customer", "path": r"C:\temp\a.txt",
-    "file": r"C:\temp\a.xlsx", "search": "x", "xpath": "./a", "query": "SELECT 1", "var": "PATH",
+    "text": "Hello world", "header": "Name", "label": "Customer", "path": os.path.join(tempfile.gettempdir(), "a.txt"),
+    "file": os.path.join(tempfile.gettempdir(), "a.xlsx"), "search": "x", "xpath": "./a", "query": "SELECT 1", "var": "PATH",
     "items": "a\nb", "male": "He", "female": "She", "neutral": "It", "title": "T", "url": "example.com",
     "name": "v1", "content": "c", "expr": "1+2", "regex": r"\d+", "source": "s", "sub": "l",
     "contents": "a", "cond": "a", "then": "yes", "else": "no", "elements": "x\ny", "lang": "ar-SA",
@@ -59,7 +60,8 @@ def test_menu_items_match_reference(app):
     out = _texts(menus["Output"])
     assert out[0] == "Keypress >" and out[-1] == "Set language" and len(out) == 12
     ext = _texts(menus["External data"])
-    assert ext[0] == "Outlook email >" and ext[-1] == "ActiveDirectory value >"
+    # PhraseExpress's items end with ActiveDirectory; PhraseForge adds OneNote after a separator
+    assert ext[0] == "Outlook email >" and ext[-3:] == ["ActiveDirectory value >", "-", "OneNote page"]
     shortcut = next(a for a in menus["Date/Time"].actions() if a.text() == "Date/Time").shortcut().toString()
     assert shortcut == "Ctrl+D"
 

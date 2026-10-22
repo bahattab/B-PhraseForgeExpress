@@ -181,6 +181,75 @@ def test_old_call_style_and_hotkey_order(app, store):
     assert d.popup_hotkey.text() == "ctrl+shift+p"
 
 
+def test_app_method_table(app, store):
+    d = _dialog(store)
+    d.app_methods.load_json('{"winword.exe": "type"}')
+    d.app_methods.add_row("Notepad.EXE", "paste")
+    d.save()
+    assert json.loads(store.setting("output.app_methods")) == {"winword.exe": "type", "notepad.exe": "paste"}
+    d2 = _dialog(store)
+    assert d2.app_methods.table.rowCount() == 2
+
+
+def test_legacy_keys_migrate_once(app):
+    from phraseforge.ui.settings_schema import migrate_legacy
+    s = Store(":memory:")
+    s.set_setting("popup.width", "420")
+    s.set_setting("popup.sort", "usage")
+    s.set_setting("popup.search_content", "1")
+    s.set_setting("features.clipboard_cache", "0")     # old Features checkbox was off
+    s.set_setting("stats.enabled", "0")
+    ensure_defaults(s)
+    assert s.setting("menu.width") == "420"
+    assert s.setting("menu.sort_by") == "usage" and s.setting("menu.sort_order") == "desc"
+    assert s.setting("quicksearch.descriptions") == "0"
+    assert s.setting("clipboard_history.enabled") == "0"
+    assert s.setting("features.clipboard_cache") == "1"   # neutralized for old readers
+    assert s.setting("features.usage_statistics") == "0"
+    s.set_setting("clipboard_history.enabled", "1")      # user turns it back on later
+    assert migrate_legacy(s) == 0 and s.setting("clipboard_history.enabled") == "1"
+
+
+def test_no_dead_options_in_dialog(app, store):
+    """Options PhraseForge has no use for are gone from the dialog and the schema."""
+    gone = ("updates.channel", "updates.beta", "updates.auto", "cache.mode", "features.suggest_gender",
+            "display.highlight_unedited_languages", "menu.show_language_buttons", "menu.language_hotkey",
+            "features.clipboard_cache")
+    d = _dialog(store)
+    bound = {k for k, _g, _p, _w in d._bindings}
+    for k in gone:
+        assert k not in SCHEMA and k not in bound, k
+    assert "autotext.pause_ms" in bound and SCHEMA["autotext.pause_ms"] == "700"
+    assert "clipboard_history.enabled" in bound       # the Features > Clipboard Cache checkbox
+
+
+def unused_schema_keys() -> list[str]:
+    """SCHEMA keys that no runtime module reads (settings dialog/schema don't count)."""
+    import re
+    from pathlib import Path
+    from phraseforge.ui.settings_schema import UI_ONLY_KEYS
+    root = Path(__file__).resolve().parent.parent / "phraseforge"
+    skip = {"settings_dialog.py", "settings_schema.py"}
+    src = "\n".join(p.read_text(encoding="utf-8", errors="replace")
+                    for p in root.rglob("*.py") if p.name not in skip)
+    out = []
+    for k in sorted(SCHEMA):
+        if k in UI_ONLY_KEYS or f'"{k}"' in src or f"'{k}'" in src:
+            continue
+        # keys built at runtime, e.g. f"sound.{event}.enabled" or f"ai.{provider}_key"
+        prefix = k.split(".")[0] + "."
+        if re.search(r'f["\']' + re.escape(prefix) + r"\{", src):
+            continue
+        out.append(k)
+    return out
+
+
+def test_every_schema_key_has_a_runtime_reader():
+    unused = unused_schema_keys()
+    assert not unused, ("Settings that nothing reads (wire them up, remove them, or list them in "
+                        f"settings_schema.UI_ONLY_KEYS): {unused}")
+
+
 def test_delimiter_codec():
     for s in ["\t\n .,;:!?)]}'\"", "\x00\n\t\r \"'<{([/\\-_", "#1 a#b", "\t5"]:
         assert decode_delimiters(encode_delimiters(s)) == s

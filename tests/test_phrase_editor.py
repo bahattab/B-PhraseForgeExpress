@@ -91,11 +91,13 @@ def test_all_trigger_types_roundtrip(app, store):
     assert ed.save()
     got = store.get_phrase(p.id)
     kinds = [TriggerKind(t.kind) for t in got.triggers]
-    assert kinds == [TriggerKind.AUTOTEXT, TriggerKind.REGEX, TriggerKind.HOTKEY, TriggerKind.APP_FOCUS,
-                     TriggerKind.TIME, TriggerKind.CLIPBOARD, TriggerKind.CLIPBOARD_REGEX]
+    assert kinds == [TriggerKind.AUTOTEXT, TriggerKind.SMARTCOMPLETE, TriggerKind.REGEX, TriggerKind.HOTKEY,
+                     TriggerKind.APP_FOCUS, TriggerKind.TIME, TriggerKind.CLIPBOARD, TriggerKind.CLIPBOARD_REGEX]
     at = got.triggers[0]
     assert at.mode == AutotextMode.CONFIRM and at.case_sensitive and not at.word_start_only
-    # reload: UI rows (incl. SmartComplete + extras) come back in order
+    assert (at.exec_mode, at.word_pos) == ("confirm", "end")
+    assert got.triggers[4].window_scope == "program"
+    # reload: every row, incl. SmartComplete, comes back from the trigger columns in order
     ed2 = PhraseEditor(store)
     ed2.load(p.id)
     back = ed2.triggers.get_rows()

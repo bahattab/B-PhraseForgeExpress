@@ -351,6 +351,7 @@ class MainWindow(QMainWindow):
         self._refresh_timer.setSingleShot(True)
         self._refresh_timer.setInterval(150)
         self._refresh_timer.timeout.connect(self.refresh_tree)
+        self._last_tree_settings = self._tree_settings()
         self.store.on_change(self._on_store_change)
 
         self.set_columns(3 if self.three_columns else 2, save=False)
@@ -504,7 +505,8 @@ class MainWindow(QMainWindow):
         imp = menu_with(self, [("File import (JSON, CSV, TXT)...", "import", self.import_file),
                                ("Files including directory structure...", "folder_tree", self.import_folder),
                                None,
-                               ("TextExpander (.csv / .textexpander)...", "textexpander", self.import_textexpander)])
+                               ("TextExpander (.csv / .textexpander)...", "textexpander", self.import_textexpander),
+                               ("From OneNote...", "on_notebook", self.import_onenote)])
         exp = menu_with(self, [("Export to file (JSON, CSV)...", "export", self.export_file),
                                ("Text files (one file per phrase)...", "text_file", self.export_text_folder)])
         self.btn_import = g.add_large("Import", "import", menu=imp, split=False)
@@ -703,9 +705,21 @@ class MainWindow(QMainWindow):
             self._content_focus(False)
 
     # ================================================================= selection
+    TREE_SETTINGS = ("features.last_used_folder", "clipboard_history.enabled", "last_used.max",
+                     "features.usage_statistics")
+
+    def _tree_settings(self) -> tuple:
+        return tuple(self.store.setting(k, "") for k in self.TREE_SETTINGS)
+
     def _on_store_change(self, kind: str, _id) -> None:
         if kind in ("folder", "phrase", "clipboard"):
             self._refresh_timer.start()
+        elif kind == "setting":
+            # only settings that change the tree's special folders trigger a rebuild
+            cur = self._tree_settings()
+            if cur != getattr(self, "_last_tree_settings", None):
+                self._last_tree_settings = cur
+                self._refresh_timer.start()
 
     def refresh_tree(self) -> None:
         self.panel.refresh()
@@ -929,13 +943,32 @@ class MainWindow(QMainWindow):
                                          content_format="html" if rich else "text"))
         self.refresh_tree()
         self.select_phrase(p.id)
-        self._focus_description()
+        # Settings > Display: "Prompt for additional information after creating a new phrase"
+        if self.store.setting("display.prompt_after_new_phrase", "1") == "1":
+            self._focus_description()
+        else:
+            self._focus_content()
         return p
 
     def _focus_description(self) -> None:
-        fn = getattr(self.editor, "focus_description", None)
-        if callable(fn):
-            QTimer.singleShot(0, fn)
+        """Put the cursor in the editor's Description field with its text selected."""
+        def go():
+            fn = getattr(self.editor, "focus_description", None)
+            if callable(fn):
+                fn()
+                return
+            d = getattr(self.editor, "description", None)
+            if d is not None and hasattr(d, "selectAll"):
+                d.setFocus()
+                d.selectAll()
+        QTimer.singleShot(0, go)
+
+    def _focus_content(self) -> None:
+        def go():
+            ce = getattr(self.editor, "content_edit", None)
+            if ce is not None:
+                ce.setFocus()
+        QTimer.singleShot(0, go)
 
     def duplicate_phrase(self, phrase_id: int) -> Phrase | None:
         p = self.store.get_phrase(phrase_id)
@@ -1517,6 +1550,62 @@ class MainWindow(QMainWindow):
         self.last_import_summary = self.textexpander_summary(rep)
         if show_message:
             QMessageBox.information(self, "Import from TextExpander", self.last_import_summary)
+        return rep
+
+    # ---- OneNote import
+    def import_onenote(self, client_factory=None) -> None:
+        """Import > From OneNote...: tick notebooks/sections, each page becomes a phrase."""
+        from phraseforge.ui.onenote_picker import OneNotePicker, default_client_factory
+        factory = client_factory or default_client_factory(self.store.setting("onenote.exe", ""))
+        dlg = OneNotePicker(self, mode="import", client_factory=factory)
+        if dlg.exec():
+            refs = dlg.checked_refs()
+            if refs:
+                self.import_onenote_refs(refs, factory)
+
+    def import_onenote_refs(self, refs: list[str], client_factory, show_message: bool = True):
+        """Run the import with a progress dialog. Runs on the UI thread (store listeners update
+        widgets), keeping the window responsive between pages. Returns the report or None."""
+        from PySide6.QtWidgets import QApplication, QProgressDialog
+        from phraseforge.importers.onenote import import_nodes
+        prog = QProgressDialog("Reading OneNote...", "Cancel", 0, 0, self)
+        prog.setWindowTitle("Import from OneNote")
+        prog.setWindowModality(Qt.WindowModal)
+        prog.setMinimumDuration(300)
+
+        def progress(done: int, total: int, name: str = "") -> bool:
+            prog.setMaximum(max(total, 1))
+            prog.setValue(done)
+            prog.setLabelText(f"Importing {done} of {total}\n{name}")
+            QApplication.processEvents()
+            return not prog.wasCanceled()
+
+        try:
+            rep = import_nodes(self.store, client_factory(), refs,
+                               include_ocr=self.store.setting("onenote.include_ocr", "0") == "1",
+                               progress=progress)
+        except Exception as e:
+            prog.close()
+            if show_message:
+                QMessageBox.warning(self, "Import from OneNote", str(e))
+            return None
+        prog.close()
+        self.refresh_tree()
+        if getattr(rep, "folder_id", None) is not None:
+            self.select_folder(rep.folder_id)
+            it = self.tree.currentItem()
+            if it:
+                it.setExpanded(True)
+        lines = [f"Imported {rep.imported} OneNote page(s) as phrases."]
+        errors = list(getattr(rep, "errors", []) or [])
+        if errors:
+            lines.append(f"{len(errors)} page(s) could not be read:")
+            lines += [f"  {e}" for e in errors[:10]]
+            if len(errors) > 10:
+                lines.append(f"  ... and {len(errors) - 10} more")
+        self.last_import_summary = "\n".join(lines)
+        if show_message:
+            QMessageBox.information(self, "Import from OneNote", self.last_import_summary)
         return rep
 
     @staticmethod
