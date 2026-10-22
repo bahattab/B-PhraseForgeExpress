@@ -1,0 +1,1640 @@
+"""PhraseForge main window, laid out like the PhraseExpress reference
+(reference/phraseexpress/01_main_phrase_selected.png):
+
+  ribbon (File | Phrases | View | Help | [Phrase content]) + search box + user
+  quick toolbar
+  tree panel | (phrase list in three-column mode) | editor
+  status bar: breadcrumb links ................................ editor info
+"""
+from __future__ import annotations
+
+import getpass
+import json
+import os
+from datetime import date
+from pathlib import Path
+from typing import Any, Callable
+
+from PySide6.QtCore import QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QActionGroup, QColor, QDesktopServices, QFont, QKeySequence, QPainter, QPixmap, QShortcut
+from PySide6.QtWidgets import (
+    QApplication, QCheckBox, QDialog, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow,
+    QMenu, QMessageBox, QPlainTextEdit, QSplitter, QStackedWidget, QStatusBar, QToolBar, QToolButton,
+    QVBoxLayout, QWidget,
+)
+
+from phraseforge.db import Store, hash_password
+from phraseforge.host import Cancelled, ExpansionContext, FormField
+from phraseforge.models import Folder, Phrase, Trigger
+from phraseforge.ui import pe_style
+from phraseforge.ui.i18n import tr
+from phraseforge.ui.iconset import icon
+from phraseforge.ui.main_dialogs import (
+    FileMenu, FindReplaceDialog, FolderDialog, HistoryDialog, MoveToDialog, PhrasePropertiesDialog,
+    PrintPreviewDialog, ProgramRestrictionsDialog, RestoreBackupDialog, big_submenu, color_menu, print_html,
+)
+from phraseforge.ui.ribbon import Ribbon, menu_with
+from phraseforge.ui.tree_panel import (
+    ROLE_ID, ROLE_KIND, PhraseList, TreePanel, set_item_color, sorted_folders, sorted_phrases,
+)
+
+__all__ = ["MainWindow", "FolderDialog", "preview_text", "PreviewHost", "macro_catalog", "ROLE_KIND", "ROLE_ID"]
+
+
+# ======================================================================= preview host
+class PreviewHost:
+    """HostServices stand-in for previews: never blocks, returns placeholders."""
+
+    def __init__(self, store: Store):
+        self.store = store
+
+    def ask_input(self, prompt, default="", multiline=False):
+        return default or f"[{prompt}]"
+
+    def show_form(self, title, fields: list[FormField]):
+        return {f.name: (f.default if f.default not in ("", None) else f"[{f.label or f.name}]") for f in fields}
+
+    def choose(self, prompt, options, multi=False):
+        return options[:1] if options else [f"[{prompt}]"]
+
+    def pick_date(self, prompt, default_iso):
+        return default_iso or date.today().isoformat()
+
+    def message(self, text, title=""):
+        pass
+
+    def select_screen_region(self):
+        return None
+
+    def get_clipboard(self):
+        return "[clipboard]"
+
+    def set_clipboard(self, text):
+        pass
+
+    def clipboard_history(self, index):
+        return self.store.clipboard_at(index) or f"[clipboard #{index}]"
+
+    def phrase_content(self, description_or_id):
+        p = None
+        if str(description_or_id).isdigit():
+            p = self.store.get_phrase(int(description_or_id))
+        p = p or self.store.find_phrase(str(description_or_id))
+        return (p.content, p.content_format) if p else None
+
+    def get_var(self, name, scope="global"):
+        return self.store.get_var(name, scope)
+
+    def set_var(self, name, value, scope="global"):
+        pass
+
+    def run_program(self, cmd, args="", wait=False, workdir=""):
+        return 0
+
+    def open_target(self, target):
+        pass
+
+    def wait_for_window(self, title_substring, timeout_s):
+        return True
+
+    def focused_app(self):
+        return ("preview.exe", "Preview")
+
+    def http_request(self, method, url, headers=None, body=None, timeout_s=30):
+        return f"[{method} {url}]"
+
+    def ai_complete(self, prompt, provider="", model="", system=""):
+        return "[AI response]"
+
+    def ocr_region(self, language="English", keep_line_breaks=True):
+        return f"[OCR text, {language}]"
+
+    def ocr_image(self, path, language="English"):
+        return f"[OCR of {path}]"
+
+    def setting(self, key, default=""):
+        return self.store.setting(key, default)
+
+
+def preview_text(store: Store, content: str) -> str:
+    """Expand content with PreviewHost; falls back to raw content if macros are unavailable."""
+    try:
+        from phraseforge.macros import MacroEngine
+    except Exception:
+        return content
+    try:
+        return MacroEngine(PreviewHost(store), store).expand_to_text(
+            content, ExpansionContext(phrase_description="preview"))
+    except Cancelled:
+        return "(cancelled)"
+    except Exception as e:
+        return f"⚠ {e}"
+
+
+def macro_catalog() -> list:
+    try:
+        from phraseforge.macros import catalog
+        return list(catalog())
+    except Exception:
+        return []
+
+
+# ======================================================================= fallback editors
+class FallbackPhraseEditor(QWidget):
+    """Minimal editor used only if ui.phrase_editor (owned by another module) is missing."""
+    content_focus_changed = Signal(bool)
+    saved = Signal(int)
+
+    def __init__(self, store: Store, parent=None):
+        super().__init__(parent)
+        self.store = store
+        self.phrase_id: int | None = None
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(12, 6, 12, 6)
+        lay.addWidget(pe_style.caption("Description"))
+        self.description = QLineEdit()
+        lay.addWidget(self.description)
+        lay.addWidget(pe_style.caption("Phrase content"))
+        self.content = QPlainTextEdit()
+        self.content.setObjectName("ContentEditor")
+        lay.addWidget(self.content, 1)
+        self._dirty = False
+        self.description.textEdited.connect(self._mark)
+        self.content.textChanged.connect(self._mark)
+
+    def _mark(self, *_):
+        self._dirty = True
+
+    def load(self, phrase_id: int) -> None:
+        p = self.store.get_phrase(phrase_id)
+        self.phrase_id = phrase_id
+        self.description.setText(p.description if p else "")
+        self.content.blockSignals(True)
+        self.content.setPlainText(p.content if p else "")
+        self.content.blockSignals(False)
+        self._dirty = False
+
+    def is_dirty(self) -> bool:
+        return self._dirty
+
+    def save(self) -> bool:
+        if self.phrase_id is None or not self._dirty:
+            return True
+        p = self.store.get_phrase(self.phrase_id)
+        if not p:
+            return False
+        p.description = self.description.text().strip() or p.description
+        p.content = self.content.toPlainText()
+        self.store.update_phrase(p)
+        self._dirty = False
+        self.saved.emit(p.id)
+        return True
+
+    def focus_description(self) -> None:
+        self.description.setFocus()
+        self.description.selectAll()
+
+
+class FallbackFolderEditor(QWidget):
+    saved = Signal(int)
+
+    def __init__(self, store: Store, parent=None):
+        super().__init__(parent)
+        self.store = store
+        self.folder_id: int | None = None
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(12, 6, 12, 6)
+        lay.addWidget(pe_style.caption("Description"))
+        self.description = QLineEdit()
+        self.description.editingFinished.connect(self.save)
+        lay.addWidget(self.description)
+        lay.addStretch(1)
+
+    def load(self, folder_id: int) -> None:
+        f = self.store.get_folder(folder_id)
+        self.folder_id = folder_id
+        self.description.setText(f.name if f else "")
+
+    def save(self) -> bool:
+        f = self.store.get_folder(self.folder_id) if self.folder_id else None
+        if f and self.description.text().strip() and self.description.text().strip() != f.name:
+            f.name = self.description.text().strip()
+            self.store.update_folder(f)
+            self.saved.emit(f.id)
+        return True
+
+    def focus_description(self) -> None:
+        self.description.setFocus()
+        self.description.selectAll()
+
+
+class ClipEntryView(QWidget):
+    """Read-only view of one Clipboard Cache entry."""
+
+    def __init__(self, store: Store, parent=None):
+        super().__init__(parent)
+        self.store = store
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(12, 6, 12, 6)
+        lay.addWidget(pe_style.caption("Clipboard content"))
+        self.text = QPlainTextEdit()
+        self.text.setReadOnly(True)
+        lay.addWidget(self.text, 1)
+
+    def load(self, entry_id: int) -> None:
+        e = next((e for e in self.store.clipboard_entries(500) if e.id == entry_id), None)
+        self.text.setPlainText(e.text if e else "")
+
+
+def initials_avatar(name: str) -> QPixmap:
+    parts = [p for p in name.replace(".", " ").split() if p] or ["?"]
+    ini = (parts[0][0] + (parts[1][0] if len(parts) > 1 else "")).upper()
+    pm = QPixmap(22, 22)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setBrush(QColor("#e8a85c"))
+    p.setPen(Qt.NoPen)
+    p.drawEllipse(0, 0, 22, 22)
+    p.setPen(QColor("white"))
+    f = QFont("Segoe UI", 7)
+    p.setFont(f)
+    p.drawText(pm.rect(), Qt.AlignCenter, ini)
+    p.end()
+    return pm
+
+
+# ======================================================================= main window
+class MainWindow(QMainWindow):
+    SEARCH_SCOPES = (("all", "Search everywhere"), ("description", "Search in Description"),
+                     ("content", "Search in Phrase content"), ("autotext", "Search in Autotext"))
+
+    def __init__(self, store: Store, on_test_phrase: Callable[[int], None] | None = None):
+        super().__init__()
+        self.store = store
+        self.on_test_phrase = on_test_phrase
+        from phraseforge import __version__
+        self.setWindowTitle(f"PhraseForge v{__version__}")
+        try:
+            from phraseforge.ui.icons import app_icon
+            self.setWindowIcon(app_icon())
+        except Exception:
+            pass
+        self.resize(1280, 820)
+        app = QApplication.instance()
+        if app is not None and "#Ribbon" not in (app.styleSheet() or ""):
+            pe_style.apply(app)
+
+        self.current: Phrase | None = None
+        self.sel_kind: str | None = None
+        self.sel_id: Any = None
+        self.last_import_summary = ""
+        self._clip: list[tuple[str, int, str]] = []        # (kind, id, "cut"|"copy")
+        self._nav: list[tuple[str, Any]] = []
+        self._nav_pos = -1
+        self._navigating = False
+        self.three_columns = self.store.setting("view.layout", "two") == "three"
+
+        central = QWidget()
+        cl = QVBoxLayout(central)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(0)
+        self.ribbon = Ribbon()
+        cl.addWidget(self.ribbon)
+        self.quickbar = self._build_quick_toolbar()
+        cl.addWidget(self.quickbar)
+
+        self.splitter = QSplitter(Qt.Horizontal)
+        self.panel = TreePanel(store)
+        self.tree = self.panel.tree
+        self.phrase_list = PhraseList(store, self.panel)
+        self.editor_stack = QStackedWidget()
+        self.editor_stack.setObjectName("EditorStack")
+        self.blank = QWidget()
+        self.editor_stack.addWidget(self.blank)
+        self._editors: dict[str, QWidget] = {}
+        self.splitter.addWidget(self.panel)
+        self.splitter.addWidget(self.phrase_list)
+        self.splitter.addWidget(self.editor_stack)
+        self.splitter.setStretchFactor(2, 1)
+        self.splitter.setSizes([390, 290, 900])
+        cl.addWidget(self.splitter, 1)
+        self.setCentralWidget(central)
+
+        sb = QStatusBar()
+        self.breadcrumb = QLabel()
+        self.breadcrumb.setTextFormat(Qt.RichText)
+        self.breadcrumb.linkActivated.connect(self._breadcrumb_clicked)
+        self.info = QLabel()
+        sb.addWidget(self.breadcrumb, 1)
+        sb.addPermanentWidget(self.info)
+        self.setStatusBar(sb)
+
+        self._build_search()
+        self._build_user_label()
+        self._build_file_menu()
+        self._build_phrases_tab()
+        self._build_view_tab()
+        self._build_help_tab()
+        self._build_content_tab()
+        self._build_shortcuts()
+
+        self.panel.selected.connect(self._on_selected)
+        self.panel.tree.dropped.connect(self.move_item)
+        self.panel.tree.customContextMenuRequested.connect(self._tree_menu)
+        self.panel.tree.itemChanged.connect(self._item_renamed)
+        self.phrase_list.selected.connect(self._on_list_selected)
+        self.phrase_list.open_folder.connect(self._open_folder_from_list)
+        self.phrase_list.list.customContextMenuRequested.connect(self._list_menu)
+
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.setInterval(150)
+        self._refresh_timer.timeout.connect(self.refresh_tree)
+        self.store.on_change(self._on_store_change)
+
+        self.set_columns(3 if self.three_columns else 2, save=False)
+        self.refresh_tree()
+        self._update_status()
+        self._update_actions()
+
+    # ================================================================= building
+    @property
+    def unlocked(self) -> set[int]:
+        return self.panel.unlocked
+
+    def _build_quick_toolbar(self) -> QToolBar:
+        tb = QToolBar()
+        tb.setObjectName("QuickToolbar")
+        tb.setIconSize(QSize(16, 16))
+        tb.setMovable(False)
+        self.act_back = tb.addAction(icon("back"), "Back", self.nav_back)
+        self.act_forward = tb.addAction(icon("forward"), "Forward", self.nav_forward)
+        a = tb.addAction(icon("sync"), "Send/Receive updates (not available)")
+        a.setEnabled(False)
+        tb.addAction(icon("new_folder"), "New Folder (Ctrl+O)", lambda: self.new_folder())
+        tb.addAction(icon("new_phrase"), "New Phrase (Ctrl+N)", lambda: self.new_phrase())
+        tb.addAction(icon("column_toggle"), "Toggle two/three columns",
+                     lambda: self.set_columns(2 if self.three_columns else 3))
+        return tb
+
+    def _build_search(self) -> None:
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search in Description [F3]")
+        self.search.setFixedWidth(300)
+        self.search.setClearButtonEnabled(True)
+        scope_menu = QMenu(self)
+        grp = QActionGroup(scope_menu)
+        for key, text in self.SEARCH_SCOPES:
+            a = scope_menu.addAction(text)
+            a.setCheckable(True)
+            a.setChecked(key == "description")
+            a.triggered.connect(lambda _=False, k=key, t=text: self.set_search_scope(k, t))
+            grp.addAction(a)
+        self.panel_search_scope = "description"
+        self.panel.search_scope = "description"
+        act = self.search.addAction(icon("search"), QLineEdit.TrailingPosition)
+        act.setToolTip("Search options")
+        act.triggered.connect(lambda: scope_menu.exec(self.search.mapToGlobal(self.search.rect().bottomRight())))
+        self.search_scope_menu = scope_menu
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(200)
+        self._search_timer.timeout.connect(self._apply_search)
+        self.search.textChanged.connect(lambda *_: self._search_timer.start())
+        self.ribbon.set_center_widget(self.search)
+
+    def set_search_scope(self, key: str, text: str) -> None:
+        self.panel.search_scope = key
+        self.search.setPlaceholderText(f"{text} [F3]")
+        self._apply_search()
+
+    def _apply_search(self) -> None:
+        self.panel.search_text = self.search.text()
+        self.refresh_tree()
+
+    @staticmethod
+    def windows_user_name() -> str:
+        """Display name (e.g. 'Jane Doe') of the signed-in Windows user, else the login name."""
+        if os.name == "nt":
+            try:
+                import ctypes
+                size = ctypes.c_ulong(0)
+                fn = ctypes.windll.secur32.GetUserNameExW
+                fn(3, None, ctypes.byref(size))              # 3 = NameDisplay
+                if size.value:
+                    buf = ctypes.create_unicode_buffer(size.value)
+                    if fn(3, buf, ctypes.byref(size)) and buf.value.strip():
+                        return buf.value.strip()
+            except Exception:
+                pass
+        return os.environ.get("USERNAME") or getpass.getuser() or "User"
+
+    def _build_user_label(self) -> None:
+        user = self.windows_user_name()
+        b = QToolButton()
+        b.setIcon(initials_avatar(user))
+        b.setText(user)
+        b.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        b.setAutoRaise(True)
+        b.setToolTip("Signed in as Windows user " + user)
+        self.user_button = b
+        self.ribbon.set_right_widget(b)
+
+    def _build_file_menu(self) -> None:
+        m = FileMenu(self)
+        open_menu = big_submenu(m, [("Local phrase file", "local_file", self.open_phrase_file, True),
+                                    ("Connect to SQL database [Demo]", "database", None, False)])
+        m.add("Open", "open", open_menu)
+        m.add("Save As...", "save_as", self.save_as)
+        m.addSeparator()
+        m.add("Restore from backup", "restore", self.restore_backup)
+        m.add("Send/Receive updates", "sync", None, "Ctrl+F5", enabled=False)
+        m.add("User Manager", "users", None, enabled=False)
+        m.add("Settings", "settings", self.show_settings)
+        mig = big_submenu(m, [("Save settings and phrases into migration file", "save_as", self.migration_save, True),
+                              ("Restore settings and phrases from migration file", "restore", self.migration_restore, True)])
+        m.add("Migration Assistant", "migration", mig)
+        m.addSeparator()
+        m.add("Exit", "exit", self.close)
+        self.file_menu = m
+        self.ribbon.set_file_menu(m)
+
+    def _build_phrases_tab(self) -> None:
+        t = self.ribbon.add_tab("phrases", "Phrases")
+        g = t.add_group("Insert")
+        new_menu = menu_with(self, [("Phrase", "new_phrase", lambda: self.new_phrase()),
+                                    ("Rich text phrase", "phrase_rich", lambda: self.new_phrase(rich=True)),
+                                    ("Folder", "new_folder", lambda: self.new_folder())])
+        self.btn_new_folder = g.add_large("New\nFolder", "new_folder", lambda: self.new_folder(), key="New Folder")
+        self.btn_new_phrase = g.add_large("New\nPhrase", "new_phrase", lambda: self.new_phrase(), menu=new_menu,
+                                          key="New Phrase")
+        self.btn_new_folder.setToolTip("New Folder (Ctrl+O)")
+        self.btn_new_phrase.setToolTip("New Phrase (Ctrl+N)")
+        g = t.add_group("Sync")
+        b = g.add_large("Send/Receive\nupdates", "sync", None, menu=menu_with(self, [("Not available", "", None)]))
+        b.setEnabled(False)
+        b.setToolTip("Synchronization is not available in PhraseForge")
+        g = t.add_group("Edit")
+        self.color_menu = color_menu(self, self.set_color)
+        self.btn_color = g.add_large("Color", "color", menu=self.color_menu, split=False)
+        b = g.add_large("Access\nrights", "access_rights")
+        b.setEnabled(False)
+        self.btn_restrict = g.add_large("Program\nrestrictions", "program_restrictions", self.program_restrictions)
+        c = g.add_column()
+        self.btn_up = c.add_small("Up", "up", lambda: self.move_up_down(-1))
+        self.btn_down = c.add_small("Down", "down", lambda: self.move_up_down(1))
+        self.btn_move = c.add_small("Move to...", "move_to", self.move_to_dialog)
+        c = g.add_column()
+        self.btn_dup = c.add_small("Duplicate", "duplicate", self.duplicate_selected)
+        self.btn_find = c.add_small("Find and Replace", "find_replace", self.find_replace)
+        self.history_menu = QMenu(self)
+        self.history_menu.aboutToShow.connect(self._fill_history_menu)
+        self.btn_history = c.add_small("Edit history", "edit_history", menu=self.history_menu, split=False)
+        g = t.add_group("Clipboard")
+        self.btn_paste = g.add_large("Paste", "paste", self.paste_items)
+        c = g.add_column()
+        self.btn_cut = c.add_small("Cut", "cut", lambda: self.clip_items("cut"))
+        self.btn_copy = c.add_small("Copy", "copy", lambda: self.clip_items("copy"))
+        g = t.add_group("Languages")
+        lang_menu = QMenu(self)
+        lang_menu.aboutToShow.connect(lambda: self._fill_language_menu(lang_menu))
+        g.add_large("Manage languages", "languages", menu=lang_menu, split=False)
+        g = t.add_group("Import / Export")
+        imp = menu_with(self, [("File import (JSON, CSV, TXT)...", "import", self.import_file),
+                               ("Files including directory structure...", "folder_tree", self.import_folder),
+                               None,
+                               ("TextExpander (.csv / .textexpander)...", "textexpander", self.import_textexpander)])
+        exp = menu_with(self, [("Export to file (JSON, CSV)...", "export", self.export_file),
+                               ("Text files (one file per phrase)...", "text_file", self.export_text_folder)])
+        self.btn_import = g.add_large("Import", "import", menu=imp, split=False)
+        self.btn_export = g.add_large("Export", "export", menu=exp, split=False)
+        g.add_large("Print\nphrases", "print", self.print_phrases)
+
+    def _build_view_tab(self) -> None:
+        t = self.ribbon.add_tab("view", "View")
+        g = t.add_group("Layout")
+        self.btn_two = g.add_large("Two\ncolumns", "two_columns", lambda: self.set_columns(2))
+        self.btn_three = g.add_large("Three\ncolumns", "three_columns", lambda: self.set_columns(3))
+        self.btn_flat = g.add_large("Flat\nlist", "flat_list", self.toggle_flat)
+        self.btn_fit = g.add_large("Resize column\nto fit contents", "fit_columns", self.phrase_list.fit_columns)
+        for b in (self.btn_two, self.btn_three, self.btn_flat):
+            b.setCheckable(True)
+        self.btn_two.setToolTip("Two columns (Ctrl+2)")
+        self.btn_three.setToolTip("Three columns (Ctrl+3)")
+        g = t.add_group("Editor")
+        box = QWidget()
+        grid = QHBoxLayout(box)
+        grid.setContentsMargins(4, 0, 4, 0)
+        left, right = QVBoxLayout(), QVBoxLayout()
+        self.view_options: dict[str, QCheckBox] = {}
+        for key, text, default, col in (("show_rulers", "Show rulers", "0", left),
+                                        ("show_special_chars", "Show special characters", "0", left),
+                                        ("word_wrap", "Word Wrap", "1", left),
+                                        ("show_macro_params", "Show macro parameters", "0", right)):
+            cb = QCheckBox(text)
+            cb.setChecked(self.store.setting(f"view.{key}", default) == "1")
+            cb.toggled.connect(lambda on, k=key: self.set_view_option(k, on))
+            col.addWidget(cb)
+            self.view_options[key] = cb
+        right.addStretch(1)
+        left.addStretch(1)
+        grid.addLayout(left)
+        grid.addLayout(right)
+        g.add_widget(box)
+        g.caption.setText("")
+
+    def _build_help_tab(self) -> None:
+        t = self.ribbon.add_tab("help", "Help")
+        g = t.add_group("Statistics")
+        g.add_large("Statistics", "statistics", self.show_stats)
+        g = t.add_group("Program")
+        g.add_large("Check for\nupdates", "updates", self.check_updates)
+        g.add_large("About\nPhraseForge", "about", self.about)
+        g = t.add_group("Support")
+        g.add_large("Get\nsupport", "support", self.get_support)
+        g.add_large("Help", "help", self.open_help)
+        for grp in t.groups.values():
+            grp.caption.setText("")
+
+    def _build_content_tab(self) -> None:
+        """'Phrase content' contextual tab, filled by ui.content_tab when available."""
+        self.content_tab_ready = False
+        try:
+            from phraseforge.ui.content_tab import build_content_tab
+        except Exception:
+            return
+        try:
+            ed = self._editor("phrase")
+            build_content_tab(self.ribbon, ed)
+            self.content_tab_ready = "content" in self.ribbon.tabs
+        except Exception:
+            self.content_tab_ready = False
+
+    def _build_shortcuts(self) -> None:
+        def sc(seq, fn):
+            s = QShortcut(QKeySequence(seq), self)
+            s.activated.connect(fn)
+            return s
+        sc("F3", lambda: (self.search.setFocus(), self.search.selectAll()))
+        sc("Ctrl+N", lambda: self.new_phrase())
+        sc("Ctrl+O", lambda: self.new_folder())
+        sc("Ctrl+2", lambda: self.set_columns(2))
+        sc("Ctrl+3", lambda: self.set_columns(3))
+        sc("Alt+Return", self.properties_selected)
+        sc("Alt+Left", self.nav_back)
+        sc("Alt+Right", self.nav_forward)
+        s = QShortcut(QKeySequence(Qt.Key_Delete), self.tree)
+        s.setContext(Qt.WidgetShortcut)
+        s.activated.connect(self.delete_selected)
+        s = QShortcut(QKeySequence("F2"), self.tree)
+        s.setContext(Qt.WidgetShortcut)
+        s.activated.connect(self.rename_selected)
+
+    # ================================================================= editors
+    def _editor(self, kind: str) -> QWidget:
+        """Editor page for kind in phrase/folder/last_used/clipboard_cache/clip (created lazily)."""
+        if kind in self._editors:
+            return self._editors[kind]
+        ed: QWidget | None = None
+        try:
+            from phraseforge.ui import phrase_editor as pe
+            if kind == "phrase":
+                ed = pe.PhraseEditor(self.store)
+            elif kind == "folder":
+                ed = pe.FolderEditor(self.store)
+            elif kind in ("last_used", "clipboard_cache"):
+                ed = pe.SpecialFolderEditor(self.store, kind)
+        except Exception:
+            ed = None
+        if ed is None:
+            if kind == "phrase":
+                ed = FallbackPhraseEditor(self.store)
+            elif kind == "folder":
+                ed = FallbackFolderEditor(self.store)
+            elif kind == "clip":
+                ed = ClipEntryView(self.store)
+            else:
+                ed = QWidget()
+        for sig, slot in (("content_focus_changed", self._content_focus), ("saved", self._editor_saved),
+                          ("info_changed", self.info.setText), ("status_changed", self._editor_status)):
+            s = getattr(ed, sig, None)
+            if s is not None:
+                try:
+                    s.connect(slot)
+                except Exception:
+                    pass
+        if kind == "phrase":
+            self._push_view_options(ed)
+        self._editors[kind] = ed
+        self.editor_stack.addWidget(ed)
+        return ed
+
+    @property
+    def editor(self) -> QWidget:
+        return self.editor_stack.currentWidget()
+
+    def save_current(self) -> bool:
+        """Save the visible editor if it has changes. Returns False only when saving failed."""
+        ed = self.editor_stack.currentWidget()
+        if ed is self.blank or not hasattr(ed, "save"):
+            return True
+        dirty = getattr(ed, "is_dirty", None)
+        dirty = dirty() if callable(dirty) else getattr(ed, "dirty", True)
+        if not dirty:
+            return True
+        try:
+            ed.save()      # editors return False for "nothing to save"; only exceptions are failures
+            return True
+        except Exception as e:
+            QMessageBox.warning(self, "Save", str(e))
+            return False
+
+    save = save_current
+
+    def _content_focus(self, on: bool) -> None:
+        if not self.content_tab_ready:
+            return
+        if on:
+            self.ribbon.set_contextual("content", True, activate=True)
+        else:
+            # Like PhraseExpress: keep "Phrase content" while the user works in the ribbon,
+            # its menus or a macro dialog; hide it once focus lands elsewhere (tree, search...).
+            QTimer.singleShot(200, self._maybe_hide_content_tab)
+
+    def _maybe_hide_content_tab(self) -> None:
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app.activePopupWidget() is not None or app.activeModalWidget() is not None:
+            QTimer.singleShot(300, self._maybe_hide_content_tab)   # menu/dialog still open
+            return
+        fw = app.focusWidget()
+        w = fw
+        while w is not None:
+            if w is self.ribbon:
+                return                      # focus is on a ribbon control: keep the tab
+            w = w.parentWidget()
+        ce = getattr(self.editor, "content_edit", None)
+        if fw is not None and fw is ce:
+            return
+        self.ribbon.set_contextual("content", False)
+
+    def _editor_saved(self, _id=None) -> None:
+        self._refresh_timer.start()
+        if self.sel_kind == "phrase" and self.sel_id is not None:
+            self.current = self.store.get_phrase(self.sel_id)
+        self._update_status()
+
+    def _show_editor(self, kind: str, id_) -> None:
+        if kind in ("phrase", "folder", "clip") and id_ is not None or kind in ("last_used", "clipboard_cache"):
+            ed = self._editor(kind)
+            load = getattr(ed, "load", None)
+            if callable(load) and id_ is not None:
+                load(id_)
+            elif callable(load) and kind in ("last_used", "clipboard_cache"):
+                try:
+                    load()
+                except TypeError:
+                    pass
+            self.editor_stack.setCurrentWidget(ed)
+        else:
+            self.editor_stack.setCurrentWidget(self.blank)
+        if kind != "phrase":
+            self._content_focus(False)
+
+    # ================================================================= selection
+    def _on_store_change(self, kind: str, _id) -> None:
+        if kind in ("folder", "phrase", "clipboard"):
+            self._refresh_timer.start()
+
+    def refresh_tree(self) -> None:
+        self.panel.refresh()
+        if self.three_columns:
+            k, i = self.panel.current()
+            if k in ("folder", "root", "last_used", "clipboard_cache"):
+                self.phrase_list.show_folder(k, i)
+        self._update_status()
+
+    def _all_items(self):
+        return self.panel.all_items()
+
+    def _on_selected(self, kind: str, id_) -> None:
+        if not self.save_current():
+            return
+        if kind == "folder":
+            f = self.store.get_folder(id_)
+            if f and f.password_hash and f.id not in self.unlocked:
+                if not self.unlock_folder(f):
+                    self._set_selection("", None)
+                    self.editor_stack.setCurrentWidget(self.blank)
+                    return
+        self._set_selection(kind, id_)
+        if self.three_columns and kind in ("folder", "root", "last_used", "clipboard_cache"):
+            self.phrase_list.show_folder(kind, id_)
+        self._show_editor(kind, id_)
+        self._push_nav(kind, id_)
+        self._update_status()
+        self._update_actions()
+
+    def _on_list_selected(self, kind: str, id_) -> None:
+        if not self.save_current():
+            return
+        self._set_selection(kind, id_)
+        self._show_editor(kind, id_)
+        self._push_nav(kind, id_)
+        self._update_status()
+        self._update_actions()
+
+    def _open_folder_from_list(self, folder_id) -> None:
+        if folder_id is None:
+            self.panel.select("root", None)
+        else:
+            self.panel.select("folder", folder_id)
+
+    def _set_selection(self, kind: str, id_) -> None:
+        self.sel_kind, self.sel_id = (kind or None), id_
+        self.current = self.store.get_phrase(id_) if kind == "phrase" and id_ is not None else None
+
+    def select_phrase(self, phrase_id: int) -> None:
+        if not self.panel.select("phrase", phrase_id):
+            # three-column mode: phrases live in the middle list
+            p = self.store.get_phrase(phrase_id)
+            if p:
+                self.panel.select("folder" if p.folder_id else "root", p.folder_id)
+                for i in range(self.phrase_list.list.topLevelItemCount()):
+                    it = self.phrase_list.list.topLevelItem(i)
+                    if it.data(0, ROLE_KIND) == "phrase" and it.data(0, ROLE_ID) == phrase_id:
+                        self.phrase_list.list.setCurrentItem(it)
+                        break
+
+    def select_folder(self, folder_id: int | None) -> None:
+        self.panel.select("folder" if folder_id is not None else "root", folder_id)
+
+    def selected_folder_id(self) -> int | None:
+        if self.sel_kind == "folder":
+            return self.sel_id
+        if self.sel_kind == "phrase":
+            p = self.store.get_phrase(self.sel_id)
+            return p.folder_id if p else None
+        if self.three_columns and self.phrase_list.kind == "folder":
+            return self.phrase_list.folder_id
+        return None
+
+    def unlock_folder(self, f: Folder) -> bool:
+        pw, ok = QInputDialog.getText(self, "Password", f'Password for "{f.name}":', QLineEdit.Password)
+        if ok and hash_password(pw) == f.password_hash:
+            self.unlocked.add(f.id)
+            QTimer.singleShot(0, self.refresh_tree)
+            return True
+        if ok:
+            QMessageBox.warning(self, "Password", "Wrong password.")
+        return False
+
+    # ================================================================= status / actions
+    def folder_path(self, folder_id: int | None) -> list[Folder]:
+        return list(reversed(self.store.folder_chain(folder_id)))
+
+    def _update_status(self) -> None:
+        kind, id_ = self.sel_kind, self.sel_id
+        crumbs: list[tuple[str, str]] = []
+        if kind in ("phrase", "folder"):
+            fid = id_ if kind == "folder" else (self.current.folder_id if self.current else None)
+            crumbs.append(("root:", "Phrases"))
+            crumbs += [(f"folder:{f.id}", f.name) for f in self.folder_path(fid)]
+        if crumbs:
+            html = " » ".join(f'<a href="{h}" style="color:#0066cc">{t.replace("<", "&lt;")}</a>' for h, t in crumbs)
+            self.breadcrumb.setText(html)
+        else:
+            st = self.store.stats()
+            secs = st["chars_saved"] / max(1, int(self.store.setting("stats.typing_speed", "180") or 180)) * 60
+            d, rem = divmod(int(secs), 86400)
+            h, rem = divmod(rem, 3600)
+            m = rem // 60
+            def unit(n, word):
+                return f"{n} {word}{'' if n == 1 else 's'}"
+            saved = ", ".join(x for x in (unit(d, "day") if d else "", unit(h, "hour") if h else "",
+                                          unit(m, "minute") if m or not (d or h) else "") if x)
+            self.breadcrumb.setText(f"PhraseForge inserted {st['expansions']} phrases and saved {saved} for you.")
+        if kind != "phrase":
+            self.info.setText("")
+
+    def _breadcrumb_clicked(self, href: str) -> None:
+        kind, _, val = href.partition(":")
+        if kind == "root":
+            self.panel.select("root", None)
+        elif kind == "folder":
+            self.panel.select("folder", int(val))
+
+    def _update_actions(self) -> None:
+        item = self.sel_kind in ("phrase", "folder")
+        for b in (self.btn_restrict, self.btn_up, self.btn_down, self.btn_move, self.btn_dup, self.btn_cut,
+                  self.btn_copy, self.btn_color):
+            b.setEnabled(item)
+        self.btn_paste.setEnabled(bool(self._clip))
+        self.btn_two.setChecked(not self.three_columns)
+        self.btn_three.setChecked(self.three_columns)
+        self.btn_flat.setChecked(self.panel.flat)
+        self.act_back.setEnabled(self._nav_pos > 0)
+        self.act_forward.setEnabled(self._nav_pos < len(self._nav) - 1)
+
+    # ================================================================= navigation history
+    def _push_nav(self, kind, id_) -> None:
+        if self._navigating or not kind:
+            return
+        if self._nav_pos >= 0 and self._nav[self._nav_pos] == (kind, id_):
+            return
+        del self._nav[self._nav_pos + 1:]
+        self._nav.append((kind, id_))
+        self._nav_pos = len(self._nav) - 1
+
+    def _go_nav(self, pos: int) -> None:
+        if 0 <= pos < len(self._nav):
+            self._nav_pos = pos
+            self._navigating = True
+            try:
+                kind, id_ = self._nav[pos]
+                if kind == "phrase":
+                    self.select_phrase(id_)
+                else:
+                    self.panel.select(kind, id_)
+            finally:
+                self._navigating = False
+            self._update_actions()
+
+    def nav_back(self) -> None:
+        self._go_nav(self._nav_pos - 1)
+
+    def nav_forward(self) -> None:
+        self._go_nav(self._nav_pos + 1)
+
+    # ================================================================= view
+    def set_columns(self, n: int, save: bool = True) -> None:
+        self.save_current()
+        self.three_columns = n == 3
+        self.panel.folders_only = self.three_columns
+        self.panel.header.setText('Files and Folders ("Default")' if self.three_columns
+                                  else 'Folders and phrases ("Default")')
+        self.phrase_list.setVisible(self.three_columns)
+        if save:
+            self.store.set_setting("view.layout", "three" if self.three_columns else "two")
+        self.refresh_tree()
+        if hasattr(self, "btn_two"):
+            self._update_actions()
+
+    def toggle_flat(self) -> None:
+        self.panel.flat = not self.panel.flat
+        self.refresh_tree()
+        self._update_actions()
+
+    def set_view_option(self, key: str, on: bool) -> None:
+        self.store.set_setting(f"view.{key}", "1" if on else "0")
+        ed = self._editors.get("phrase")
+        if ed is not None:
+            self._push_view_options(ed)
+
+    def view_option(self, key: str) -> bool:
+        cb = getattr(self, "view_options", {}).get(key)
+        default = "1" if key == "word_wrap" else "0"
+        return cb.isChecked() if cb is not None else self.store.setting(f"view.{key}", default) == "1"
+
+    def _push_view_options(self, ed) -> None:
+        fn = getattr(ed, "set_view_options", None)
+        if callable(fn):
+            try:
+                fn(word_wrap=self.view_option("word_wrap"), show_special=self.view_option("show_special_chars"),
+                   show_macro_params=self.view_option("show_macro_params"), rulers=self.view_option("show_rulers"))
+            except Exception:
+                pass
+
+    def _editor_status(self, st: dict) -> None:
+        if self.sel_kind != "phrase":
+            return
+        parts = [st.get("language", ""), f"Chars: {st.get('chars', 0)}", f"Words: {st.get('words', 0)}",
+                 f"{st.get('zoom', 100)} %"]
+        self.info.setText("      ".join(p for p in parts if p))
+
+    # ================================================================= tree operations
+    def new_folder(self, name: str | None = None) -> Folder | None:
+        self.save_current()
+        f = self.store.add_folder(Folder((name or "Folder").strip(), parent_id=self.selected_folder_id()))
+        self.refresh_tree()
+        self.select_folder(f.id)
+        if name is None:
+            self._focus_description()
+        return f
+
+    def new_phrase(self, rich: bool = False) -> Phrase:
+        self.save_current()
+        p = self.store.add_phrase(Phrase("New phrase", "", folder_id=self.selected_folder_id(),
+                                         content_format="html" if rich else "text"))
+        self.refresh_tree()
+        self.select_phrase(p.id)
+        self._focus_description()
+        return p
+
+    def _focus_description(self) -> None:
+        fn = getattr(self.editor, "focus_description", None)
+        if callable(fn):
+            QTimer.singleShot(0, fn)
+
+    def duplicate_phrase(self, phrase_id: int) -> Phrase | None:
+        p = self.store.get_phrase(phrase_id)
+        if not p:
+            return None
+        p.id = None
+        p.description += " (copy)"
+        p.use_count = 0
+        p.last_used = p.created = None
+        # the copy's triggers start disabled so it does not clash with the original
+        p.triggers = [Trigger(t.kind, t.value, mode=t.mode, case_sensitive=t.case_sensitive,
+                              word_start_only=t.word_start_only, enabled=False) for t in p.triggers]
+        p = self.store.add_phrase(p)
+        self.refresh_tree()
+        self.select_phrase(p.id)
+        return p
+
+    def copy_folder(self, folder_id: int, new_parent: int | None) -> Folder | None:
+        src = self.store.get_folder(folder_id)
+        if not src:
+            return None
+        dst = self.store.add_folder(Folder(src.name, parent_id=new_parent, enabled=src.enabled,
+                                           apps_include=src.apps_include, apps_exclude=src.apps_exclude,
+                                           password_hash=src.password_hash, show_in_popup=src.show_in_popup))
+        for p in self.store.phrases(folder_id):
+            p.id, p.folder_id, p.use_count, p.last_used, p.created = None, dst.id, 0, None, None
+            p.triggers = [Trigger(t.kind, t.value, mode=t.mode, case_sensitive=t.case_sensitive,
+                                  word_start_only=t.word_start_only, enabled=False) for t in p.triggers]
+            self.store.add_phrase(p)
+        for sub in self.store.folders(folder_id):
+            self.copy_folder(sub.id, dst.id)
+        return dst
+
+    def duplicate_selected(self) -> None:
+        if self.sel_kind == "phrase":
+            self.duplicate_phrase(self.sel_id)
+        elif self.sel_kind == "folder":
+            f = self.store.get_folder(self.sel_id)
+            new = self.copy_folder(self.sel_id, f.parent_id if f else None)
+            if new:
+                new.name += " (copy)"
+                self.store.update_folder(new)
+                self.refresh_tree()
+                self.select_folder(new.id)
+
+    def toggle_enabled(self, kind: str, id_: int) -> None:
+        self.save_current()
+        if kind == "folder":
+            f = self.store.get_folder(id_)
+            f.enabled = not f.enabled
+            self.store.update_folder(f)
+        else:
+            p = self.store.get_phrase(id_)
+            p.enabled = not p.enabled
+            self.store.update_phrase(p, record_history=False)
+            if self.sel_kind == "phrase" and self.sel_id == id_:
+                self._show_editor("phrase", id_)
+        self.refresh_tree()
+
+    def toggle_popup(self, folder_id: int) -> None:
+        f = self.store.get_folder(folder_id)
+        f.show_in_popup = not f.show_in_popup
+        self.store.update_folder(f)
+        self.refresh_tree()
+
+    def delete_item(self, kind: str, id_: int, confirm: bool = True) -> None:
+        if confirm:
+            name = (self.store.get_folder(id_).name if kind == "folder" else self.store.get_phrase(id_).description)
+            msg = f'Delete folder "{name}" and everything in it?' if kind == "folder" else f'Delete phrase "{name}"?'
+            if QMessageBox.question(self, "Delete", msg) != QMessageBox.Yes:
+                return
+        if kind == "folder":
+            self.store.delete_folder(id_)
+        else:
+            self.store.delete_phrase(id_)
+        if (self.sel_kind, self.sel_id) == (kind, id_) or (self.current and self.store.get_phrase(self.current.id) is None):
+            self._set_selection("", None)
+            self.editor_stack.setCurrentWidget(self.blank)
+        self.refresh_tree()
+
+    def delete_selected(self) -> None:
+        if self.sel_kind in ("phrase", "folder"):
+            self.delete_item(self.sel_kind, self.sel_id)
+        elif self.sel_kind == "clip":
+            self.store.delete_clipboard(self.sel_id)
+            self.refresh_tree()
+
+    def rename_selected(self) -> None:
+        it = self.tree.currentItem()
+        if it and it.data(0, ROLE_KIND) in ("phrase", "folder"):
+            self.tree.editItem(it, 0)
+
+    def _item_renamed(self, it, _col) -> None:
+        kind, id_ = it.data(0, ROLE_KIND), it.data(0, ROLE_ID)
+        text = it.text(0).strip()
+        if not text:
+            return
+        if kind == "folder":
+            f = self.store.get_folder(id_)
+            if f and f.name != text:
+                f.name = text
+                self.store.update_folder(f)
+                self._show_editor("folder", id_)
+        elif kind == "phrase":
+            p = self.store.get_phrase(id_)
+            if p and p.description != text:
+                p.description = text
+                self.store.update_phrase(p, record_history=False)
+                if self.sel_id == id_:
+                    self._show_editor("phrase", id_)
+
+    def folder_properties(self, folder_id: int) -> None:
+        f = self.store.get_folder(folder_id)
+        if f.password_hash and f.id not in self.unlocked and not self.unlock_folder(f):
+            return
+        dlg = FolderDialog(f, self)
+        if dlg.exec() == QDialog.Accepted:
+            self.store.update_folder(dlg.apply())
+            self.refresh_tree()
+
+    def properties_selected(self) -> None:
+        if self.sel_kind == "folder":
+            self.folder_properties(self.sel_id)
+        elif self.sel_kind == "phrase":
+            self.save_current()
+            p = self.store.get_phrase(self.sel_id)
+            dlg = PhrasePropertiesDialog(p, self)
+            if dlg.exec() == QDialog.Accepted:
+                self.store.update_phrase(dlg.apply(), record_history=False)
+                self._show_editor("phrase", p.id)
+                self.refresh_tree()
+
+    def move_item(self, kind: str, id_: int, new_parent: int | None) -> None:
+        self.save_current()
+        if kind == "folder":
+            if new_parent == id_ or any(f.id == id_ for f in self.store.folder_chain(new_parent)):
+                return  # cannot move a folder into itself
+            f = self.store.get_folder(id_)
+            f.parent_id = new_parent
+            self.store.update_folder(f)
+        else:
+            p = self.store.get_phrase(id_)
+            p.folder_id = new_parent
+            self.store.update_phrase(p, record_history=False)
+            if self.current and self.current.id == id_:
+                self.current.folder_id = new_parent
+        self.refresh_tree()
+
+    def move_up_down(self, delta: int) -> None:
+        kind, id_ = self.sel_kind, self.sel_id
+        if kind == "folder":
+            f = self.store.get_folder(id_)
+            sibs = sorted_folders(self.store, f.parent_id)
+            upd = self.store.update_folder
+        elif kind == "phrase":
+            self.save_current()
+            p = self.store.get_phrase(id_)
+            sibs = sorted_phrases(self.store, p.folder_id)
+            upd = lambda x: self.store.update_phrase(x, record_history=False)  # noqa: E731
+        else:
+            return
+        idx = next(i for i, s in enumerate(sibs) if s.id == id_)
+        j = idx + delta
+        if not 0 <= j < len(sibs):
+            return
+        sibs[idx], sibs[j] = sibs[j], sibs[idx]
+        for n, s in enumerate(sibs):
+            if s.sort != n:
+                s.sort = n
+                upd(s)
+        self.refresh_tree()
+
+    def move_to_dialog(self) -> None:
+        if self.sel_kind not in ("phrase", "folder"):
+            return
+        title = (self.store.get_folder(self.sel_id).name if self.sel_kind == "folder"
+                 else self.store.get_phrase(self.sel_id).description)
+        dlg = MoveToDialog(self.store, title, self.sel_id if self.sel_kind == "folder" else None, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        target = dlg.target()
+        if dlg.copy.isChecked():
+            if self.sel_kind == "phrase":
+                p = self.duplicate_phrase(self.sel_id)
+                if p:
+                    self.move_item("phrase", p.id, target)
+            else:
+                self.copy_folder(self.sel_id, target)
+                self.refresh_tree()
+        else:
+            self.move_item(self.sel_kind, self.sel_id, target)
+
+    # ---------------------------------------------------------------- clipboard (cut/copy/paste items)
+    def clip_items(self, mode: str) -> None:
+        if self.sel_kind in ("phrase", "folder"):
+            self._clip = [(self.sel_kind, self.sel_id, mode)]
+            self._update_actions()
+
+    def paste_items(self) -> None:
+        target = self.selected_folder_id()
+        for kind, id_, mode in self._clip:
+            if mode == "cut":
+                self.move_item(kind, id_, target)
+            elif kind == "phrase":
+                p = self.duplicate_phrase(id_)
+                if p:
+                    self.move_item("phrase", p.id, target)
+            else:
+                self.copy_folder(id_, target)
+        if any(m == "cut" for _, _, m in self._clip):
+            self._clip = []
+        self.refresh_tree()
+        self._update_actions()
+
+    def select_all_in_folder(self) -> None:
+        it = self.tree.currentItem()
+        if it:
+            it.setExpanded(True)
+
+    # ---------------------------------------------------------------- color / restrictions
+    def set_color(self, color: str | None) -> None:
+        if self.sel_kind in ("phrase", "folder"):
+            set_item_color(self.store, self.sel_kind, self.sel_id, color)
+            self.refresh_tree()
+
+    def program_restrictions(self) -> None:
+        if self.sel_kind == "folder":
+            obj = self.store.get_folder(self.sel_id)
+            title = obj.name
+        elif self.sel_kind == "phrase":
+            self.save_current()
+            obj = self.store.get_phrase(self.sel_id)
+            title = obj.description
+        else:
+            return
+        dlg = ProgramRestrictionsDialog(title, obj.apps_include, obj.apps_exclude, self)
+        if dlg.exec() == QDialog.Accepted:
+            obj.apps_include, obj.apps_exclude = dlg.values()
+            if self.sel_kind == "folder":
+                self.store.update_folder(obj)
+            else:
+                self.store.update_phrase(obj, record_history=False)
+                self._show_editor("phrase", obj.id)
+
+    # ---------------------------------------------------------------- find / history / languages
+    def find_replace(self) -> None:
+        self.save_current()
+        if self.sel_kind == "phrase":
+            dlg = FindReplaceDialog(self.store, self.current.description if self.current else "phrase",
+                                    phrase_id=self.sel_id, parent=self)
+        elif self.sel_kind == "folder":
+            dlg = FindReplaceDialog(self.store, self.store.get_folder(self.sel_id).name, folder_id=self.sel_id,
+                                    parent=self)
+        else:
+            dlg = FindReplaceDialog(self.store, "Phrases", parent=self)
+        dlg.found.connect(self.select_phrase)
+        self._find_dialog = dlg
+        dlg.show()
+
+    def recent_items(self, limit: int = 10) -> list[tuple[str, int, str, str]]:
+        """Recently modified phrases and folders visited in this session: (kind, id, title, icon)."""
+        out: list[tuple[str, int, str, str]] = []
+        seen = set()
+        for kind, id_ in reversed(self._nav):
+            if kind in ("folder", "phrase") and (kind, id_) not in seen:
+                obj = self.store.get_folder(id_) if kind == "folder" else self.store.get_phrase(id_)
+                if obj:
+                    out.append((kind, id_, obj.name if kind == "folder" else obj.description,
+                                "folder" if kind == "folder" else "phrase"))
+                    seen.add((kind, id_))
+        for p in sorted(self.store.phrases(), key=lambda p: p.modified or "", reverse=True):
+            if ("phrase", p.id) not in seen:
+                out.append(("phrase", p.id, p.description, "phrase"))
+                seen.add(("phrase", p.id))
+            if len(out) >= limit:
+                break
+        return out[:limit]
+
+    def _fill_history_menu(self) -> None:
+        m = self.history_menu
+        m.clear()
+        for kind, id_, title, ic in self.recent_items():
+            a = m.addAction(icon(ic), title)
+            a.triggered.connect(lambda _=False, k=kind, i=id_: (self.select_phrase(i) if k == "phrase"
+                                                                 else self.select_folder(i)))
+        if self.sel_kind == "phrase":
+            m.addSeparator()
+            m.addAction(icon("edit_history"), "Earlier versions of this phrase...", self.show_phrase_history)
+
+    def show_phrase_history(self) -> None:
+        if self.sel_kind != "phrase":
+            return
+        self.save_current()
+        dlg = HistoryDialog(self.store, self.sel_id, self)
+        if dlg.exec() == QDialog.Accepted and dlg.chosen:
+            p = self.store.get_phrase(self.sel_id)
+            p.description, p.content = dlg.chosen["description"], dlg.chosen["content"]
+            self.store.update_phrase(p)
+            self._show_editor("phrase", p.id)
+
+    def _fill_language_menu(self, m: QMenu) -> None:
+        m.clear()
+        cur = self.store.setting("ui.language", "en")
+        for code, text in (("en", "Default (English)"), ("ar", "العربية (Arabic)")):
+            a = m.addAction(text)
+            a.setCheckable(True)
+            a.setChecked(code == cur)
+            a.triggered.connect(lambda _=False, c=code: self.set_language(c))
+
+    def set_language(self, code: str) -> None:
+        self.store.set_setting("ui.language", code)
+        try:
+            from phraseforge.ui import i18n
+            i18n.set_language(code)
+            QApplication.instance().setLayoutDirection(Qt.RightToLeft if code == "ar" else Qt.LeftToRight)
+        except Exception:
+            pass
+
+    # ---------------------------------------------------------------- context menus
+    def _tree_menu(self, pos) -> None:
+        it = self.tree.itemAt(pos)
+        if it is not None:
+            self.tree.setCurrentItem(it)
+        kind = it.data(0, ROLE_KIND) if it else "root"
+        id_ = it.data(0, ROLE_ID) if it else None
+        self.build_context_menu(kind, id_).exec(self.tree.viewport().mapToGlobal(pos))
+
+    def _list_menu(self, pos) -> None:
+        it = self.phrase_list.list.itemAt(pos)
+        if it is None:
+            return
+        self.phrase_list.list.setCurrentItem(it)
+        self.build_context_menu(it.data(0, ROLE_KIND), it.data(0, ROLE_ID)).exec(
+            self.phrase_list.list.viewport().mapToGlobal(pos))
+
+    def build_context_menu(self, kind: str, id_) -> QMenu:
+        """Context menu of the tree (16_context_menu_phrase / 16_context_menu_folder)."""
+        m = QMenu(self)
+        if kind == "clip":
+            m.addAction(icon("new_phrase"), "Save as new phrase", lambda: self.clip_to_phrase(id_))
+            m.addAction(icon("delete"), "Delete", lambda: (self.store.delete_clipboard(id_), self.refresh_tree()))
+            return m
+        if kind == "clipboard_cache":
+            m.addAction(icon("delete"), "Empty clipboard cache",
+                        lambda: (self.store.clear_clipboard(keep_pinned=False), self.refresh_tree()))
+            return m
+        item = kind in ("phrase", "folder")
+        if kind == "phrase":
+            m.addAction(icon("open_tab"), "Open in tab", lambda: self.open_in_window(id_))
+            m.addSeparator()
+        add = m.addMenu("Add new...")
+        add.addAction(icon("new_phrase"), "Phrase", lambda: self.new_phrase())
+        add.addAction(icon("phrase_rich"), "Rich text phrase", lambda: self.new_phrase(rich=True))
+        add.addAction(icon("new_folder"), "Folder", lambda: self.new_folder())
+        m.addSeparator()
+        a = m.addAction("Cut", lambda: self.clip_items("cut"))
+        a.setEnabled(item)
+        a = m.addAction("Copy", lambda: self.clip_items("copy"))
+        a.setEnabled(item)
+        a = m.addAction("Paste", self.paste_items)
+        a.setEnabled(bool(self._clip))
+        m.addAction("Select All", self.select_all_in_folder)
+        m.addSeparator()
+        a = m.addAction("Delete", lambda: self.delete_item(kind, id_))
+        a.setEnabled(item)
+        a = m.addAction("Translate [Demo]")
+        a.setEnabled(False)
+        if kind in ("folder", "root"):
+            fid = id_ if kind == "folder" else None
+            bulk = m.addMenu("Bulk edit")
+            bulk.addAction("Enable all phrases", lambda: self.bulk_enable(fid, True))
+            bulk.addAction("Disable all phrases", lambda: self.bulk_enable(fid, False))
+            bulk.addAction("Sort phrases alphabetically", lambda: self.bulk_sort(fid))
+        if kind == "folder":
+            f = self.store.get_folder(id_)
+            m.addSeparator()
+            a = m.addAction("Enable triggers", lambda: self.toggle_enabled("folder", id_))
+            a.setCheckable(True)
+            a.setChecked(bool(f and f.enabled))
+            a = m.addAction("Show in phrase menu", lambda: self.toggle_popup(id_))
+            a.setCheckable(True)
+            a.setChecked(bool(f and f.show_in_popup))
+        else:
+            m.addSeparator()
+        a = m.addAction("Pin to desktop [Demo]")
+        a.setEnabled(False)
+        m.addSeparator()
+        a = m.addAction("Properties", self.properties_selected)
+        a.setShortcut("Alt+Return")
+        a.setEnabled(item)
+        return m
+
+    def bulk_enable(self, folder_id: int | None, on: bool) -> None:
+        for p in self.store.phrases(folder_id):
+            if p.enabled != on:
+                p.enabled = on
+                self.store.update_phrase(p, record_history=False)
+        self.refresh_tree()
+
+    def bulk_sort(self, folder_id: int | None) -> None:
+        for n, p in enumerate(sorted(self.store.phrases(folder_id), key=lambda p: p.description.lower())):
+            p.sort = n
+            self.store.update_phrase(p, record_history=False)
+        self.refresh_tree()
+
+    def clip_to_phrase(self, entry_id: int) -> Phrase | None:
+        e = next((e for e in self.store.clipboard_entries(500) if e.id == entry_id), None)
+        if not e:
+            return None
+        p = self.store.add_phrase(Phrase(" ".join(e.text.split())[:60] or "Clipboard", e.text))
+        self.refresh_tree()
+        self.select_phrase(p.id)
+        return p
+
+    def open_in_window(self, phrase_id: int) -> None:
+        """'Open in tab': a separate editor window for one phrase."""
+        try:
+            from phraseforge.ui.phrase_editor import PhraseEditor
+            ed = PhraseEditor(self.store)
+        except Exception:
+            ed = FallbackPhraseEditor(self.store)
+        ed.load(phrase_id)
+        w = QMainWindow(self)
+        w.setWindowTitle(self.store.get_phrase(phrase_id).description)
+        w.setCentralWidget(ed)
+        w.resize(760, 560)
+        orig = w.closeEvent
+
+        def close(e, ed=ed):
+            try:
+                ed.save()
+            finally:
+                orig(e)
+        w.closeEvent = close
+        w.show()
+        self._extra_windows = getattr(self, "_extra_windows", []) + [w]
+
+    # ================================================================= file menu
+    def open_phrase_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Open phrase file", "",
+                                              "PhraseForge files (*.json *.db);;All files (*)")
+        if not path:
+            return
+        if path.lower().endswith(".db"):
+            if QMessageBox.question(self, "Open", "Replace all current phrases with this phrase file?") \
+                    != QMessageBox.Yes:
+                return
+            self.store.restore_from(path)
+            self.refresh_tree()
+        else:
+            self._import_path(path)
+
+    def save_as(self) -> None:
+        self.save_current()
+        path, _ = QFileDialog.getSaveFileName(self, "Save As", "phrases.json",
+                                              "PhraseForge JSON (*.json);;Database copy (*.db)")
+        if not path:
+            return
+        try:
+            if path.lower().endswith(".db"):
+                self.store.backup_to(path)
+            else:
+                from phraseforge import io_formats
+                io_formats.export_json(self.store, path)
+        except Exception as e:
+            QMessageBox.warning(self, "Save As", str(e))
+
+    def migration_save(self) -> None:
+        self.save_current()
+        path, _ = QFileDialog.getSaveFileName(self, "Save migration file", "phraseforge-migration.json",
+                                              "Migration file (*.json)")
+        if not path:
+            return
+        try:
+            d = self.store.export_dict()
+            d["settings"] = self.store.settings()
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(d, fh, ensure_ascii=False, indent=2)
+            QMessageBox.information(self, "Migration Assistant", f"Saved to {path}")
+        except Exception as e:
+            QMessageBox.warning(self, "Migration Assistant", str(e))
+
+    def migration_restore(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Restore migration file", "", "Migration file (*.json)")
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as fh:
+                d = json.load(fh)
+            from phraseforge import io_formats
+            io_formats.import_dict(self.store, d)
+            for k, v in (d.get("settings") or {}).items():
+                self.store.set_setting(k, v)
+            self.refresh_tree()
+            QMessageBox.information(self, "Migration Assistant", "Settings and phrases restored.")
+        except Exception as e:
+            QMessageBox.warning(self, "Migration Assistant", str(e))
+
+    def restore_backup(self) -> None:
+        try:
+            from phraseforge import io_formats
+            backups = list(io_formats.list_backups())
+        except Exception:
+            from phraseforge.paths import backups_dir
+            backups = sorted(Path(backups_dir()).glob("*.db"))
+        dlg = RestoreBackupDialog(backups, "Phrases", self)
+        if dlg.exec() != QDialog.Accepted or dlg.selected() is None:
+            return
+        if QMessageBox.question(self, "Restore from backup",
+                                "Replace all current phrases with the selected backup?") != QMessageBox.Yes:
+            return
+        try:
+            self.store.restore_from(dlg.selected())
+            self._set_selection("", None)
+            self.editor_stack.setCurrentWidget(self.blank)
+            self.refresh_tree()
+        except Exception as e:
+            QMessageBox.warning(self, "Restore from backup", str(e))
+
+    def backup(self) -> Path | None:
+        try:
+            from phraseforge import io_formats
+            return io_formats.backup(self.store)
+        except Exception as e:
+            QMessageBox.warning(self, "Backup", str(e))
+            return None
+
+    # ================================================================= import / export
+    def _import_path(self, path: str):
+        from phraseforge import io_formats
+        res = io_formats.import_file(self.store, path, self.selected_folder_id())
+        self.refresh_tree()
+        return res
+
+    def import_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "File import", "",
+                                              "Phrase files (*.json *.csv *.txt *.textexpander);;All files (*)")
+        if not path:
+            return
+        try:
+            res = self._import_path(path)
+            QMessageBox.information(self, "Import", f"Imported: {res}" if res is not None else "Imported.")
+        except Exception as e:
+            QMessageBox.warning(self, "Import", str(e))
+
+    def import_folder(self) -> None:
+        d = QFileDialog.getExistingDirectory(self, "Import files including directory structure")
+        if not d:
+            return
+        try:
+            from phraseforge import io_formats
+            n = io_formats.import_text_folder(self.store, d, self.selected_folder_id())
+            self.refresh_tree()
+            QMessageBox.information(self, "Import", f"Imported {n} phrase(s).")
+        except Exception as e:
+            QMessageBox.warning(self, "Import", str(e))
+
+    def import_textexpander(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Import from TextExpander", "",
+                                              "TextExpander exports (*.csv *.textexpander);;All files (*)")
+        if path:
+            self.import_textexpander_path(path)
+
+    def import_textexpander_path(self, path: str, show_message: bool = True):
+        """Import a TextExpander export; returns the report (None on error)."""
+        try:
+            from phraseforge.importers.textexpander import import_any
+            rep = import_any(self.store, path)
+        except Exception as e:
+            if show_message:
+                QMessageBox.warning(self, "Import from TextExpander", str(e))
+            return None
+        self.refresh_tree()
+        if rep.folder_id is not None:
+            self.select_folder(rep.folder_id)
+            it = self.tree.currentItem()
+            if it:
+                it.setExpanded(True)
+        self.last_import_summary = self.textexpander_summary(rep)
+        if show_message:
+            QMessageBox.information(self, "Import from TextExpander", self.last_import_summary)
+        return rep
+
+    @staticmethod
+    def textexpander_summary(rep) -> str:
+        lines = [f"Imported {rep.imported} snippet(s)."]
+        if getattr(rep, "skipped", 0):
+            lines.append(f"Skipped {rep.skipped}.")
+        unknown = getattr(rep, "unknown_macros", None) or {}
+        if unknown:
+            lines.append("These TextExpander macros were kept as plain text:")
+            lines += [f"  {name}  ×{n}" for name, n in sorted(unknown.items(), key=lambda kv: -kv[1])]
+        return "\n".join(lines)
+
+    def export_file(self) -> None:
+        self.save_current()
+        path, _ = QFileDialog.getSaveFileName(self, "Export", "phrases.json", "JSON (*.json);;CSV (*.csv)")
+        if not path:
+            return
+        try:
+            from phraseforge import io_formats
+            io_formats.export_file(self.store, path)
+        except Exception as e:
+            QMessageBox.warning(self, "Export", str(e))
+
+    def export_text_folder(self) -> None:
+        self.save_current()
+        d = QFileDialog.getExistingDirectory(self, "Export phrases as text files")
+        if not d:
+            return
+        try:
+            from phraseforge import io_formats
+            n = io_formats.export_text_folder(self.store, d)
+            QMessageBox.information(self, "Export", f"Exported {n} phrase(s).")
+        except Exception as e:
+            QMessageBox.warning(self, "Export", str(e))
+
+    def phrases_for_print(self) -> list[Phrase]:
+        if self.sel_kind == "phrase":
+            return [self.store.get_phrase(self.sel_id)]
+        if self.sel_kind == "folder":
+            return self.store.phrases(self.sel_id)
+        return self.store.phrases()
+
+    def print_phrases(self) -> None:
+        self.save_current()
+        PrintPreviewDialog(print_html(self.store, self.phrases_for_print()), self).exec()
+
+    # ================================================================= other windows
+    def show_settings(self) -> None:
+        self.save_current()
+        from phraseforge.ui.settings_dialog import SettingsDialog
+        SettingsDialog(self.store, parent=self).exec()
+
+    def show_stats(self) -> None:
+        from phraseforge.ui.stats_window import StatsWindow
+        try:
+            self._stats = StatsWindow(self.store, self)
+        except TypeError:
+            self._stats = StatsWindow(self.store)
+        if isinstance(self._stats, QDialog):
+            self._stats.exec()
+        else:
+            self._stats.show()
+
+    def show_clipboard(self) -> None:
+        self.panel.select("clipboard_cache", None)
+
+    def show_suggestions(self) -> None:
+        from phraseforge.ui.suggestions_dialog import SuggestionsDialog
+        SuggestionsDialog(self.store, self).exec()
+        self.refresh_tree()
+
+    def about(self) -> None:
+        try:
+            from phraseforge.ui.about_dialog import AboutDialog
+            AboutDialog(self).exec()
+            return
+        except Exception:
+            pass
+        from phraseforge import __version__
+        QMessageBox.about(self, "About PhraseForge",
+                          f"<b>PhraseForge v{__version__}</b><br>An original text expander for Windows.<br>"
+                          "Screen OCR by Capture2Text (separate GPLv3 program).")
+
+    def check_updates(self) -> None:
+        from phraseforge import __version__
+        QMessageBox.information(self, "Check for updates", f"You are up to date (PhraseForge v{__version__}).")
+
+    def get_support(self) -> None:
+        QMessageBox.information(self, "Get support",
+                                "PhraseForge is a personal project. See README.md in the program folder "
+                                "for help, or check the log file in %APPDATA%\\PhraseForge.")
+
+    def open_help(self) -> None:
+        readme = Path(__file__).resolve().parents[2] / "README.md"
+        if readme.exists():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(readme)))
+
+    def macro_reference(self) -> None:
+        from PySide6.QtWidgets import QHeaderView, QTableWidget, QTableWidgetItem
+        items = macro_catalog()
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Macro reference")
+        dlg.resize(760, 520)
+        lay = QVBoxLayout(dlg)
+        t = QTableWidget(len(items), 4)
+        t.setHorizontalHeaderLabels(["Category", "Name", "Syntax", "Description"])
+        t.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        t.setEditTriggers(QTableWidget.NoEditTriggers)
+        for i, mi in enumerate(items):
+            for j, v in enumerate((getattr(mi, "category", ""), mi.name, getattr(mi, "syntax", ""),
+                                   getattr(mi, "description", ""))):
+                t.setItem(i, j, QTableWidgetItem(str(v)))
+        lay.addWidget(t)
+        dlg.exec()
+
+    def closeEvent(self, e):  # noqa: N802
+        if not self.save_current():
+            e.ignore()
+            return
+        super().closeEvent(e)
