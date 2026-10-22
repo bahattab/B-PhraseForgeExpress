@@ -37,7 +37,9 @@ BACKUP_PREFIX = "backup-"
 
 # settings that belong to this PC only; kept when pulling, removed when pushing
 LOCAL_SETTING_PREFIXES = ("sync.", "gdrive.", "backup.cloud_", "ocr.cli_path", "app.start_with_windows",
-                          "app.first_run_done", "ui.item_colors")
+                          "app.first_run_done", "ui.item_colors",
+                          # API keys: encrypted for this Windows account, never uploaded
+                          "ai.openai_key", "ai.anthropic_key", "ai.openrouter_key")
 
 
 @dataclass
@@ -59,7 +61,7 @@ class Remote(Protocol):
 
 # ---------------------------------------------------------------- remotes
 class FolderRemote:
-    """Any folder, e.g. one inside Google Drive for Desktop (L:\\My Drive\\PhraseForge)."""
+    """Any folder, e.g. one inside Google Drive for Desktop (G:\\My Drive\\PhraseForge)."""
 
     def __init__(self, folder: str | Path):
         self.root = Path(folder)
@@ -268,7 +270,9 @@ class CloudSync:
         """Replace local data with a downloaded copy, keeping this PC's clipboard and device settings.
         Call on the UI thread (store change listeners update windows)."""
         _check_db(path)
-        keep_settings = {k: v for k, v in self.store.settings().items() if _is_local_key(k)}
+        with self.store.lock:                 # raw values: API keys stay encrypted
+            keep_settings = {k: v for k, v in self.store.conn.execute("SELECT key, value FROM settings")
+                             if _is_local_key(k)}
         keep_clip = [(e.text, e.created, e.source_app, int(e.pinned)) for e in self.store.clipboard_entries(10_000)]
         self.store.restore_from(path)
         with self.store.lock, self.store.conn:
