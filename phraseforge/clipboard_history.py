@@ -40,8 +40,14 @@ class ClipboardHistory:
         except Exception:
             return ""
 
+    def enabled(self) -> bool:
+        """Settings > Features > Clipboard Cache (features.clipboard_cache) and the
+        older clipboard_history.enabled switch; read live, so changes apply at once."""
+        s = self.store.setting
+        return s("features.clipboard_cache", "1") == "1" and s("clipboard_history.enabled", "1") == "1"
+
     def on_clipboard_text(self, text: str) -> None:
-        if self.paused or self.store.setting("clipboard_history.enabled", "1") != "1":
+        if self.paused or not self.enabled():
             return
         if not text or not text.strip() or len(text) > MAX_ENTRY_CHARS:
             return
@@ -52,3 +58,6 @@ class ClipboardHistory:
             self.store.add_clipboard(text, source_app=exe)
         except Exception:
             log.exception("could not store clipboard entry")
+            return
+        from phraseforge import sounds
+        sounds.play(self.store.setting, "clipboard_cache")

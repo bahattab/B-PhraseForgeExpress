@@ -18,7 +18,24 @@ from phraseforge.models import (
     AutotextMode, ClipboardEntry, Folder, OutputMode, Phrase, Trigger, TriggerKind,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+# v2: triggers may belong to a phrase, a folder or a special folder, and carry
+# PhraseExpress options; phrases get an output target; folders get notes.
+TRIGGERS_TABLE = """
+CREATE TABLE IF NOT EXISTS {name} (
+  id INTEGER PRIMARY KEY,
+  phrase_id INTEGER REFERENCES phrases(id) ON DELETE CASCADE,
+  folder_id INTEGER REFERENCES folders(id) ON DELETE CASCADE,
+  special TEXT DEFAULT '',
+  kind TEXT NOT NULL, value TEXT NOT NULL, mode TEXT DEFAULT 'delimiter',
+  case_sensitive INTEGER DEFAULT 0, word_start_only INTEGER DEFAULT 1, enabled INTEGER DEFAULT 1,
+  word_pos TEXT DEFAULT '', exec_mode TEXT DEFAULT '', lead_delim TEXT DEFAULT '',
+  trail_delim TEXT DEFAULT '', remove_trailing INTEGER DEFAULT 0, window_scope TEXT DEFAULT '');
+"""
+TRIGGER_COLUMNS = ("phrase_id", "folder_id", "special", "kind", "value", "mode", "case_sensitive",
+                   "word_start_only", "enabled", "word_pos", "exec_mode", "lead_delim", "trail_delim",
+                   "remove_trailing", "window_scope")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -26,17 +43,16 @@ CREATE TABLE IF NOT EXISTS folders (
   id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES folders(id) ON DELETE CASCADE,
   name TEXT NOT NULL, sort INTEGER DEFAULT 0, enabled INTEGER DEFAULT 1,
   apps_include TEXT DEFAULT '', apps_exclude TEXT DEFAULT '',
-  password_hash TEXT DEFAULT '', show_in_popup INTEGER DEFAULT 1);
+  password_hash TEXT DEFAULT '', show_in_popup INTEGER DEFAULT 1, notes TEXT DEFAULT '',
+  output_target TEXT DEFAULT 'current', output_target_arg TEXT DEFAULT '');
 CREATE TABLE IF NOT EXISTS phrases (
   id INTEGER PRIMARY KEY, folder_id INTEGER REFERENCES folders(id) ON DELETE CASCADE,
   description TEXT NOT NULL, content TEXT DEFAULT '', content_format TEXT DEFAULT 'text',
   output_mode TEXT DEFAULT 'auto', apps_include TEXT DEFAULT '', apps_exclude TEXT DEFAULT '',
   enabled INTEGER DEFAULT 1, sort INTEGER DEFAULT 0, use_count INTEGER DEFAULT 0,
-  last_used TEXT, created TEXT, modified TEXT, notes TEXT DEFAULT '');
-CREATE TABLE IF NOT EXISTS triggers (
-  id INTEGER PRIMARY KEY, phrase_id INTEGER NOT NULL REFERENCES phrases(id) ON DELETE CASCADE,
-  kind TEXT NOT NULL, value TEXT NOT NULL, mode TEXT DEFAULT 'delimiter',
-  case_sensitive INTEGER DEFAULT 0, word_start_only INTEGER DEFAULT 1, enabled INTEGER DEFAULT 1);
+  last_used TEXT, created TEXT, modified TEXT, notes TEXT DEFAULT '',
+  output_target TEXT DEFAULT 'current', output_target_arg TEXT DEFAULT '');
+""" + TRIGGERS_TABLE.format(name="triggers") + """
 CREATE INDEX IF NOT EXISTS ix_triggers_kind ON triggers(kind);
 CREATE TABLE IF NOT EXISTS tags (id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL);
 CREATE TABLE IF NOT EXISTS phrase_tags (
@@ -103,12 +119,93 @@ class Store:
         self.conn.execute("PRAGMA foreign_keys = ON")
         if self.path != ":memory:":
             self.conn.execute("PRAGMA journal_mode = WAL")
+        self._migrate_schema()       # before SCHEMA: old tables need columns its indexes may use
         self.conn.executescript(SCHEMA)
         with self.conn:
             self.conn.execute("INSERT OR IGNORE INTO meta VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
             for k, v in DEFAULT_SETTINGS.items():
                 self.conn.execute("INSERT OR IGNORE INTO settings VALUES (?, ?)", (k, v))
         self._listeners: list = []
+        self._migrate_extras()
+
+    # ------------------------------------------------------------ migrations
+    def _columns(self, table: str) -> set[str]:
+        return {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+
+    def _migrate_schema(self) -> None:
+        """v1 -> v2, idempotent. Safe on a fresh (empty) database."""
+        c = self.conn
+        if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='phrases'").fetchone():
+            return                                   # fresh database: SCHEMA creates v2 tables
+        fcols = self._columns("folders")
+        if "notes" not in fcols:
+            c.execute("ALTER TABLE folders ADD COLUMN notes TEXT DEFAULT ''")
+        if "output_target" not in fcols:
+            c.execute("ALTER TABLE folders ADD COLUMN output_target TEXT DEFAULT 'current'")
+        if "output_target_arg" not in fcols:
+            c.execute("ALTER TABLE folders ADD COLUMN output_target_arg TEXT DEFAULT ''")
+        cols = self._columns("phrases")
+        if "output_target" not in cols:
+            c.execute("ALTER TABLE phrases ADD COLUMN output_target TEXT DEFAULT 'current'")
+        if "output_target_arg" not in cols:
+            c.execute("ALTER TABLE phrases ADD COLUMN output_target_arg TEXT DEFAULT ''")
+        tcols = self._columns("triggers")
+        if tcols and "folder_id" not in tcols:
+            # phrase_id was NOT NULL: SQLite can only relax that by rebuilding the table
+            c.commit()
+            c.execute("PRAGMA foreign_keys = OFF")
+            try:
+                with c:
+                    c.executescript(TRIGGERS_TABLE.format(name="triggers_v2"))
+                    keep = [k for k in ("id",) + TRIGGER_COLUMNS if k in tcols]
+                    c.execute(f"INSERT INTO triggers_v2 ({','.join(keep)}) SELECT {','.join(keep)} FROM triggers")
+                    c.execute("DROP TABLE triggers")
+                    c.execute("ALTER TABLE triggers_v2 RENAME TO triggers")
+            finally:
+                c.execute("PRAGMA foreign_keys = ON")
+        if c.execute("SELECT 1 FROM sqlite_master WHERE name='meta'").fetchone():
+            c.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
+        c.commit()
+
+    def _migrate_extras(self) -> None:
+        """Move the old JSON setting ui.trigger_extras into real columns (once)."""
+        raw = self.setting("ui.trigger_extras", "")
+        if not raw:
+            return
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            data = {}
+        from phraseforge.triggers.rows import row_to_trigger   # pure helpers, no Qt
+        for owner, extra in (data or {}).items():
+            if not isinstance(extra, dict):
+                continue
+            rows = extra.get("rows") or []
+            triggers = [t for t in (row_to_trigger(r) for r in rows) if t is not None]
+            kind, _, ident = owner.partition(":")
+            try:
+                if kind == "p" and (p := self.get_phrase(int(ident))):
+                    if rows:
+                        p.triggers = triggers
+                    if extra.get("output_target"):
+                        p.output_target = extra["output_target"]
+                    if extra.get("output_program"):
+                        p.output_target_arg = extra["output_program"]
+                    self.update_phrase(p, record_history=False)
+                elif kind == "f" and (f := self.get_folder(int(ident))):
+                    f.notes = extra.get("notes", f.notes)
+                    if extra.get("output_target"):
+                        f.output_target = extra["output_target"]
+                        f.output_target_arg = extra.get("output_program", "") or f.output_target_arg
+                    self.update_folder(f)
+                    if rows:
+                        self.set_folder_triggers(f.id, triggers)
+                elif kind == "s" and rows:
+                    self.set_special_triggers(ident, triggers)
+            except (ValueError, sqlite3.Error):
+                continue
+        with self.lock, self.conn:
+            self.conn.execute("DELETE FROM settings WHERE key='ui.trigger_extras'")
 
     # ------------------------------------------------------------ change events
     def on_change(self, callback) -> None:
@@ -130,11 +227,14 @@ class Store:
     def add_folder(self, f: Folder) -> Folder:
         with self.lock, self.conn:
             cur = self.conn.execute(
-                "INSERT INTO folders (parent_id,name,sort,enabled,apps_include,apps_exclude,password_hash,show_in_popup)"
-                " VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT INTO folders (parent_id,name,sort,enabled,apps_include,apps_exclude,password_hash,"
+                "show_in_popup,notes,output_target,output_target_arg) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (f.parent_id, f.name, f.sort, int(f.enabled), f.apps_include, f.apps_exclude,
-                 f.password_hash, int(f.show_in_popup)))
+                 f.password_hash, int(f.show_in_popup), f.notes, f.output_target or "current",
+                 f.output_target_arg or ""))
             f.id = cur.lastrowid
+            if f.triggers:
+                self._write_owner_triggers("folder_id", f.id, f.triggers)
         self._changed("folder", f.id)
         return f
 
@@ -142,10 +242,32 @@ class Store:
         with self.lock, self.conn:
             self.conn.execute(
                 "UPDATE folders SET parent_id=?,name=?,sort=?,enabled=?,apps_include=?,apps_exclude=?,"
-                "password_hash=?,show_in_popup=? WHERE id=?",
+                "password_hash=?,show_in_popup=?,notes=?,output_target=?,output_target_arg=? WHERE id=?",
                 (f.parent_id, f.name, f.sort, int(f.enabled), f.apps_include, f.apps_exclude,
-                 f.password_hash, int(f.show_in_popup), f.id))
+                 f.password_hash, int(f.show_in_popup), f.notes, f.output_target or "current",
+                 f.output_target_arg or "", f.id))
         self._changed("folder", f.id)
+
+    # folder / special-folder triggers (a folder trigger opens that folder's popup menu)
+    def folder_triggers(self, folder_id: int) -> list[Trigger]:
+        with self.lock:
+            return [self._row_trigger(r) for r in self.conn.execute(
+                "SELECT * FROM triggers WHERE folder_id=? ORDER BY id", (folder_id,))]
+
+    def set_folder_triggers(self, folder_id: int, triggers: list[Trigger]) -> None:
+        with self.lock, self.conn:
+            self._write_owner_triggers("folder_id", folder_id, triggers)
+        self._changed("folder", folder_id)
+
+    def special_triggers(self, special: str) -> list[Trigger]:
+        with self.lock:
+            return [self._row_trigger(r) for r in self.conn.execute(
+                "SELECT * FROM triggers WHERE special=? ORDER BY id", (special,))]
+
+    def set_special_triggers(self, special: str, triggers: list[Trigger]) -> None:
+        with self.lock, self.conn:
+            self._write_owner_triggers("special", special, triggers)
+        self._changed("folder", None)
 
     def delete_folder(self, folder_id: int) -> None:
         with self.lock, self.conn:
@@ -153,15 +275,23 @@ class Store:
         self._changed("folder", folder_id)
 
     def _row_folder(self, r) -> Folder:
+        keys = r.keys()
         return Folder(id=r["id"], parent_id=r["parent_id"], name=r["name"], sort=r["sort"],
                       enabled=bool(r["enabled"]), apps_include=r["apps_include"],
                       apps_exclude=r["apps_exclude"], password_hash=r["password_hash"],
-                      show_in_popup=bool(r["show_in_popup"]))
+                      show_in_popup=bool(r["show_in_popup"]),
+                      notes=(r["notes"] or "") if "notes" in keys else "",
+                      output_target=(r["output_target"] or "current") if "output_target" in keys else "current",
+                      output_target_arg=(r["output_target_arg"] or "") if "output_target_arg" in keys else "")
 
     def get_folder(self, folder_id: int) -> Folder | None:
         with self.lock:
             r = self.conn.execute("SELECT * FROM folders WHERE id=?", (folder_id,)).fetchone()
-        return self._row_folder(r) if r else None
+            if not r:
+                return None
+            f = self._row_folder(r)
+            f.triggers = self.folder_triggers(f.id)
+        return f
 
     def folders(self, parent_id: int | None = ..., ) -> list[Folder]:  # type: ignore[assignment]
         """All folders, or children of parent_id (None = top level)."""
@@ -193,10 +323,11 @@ class Store:
         with self.lock, self.conn:
             cur = self.conn.execute(
                 "INSERT INTO phrases (folder_id,description,content,content_format,output_mode,apps_include,"
-                "apps_exclude,enabled,sort,use_count,last_used,created,modified,notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "apps_exclude,enabled,sort,use_count,last_used,created,modified,notes,output_target,"
+                "output_target_arg) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (p.folder_id, p.description, p.content, p.content_format, OutputMode(p.output_mode).value,
                  p.apps_include, p.apps_exclude, int(p.enabled), p.sort, p.use_count, p.last_used,
-                 p.created, p.modified, p.notes))
+                 p.created, p.modified, p.notes, p.output_target or "current", p.output_target_arg or ""))
             p.id = cur.lastrowid
             self._write_triggers(p)
             self._write_tags(p)
@@ -214,9 +345,11 @@ class Store:
             p.modified = _now()
             self.conn.execute(
                 "UPDATE phrases SET folder_id=?,description=?,content=?,content_format=?,output_mode=?,"
-                "apps_include=?,apps_exclude=?,enabled=?,sort=?,modified=?,notes=? WHERE id=?",
+                "apps_include=?,apps_exclude=?,enabled=?,sort=?,modified=?,notes=?,output_target=?,"
+                "output_target_arg=? WHERE id=?",
                 (p.folder_id, p.description, p.content, p.content_format, OutputMode(p.output_mode).value,
-                 p.apps_include, p.apps_exclude, int(p.enabled), p.sort, p.modified, p.notes, p.id))
+                 p.apps_include, p.apps_exclude, int(p.enabled), p.sort, p.modified, p.notes,
+                 p.output_target or "current", p.output_target_arg or "", p.id))
             self._write_triggers(p)
             self._write_tags(p)
         self._changed("phrase", p.id)
@@ -227,14 +360,23 @@ class Store:
         self._changed("phrase", phrase_id)
 
     def _write_triggers(self, p: Phrase) -> None:
-        self.conn.execute("DELETE FROM triggers WHERE phrase_id=?", (p.id,))
-        for t in p.triggers:
+        self._write_owner_triggers("phrase_id", p.id, p.triggers)
+
+    def _write_owner_triggers(self, owner_col: str, owner, triggers: list[Trigger]) -> None:
+        """Replace all triggers of one owner (phrase_id / folder_id / special). Caller holds the lock."""
+        assert owner_col in ("phrase_id", "folder_id", "special")
+        self.conn.execute(f"DELETE FROM triggers WHERE {owner_col}=?", (owner,))
+        for t in triggers:
+            t.sync_legacy()
+            t.phrase_id = owner if owner_col == "phrase_id" else None
+            t.folder_id = owner if owner_col == "folder_id" else None
+            t.special = owner if owner_col == "special" else ""
             cur = self.conn.execute(
-                "INSERT INTO triggers (phrase_id,kind,value,mode,case_sensitive,word_start_only,enabled)"
-                " VALUES (?,?,?,?,?,?,?)",
-                (p.id, TriggerKind(t.kind).value, t.value, AutotextMode(t.mode).value,
-                 int(t.case_sensitive), int(t.word_start_only), int(t.enabled)))
-            t.id, t.phrase_id = cur.lastrowid, p.id
+                f"INSERT INTO triggers ({','.join(TRIGGER_COLUMNS)}) VALUES ({','.join('?' * len(TRIGGER_COLUMNS))})",
+                (t.phrase_id, t.folder_id, t.special, TriggerKind(t.kind).value, t.value,
+                 AutotextMode(t.mode).value, int(t.case_sensitive), int(t.word_start_only), int(t.enabled),
+                 t.word_pos, t.exec_mode, t.lead_delim, t.trail_delim, int(t.remove_trailing), t.window_scope))
+            t.id = cur.lastrowid
 
     def _write_tags(self, p: Phrase) -> None:
         self.conn.execute("DELETE FROM phrase_tags WHERE phrase_id=?", (p.id,))
@@ -248,7 +390,8 @@ class Store:
                    content_format=r["content_format"], output_mode=OutputMode(r["output_mode"]),
                    apps_include=r["apps_include"], apps_exclude=r["apps_exclude"], enabled=bool(r["enabled"]),
                    sort=r["sort"], use_count=r["use_count"], last_used=r["last_used"], created=r["created"],
-                   modified=r["modified"], notes=r["notes"])
+                   modified=r["modified"], notes=r["notes"],
+                   output_target=r["output_target"] or "current", output_target_arg=r["output_target_arg"] or "")
         p.triggers = [self._row_trigger(t) for t in self.conn.execute(
             "SELECT * FROM triggers WHERE phrase_id=? ORDER BY id", (p.id,))]
         p.tags = [t[0] for t in self.conn.execute(
@@ -260,7 +403,11 @@ class Store:
     def _row_trigger(r) -> Trigger:
         return Trigger(id=r["id"], phrase_id=r["phrase_id"], kind=TriggerKind(r["kind"]), value=r["value"],
                        mode=AutotextMode(r["mode"]), case_sensitive=bool(r["case_sensitive"]),
-                       word_start_only=bool(r["word_start_only"]), enabled=bool(r["enabled"]))
+                       word_start_only=bool(r["word_start_only"]), enabled=bool(r["enabled"]),
+                       folder_id=r["folder_id"], special=r["special"] or "", word_pos=r["word_pos"] or "",
+                       exec_mode=r["exec_mode"] or "", lead_delim=r["lead_delim"] or "",
+                       trail_delim=r["trail_delim"] or "", remove_trailing=bool(r["remove_trailing"]),
+                       window_scope=r["window_scope"] or "")
 
     def get_phrase(self, phrase_id: int) -> Phrase | None:
         with self.lock:
@@ -296,8 +443,9 @@ class Store:
                 "ORDER BY p.use_count DESC, p.description LIMIT ?", (q, q, q, q, limit)).fetchall()
             return [self._row_phrase(r) for r in rows]
 
-    def triggers(self, kind: TriggerKind | None = None) -> list[Trigger]:
-        """Enabled triggers of enabled phrases inside enabled folders."""
+    def triggers(self, kind: TriggerKind | None = None, owners: str = "phrase") -> list[Trigger]:
+        """Enabled triggers of enabled phrases inside enabled folders.
+        owners: "phrase" (default, as before), "all" adds folder and special-folder triggers."""
         with self.lock:
             sql = ("SELECT t.* FROM triggers t JOIN phrases p ON p.id=t.phrase_id "
                    "WHERE t.enabled=1 AND p.enabled=1")
@@ -307,7 +455,21 @@ class Store:
                 args = (TriggerKind(kind).value,)
             rows = self.conn.execute(sql, args).fetchall()
             out = [self._row_trigger(r) for r in rows]
-        return [t for t in out if self.phrase_folder_enabled(t.phrase_id)]
+            extra = []
+            if owners == "all":
+                sql = "SELECT * FROM triggers WHERE enabled=1 AND phrase_id IS NULL"
+                if kind is not None:
+                    sql += " AND kind=?"
+                extra = [self._row_trigger(r) for r in self.conn.execute(sql, args).fetchall()]
+        out = [t for t in out if self.phrase_folder_enabled(t.phrase_id)]
+        for t in extra:
+            if t.folder_id is not None:
+                chain = self.folder_chain(t.folder_id)
+                if chain and all(f.enabled for f in chain):
+                    out.append(t)
+            elif t.special:
+                out.append(t)
+        return out
 
     def phrase_folder_enabled(self, phrase_id: int) -> bool:
         with self.lock:
@@ -470,12 +632,15 @@ class Store:
         """Full portable snapshot (used by io_formats and backups)."""
         return {
             "format": "phraseforge", "version": SCHEMA_VERSION, "exported": _now(),
-            "folders": [vars(f) for f in self.folders()],
+            "folders": [{**{k: v for k, v in vars(f).items() if k != "triggers"},
+                         "triggers": [t.to_dict() for t in self.folder_triggers(f.id)]}
+                        for f in self.folders()],
             "phrases": [{**{k: v for k, v in vars(p).items() if k != "triggers"},
                          "output_mode": OutputMode(p.output_mode).value,
-                         "triggers": [{**vars(t), "kind": TriggerKind(t.kind).value,
-                                       "mode": AutotextMode(t.mode).value} for t in p.triggers]}
+                         "triggers": [t.to_dict() for t in p.triggers]}
                         for p in self.phrases()],
+            "special_triggers": {s: [t.to_dict() for t in self.special_triggers(s)]
+                                 for s in ("last_used", "clipboard_cache") if self.special_triggers(s)},
             "vars": self.all_vars(),
             "excluded_apps": sorted(self.excluded_apps()),
         }
@@ -487,6 +652,9 @@ class Store:
             src.backup(self.conn)
             src.close()
             self.conn.execute("PRAGMA foreign_keys = ON")
+            self._migrate_schema()        # a backup/sync copy may come from an older version
+            self.conn.executescript(SCHEMA)
+        self._migrate_extras()
         for kind in ("folder", "phrase", "setting", "var", "clipboard"):
             self._changed(kind)
 
