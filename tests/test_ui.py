@@ -253,6 +253,47 @@ def test_clipboard_cache_and_last_used_nodes(app, store):
     w.close()
 
 
+def test_feature_switches_hide_special_nodes_and_cap_last_used(app, store):
+    from phraseforge.ui.main_window import MainWindow
+    from phraseforge.ui.tree_panel import ROLE_KIND
+    for i in range(4):
+        p = store.add_phrase(Phrase(f"u{i}", "x"))
+        store.record_use(p.id)
+    store.set_setting("last_used.max", "2")
+    w = MainWindow(store)
+    assert _item(w, "last_used").childCount() == 2
+    store.set_setting("features.usage_statistics", "0")
+    w._refresh_timer.stop()
+    w.refresh_tree()
+    hint = _item(w, "last_used").child(0)
+    assert hint.data(0, ROLE_KIND) == "hint" and "Usage statistics" in hint.text(0)
+    store.set_setting("features.last_used_folder", "0")
+    store.set_setting("clipboard_history.enabled", "0")
+    w._refresh_timer.stop()
+    w.refresh_tree()
+    tops = [w.tree.topLevelItem(i).data(0, ROLE_KIND) for i in range(w.tree.topLevelItemCount())]
+    assert tops == ["root"]
+    w.close()
+
+
+def test_new_phrase_focus_follows_prompt_setting(app, store):
+    from phraseforge.ui.main_window import MainWindow
+    w = MainWindow(store)
+    w.show()
+    w.new_phrase()
+    app.processEvents()
+    desc = getattr(w.editor, "description", None)
+    if desc is not None:
+        assert desc.hasFocus() and desc.selectedText() == "New phrase"
+    store.set_setting("display.prompt_after_new_phrase", "0")
+    w.new_phrase()
+    app.processEvents()
+    ce = getattr(w.editor, "content_edit", None)
+    if ce is not None:
+        assert ce.hasFocus()
+    w.close()
+
+
 def test_popup_filtering_and_app_rules(app, store):
     from phraseforge.ui.popup import PhrasePopup
     f = store.add_folder(Folder("Word", apps_include="winword.exe"))
