@@ -8,7 +8,7 @@ import pytest
 
 from phraseforge.cloud.secure import protect, unprotect
 from phraseforge.cloud.sync import SYNC_NAME, CloudSync, FolderRemote, GDriveRemote, content_hash
-from phraseforge.db import Store
+from phraseforge.db import SECRET_SETTINGS, Store
 from phraseforge.models import Phrase
 
 
@@ -171,3 +171,44 @@ def test_dpapi_roundtrip():
     enc = protect(secret)
     assert enc != secret
     assert unprotect(enc) == secret
+
+
+def test_api_keys_are_encrypted_at_rest(tmp_path):
+    s = Store(tmp_path / "k.db")
+    s.set_setting("ai.openai_key", "sk-test-123")
+    raw = s.conn.execute("SELECT value FROM settings WHERE key='ai.openai_key'").fetchone()[0]
+    assert "sk-test-123" not in raw and raw.startswith("dpapi:")
+    assert s.setting("ai.openai_key") == "sk-test-123"
+    assert s.settings()["ai.openai_key"] == "sk-test-123"
+    s.set_setting("ai.openai_key", "")
+    assert s.setting("ai.openai_key") == ""
+
+
+def test_plaintext_keys_from_older_versions_get_encrypted(tmp_path):
+    db = tmp_path / "old.db"
+    s = Store(db)
+    s.conn.execute("UPDATE settings SET value='sk-old' WHERE key='ai.anthropic_key'")
+    s.conn.commit()
+    s.conn.close()
+    s = Store(db)
+    raw = s.conn.execute("SELECT value FROM settings WHERE key='ai.anthropic_key'").fetchone()[0]
+    assert raw.startswith("dpapi:")
+    assert s.setting("ai.anthropic_key") == "sk-old"
+
+
+def test_api_keys_never_sync(tmp_path, remote_factory):
+    a, sa = pc(tmp_path, "A", remote_factory)
+    b, sb = pc(tmp_path, "B", remote_factory)
+    for k in SECRET_SETTINGS:
+        a.set_setting(k, "key-from-A")
+    b.set_setting("ai.openai_key", "key-from-B")
+    a.add_phrase(Phrase("P", "p"))
+    sa.sync()
+    apply(sb, sb.sync())
+    assert b.setting("ai.openai_key") == "key-from-B"
+    assert b.setting("ai.anthropic_key") == ""
+    sealed = a.conn.execute("SELECT value FROM settings WHERE key='ai.openai_key'").fetchone()[0].encode()
+    for f in tmp_path.rglob("*"):                 # nothing outside PC A's own database holds A's key
+        if f.is_file() and not f.name.startswith("A.db"):
+            data = f.read_bytes()
+            assert b"key-from-A" not in data and sealed not in data, f

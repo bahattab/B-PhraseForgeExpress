@@ -6,6 +6,7 @@ check_same_thread=False plus an RLock so the hook thread can read safely.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import sqlite3
@@ -110,6 +111,29 @@ def hash_password(pw: str) -> str:
     return hashlib.sha256(("phraseforge:" + pw).encode()).hexdigest() if pw else ""
 
 
+# API keys are encrypted with Windows DPAPI before they are written, so a copied
+# database file does not reveal them (other platforms: stored base64-encoded only).
+SECRET_SETTINGS = frozenset({"ai.openai_key", "ai.anthropic_key", "ai.openrouter_key"})
+_SEALED = "dpapi:"
+
+
+def _seal(value: str) -> str:
+    from phraseforge.cloud.secure import protect
+    if not value or value.startswith(_SEALED):
+        return value
+    return _SEALED + base64.b64encode(protect(value.encode("utf-8"))).decode("ascii")
+
+
+def _unseal(value: str) -> str:
+    from phraseforge.cloud.secure import unprotect
+    if not value.startswith(_SEALED):
+        return value                      # empty, or saved before encryption existed
+    try:
+        return unprotect(base64.b64decode(value[len(_SEALED):])).decode("utf-8")
+    except (OSError, ValueError):
+        return ""                         # sealed by another Windows user or PC
+
+
 class Store:
     def __init__(self, path: str | Path = ":memory:"):
         self.path = str(path)
@@ -125,6 +149,10 @@ class Store:
             self.conn.execute("INSERT OR IGNORE INTO meta VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
             for k, v in DEFAULT_SETTINGS.items():
                 self.conn.execute("INSERT OR IGNORE INTO settings VALUES (?, ?)", (k, v))
+            for k in SECRET_SETTINGS:         # encrypt keys saved by older versions
+                r = self.conn.execute("SELECT value FROM settings WHERE key=?", (k,)).fetchone()
+                if r and r[0] and not r[0].startswith(_SEALED):
+                    self.conn.execute("UPDATE settings SET value=? WHERE key=?", (_seal(r[0]), k))
         self._listeners: list = []
         self._migrate_extras()
 
@@ -545,16 +573,20 @@ class Store:
     def setting(self, key: str, default: str = "") -> str:
         with self.lock:
             r = self.conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
-        return r[0] if r else default
+        if not r:
+            return default
+        return _unseal(r[0]) if key in SECRET_SETTINGS else r[0]
 
     def set_setting(self, key: str, value: str) -> None:
+        value = _seal(str(value)) if key in SECRET_SETTINGS else str(value)
         with self.lock, self.conn:
-            self.conn.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (key, str(value)))
+            self.conn.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (key, value))
         self._changed("setting")
 
     def settings(self) -> dict[str, str]:
         with self.lock:
-            return {r[0]: r[1] for r in self.conn.execute("SELECT key, value FROM settings")}
+            return {r[0]: _unseal(r[1]) if r[0] in SECRET_SETTINGS else r[1]
+                    for r in self.conn.execute("SELECT key, value FROM settings")}
 
     def excluded_apps(self) -> set[str]:
         with self.lock:
