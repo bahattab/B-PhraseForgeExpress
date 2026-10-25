@@ -1090,7 +1090,10 @@ class PhraseForgeApp(QObject):
         if self.file_index is None:
             self._build_file_index()
         if self.file_window is None:
-            self.file_window = FileSearchWindow(self.file_index)
+            from phraseforge import filesearch
+            kw = filesearch.parse_web_keywords(self.store.setting("filesearch.web_keywords", "")
+                                               or filesearch.DEFAULT_WEB_KEYWORDS)
+            self.file_window = FileSearchWindow(self.file_index, web_keywords=kw)
             self.file_window.insert_path.connect(lambda path: self._jobs.put(("text", path, self._file_hwnd)))
         self._file_hwnd = hwnd
         if not len(self.file_index) and not self.file_index.building:

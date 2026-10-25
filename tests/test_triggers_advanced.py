@@ -503,3 +503,20 @@ def test_editor_saves_trigger_options_and_output_target(qapp, store):
     se.dirty = True
     se.save()
     assert store.special_triggers("last_used")[0].value == "lu#"
+
+
+
+def test_double_ctrl_opens_file_search():
+    """Listary-style double Ctrl emits the file_search command through the trigger layer."""
+    store = Store(":memory:")
+    m, _exp, cmds, _fg, clock = manager(store)
+    for _ in range(2):
+        m._on_key(Ev(None, vk=0xA2, down=True, mods=("ctrl",)))
+        m._on_key(Ev(None, vk=0xA2, down=False))
+        clock.t += 0.15
+    assert "file_search" in cmds
+    m2, _e, cmds2, _f, _c = manager(Store(":memory:"), filesearch__double_ctrl="0")
+    for _ in range(2):
+        m2._on_key(Ev(None, vk=0xA2, down=True, mods=("ctrl",)))
+        m2._on_key(Ev(None, vk=0xA2, down=False))
+    assert "file_search" not in cmds2

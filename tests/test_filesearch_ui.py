@@ -95,3 +95,27 @@ def test_hotkey_and_tray_are_wired():
     from phraseforge.ui.tray import Tray
     assert COMMAND_HOTKEY_SETTINGS["filesearch.hotkey"] == "file_search"
     assert hasattr(Tray, "file_search")
+
+
+def test_web_keyword_row_opens_url(app, index, monkeypatch):
+    from phraseforge.ui.file_search import FileSearchWindow
+    opened = []
+    monkeypatch.setattr(filesearch, "open_path", opened.append)
+    w = FileSearchWindow(index)
+    w.show_centered()
+    w.search.setText("g quarterly report")
+    w.refresh()
+    assert "Search the web" in w.list.item(0).text()
+    _key(w, Qt.Key_Return)
+    assert opened == ["https://www.google.com/search?q=quarterly+report"]
+
+
+def test_settings_page_has_double_ctrl_and_keywords(app):
+    from phraseforge.ui.settings_dialog import SettingsDialog
+    s = Store(":memory:")
+    d = SettingsDialog(s, page="file_search")
+    d.filesearch_web.setPlainText("gh=https://github.com/search?q={q}")
+    d.save()
+    assert filesearch.parse_web_keywords(s.setting("filesearch.web_keywords")) == {
+        "gh": "https://github.com/search?q={q}"}
+    assert s.setting("filesearch.double_ctrl") == "1"

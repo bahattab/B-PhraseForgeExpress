@@ -100,3 +100,33 @@ def test_speed_gate_50k_entries_answers_in_milliseconds(tmp_path):
         times.append((time.perf_counter() - t0) * 1000)
     assert statistics.median(times) < 50, times     # milliseconds
     assert ix.search("photo_notes_7_76")[0].name == "photo_notes_7_76.txt"
+
+
+def test_web_keywords():
+    from phraseforge.filesearch import DEFAULT_WEB_KEYWORDS, parse_web_keywords, web_search
+    kw = parse_web_keywords(DEFAULT_WEB_KEYWORDS + "\nbad line\nx=no-placeholder\n")
+    assert set(kw) == {"g", "yt", "wiki", "maps"}
+    assert web_search("g weather riyadh", kw) == ("g", "https://www.google.com/search?q=weather+riyadh")
+    assert web_search("G  ", kw) is None and web_search("report 2026", kw) is None
+
+
+def test_double_ctrl_tap():
+    from phraseforge.filesearch import DoubleTap
+    t = [0.0]
+    d = DoubleTap({0xA2}, window=0.4, clock=lambda: t[0])
+    CTRL = 0xA2
+
+    def tap(at):
+        t[0] = at
+        a = d.feed(CTRL, True)
+        b = d.feed(CTRL, False)
+        return a or b
+    assert not tap(0.0) and tap(0.2)              # two quick taps
+    assert not tap(1.0) and not tap(1.6)          # too slow
+    t[0] = 2.0
+    d.feed(CTRL, True); d.feed(0x43, True); d.feed(0x43, False); d.feed(CTRL, False)   # Ctrl+C
+    assert not tap(2.1)                           # Ctrl+C then one tap: not a double tap
+    t[0] = 3.0
+    d.feed(CTRL, True); d.feed(CTRL, True); d.feed(CTRL, True)   # auto-repeat while held
+    d.feed(CTRL, False)
+    assert tap(3.2)

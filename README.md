@@ -68,7 +68,8 @@ Data lives in `%APPDATA%\PhraseForge` (override with `PHRASEFORGE_HOME`).
 Ctrl+Alt+F (or tray > Search files) opens a launcher: type parts of a file, folder or
 program name in any order (`rep 2026 pdf`). Enter opens it, Ctrl+Enter opens its folder,
 Shift+Enter types the full path into the program you were in, Ctrl+C copies the path.
-Programs and items you open often come first. Settings > Search files chooses the folders
+Programs and items you open often come first. Pressing Ctrl twice also opens it, and
+web keywords work too: `g weather`, `yt`, `wiki`, `maps` (add your own in Settings). Settings > Search files chooses the folders
 (default: Start menu, Desktop, Documents, Downloads) and how often the index is rebuilt.
 
 ## Google Drive backup & sync

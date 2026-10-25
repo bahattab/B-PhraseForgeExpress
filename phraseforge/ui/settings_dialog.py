@@ -100,6 +100,11 @@ class DataCombo(QComboBox):
         self.set_value(text)
 
 
+def filesearch_defaults() -> str:
+    from phraseforge.filesearch import DEFAULT_WEB_KEYWORDS
+    return DEFAULT_WEB_KEYWORDS
+
+
 class Hotkey(HotkeyPicker):
     """HotkeyPicker that stores modifiers in canonical order (ctrl+alt+shift+win, as
     the trigger layer writes them) and has text-style accessors (setText/text/chord)."""
@@ -1219,6 +1224,16 @@ class SettingsDialog(QDialog):
         gl.addWidget(self.bind("filesearch.enabled", QCheckBox("Index files when PhraseForge starts")))
         gl.addWidget(QLabel("Hotkey: open Search files"))
         gl.addWidget(self.bind("filesearch.hotkey", Hotkey()))
+        gl.addWidget(self.bind("filesearch.double_ctrl", QCheckBox("Also open it by pressing Ctrl twice")))
+        lay.addWidget(g)
+        g, gl = _group("Web search keywords")
+        gl.addWidget(_wrap_label("Type a keyword, a space and your words, e.g. \"g weather\", then Enter. "
+                                 "One keyword per line: keyword=address with {q} where the words go. "
+                                 "Empty = g (Google), yt (YouTube), wiki (Wikipedia), maps (Google Maps)."))
+        self.filesearch_web = self.bind("filesearch.web_keywords", QPlainTextEdit())
+        self.filesearch_web.setFixedHeight(80)
+        self.filesearch_web.setPlaceholderText(filesearch_defaults())
+        gl.addWidget(self.filesearch_web)
         lay.addWidget(g)
         g, gl = _group("Folders to index")
         gl.addWidget(_wrap_label("One folder per line. Empty = Start menu, Desktop, Documents and Downloads."))

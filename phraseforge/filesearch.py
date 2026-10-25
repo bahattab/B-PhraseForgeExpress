@@ -213,6 +213,69 @@ def _hidden(entry: os.DirEntry) -> bool:
     return bool(attrs & 0x2 or attrs & 0x4)   # FILE_ATTRIBUTE_HIDDEN | SYSTEM
 
 
+DEFAULT_WEB_KEYWORDS = (
+    "g=https://www.google.com/search?q={q}\n"
+    "yt=https://www.youtube.com/results?search_query={q}\n"
+    "wiki=https://en.wikipedia.org/w/index.php?search={q}\n"
+    "maps=https://www.google.com/maps/search/{q}"
+)
+
+
+def parse_web_keywords(text: str) -> dict[str, str]:
+    """'g=https://...{q}' lines -> {'g': url template}. Lines without {q} or '=' are skipped."""
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        key, sep, url = line.strip().partition("=")
+        key = key.strip().lower()
+        if sep and key and " " not in key and "{q}" in url:
+            out[key] = url.strip()
+    return out
+
+
+def web_search(query: str, keywords: dict[str, str]) -> tuple[str, str] | None:
+    """'g weather riyadh' -> ('g', 'https://www.google.com/search?q=weather+riyadh')."""
+    from urllib.parse import quote_plus
+    key, _, rest = query.strip().partition(" ")
+    tpl = keywords.get(key.lower())
+    if not tpl or not rest.strip():
+        return None
+    return key.lower(), tpl.replace("{q}", quote_plus(rest.strip()))
+
+
+class DoubleTap:
+    """Detect a modifier key pressed twice on its own (Listary-style "double Ctrl").
+
+    Feed every key event; returns True on the second clean tap. A tap is a press
+    and release with no other key in between; both taps must fall within `window` s.
+    """
+
+    def __init__(self, vks: set[int], window: float = 0.4, clock: Callable[[], float] = time.monotonic):
+        self.vks, self.window, self.clock = vks, window, clock
+        self._down = False
+        self._clean = False
+        self._last_tap = -1.0
+
+    def feed(self, vk: int, down: bool) -> bool:
+        if vk not in self.vks:
+            self._clean = False
+            self._last_tap = -1.0
+            self._down = False
+            return False
+        if down:
+            if not self._down:          # ignore auto-repeat
+                self._down, self._clean = True, True
+            return False
+        was_clean, self._down = self._down and self._clean, False
+        if not was_clean:
+            return False
+        now = self.clock()
+        if self._last_tap >= 0 and now - self._last_tap <= self.window:
+            self._last_tap = -1.0
+            return True
+        self._last_tap = now
+        return False
+
+
 def parse_roots(text: str) -> list[str]:
     return [line.strip().strip('"') for line in text.splitlines() if line.strip()]
 

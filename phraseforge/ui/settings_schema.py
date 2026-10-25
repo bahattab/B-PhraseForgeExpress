@@ -104,6 +104,8 @@ SCHEMA: dict[str, str] = {
     "filesearch.roots": "",
     "filesearch.refresh_minutes": "30",
     "filesearch.include_hidden": "0",
+    "filesearch.double_ctrl": "1",          # press Ctrl twice to open Search files
+    "filesearch.web_keywords": "",           # "g=https://...{q}" per line; empty = built-in list
     "onenote.clip_tool": "phraseforge",    # phraseforge | onenote (onenotecapture.exe)
     "onenote.clip_action": "image",        # image | ocr | both
     "onenote.include_ocr": "0",            # include text OneNote recognised in images

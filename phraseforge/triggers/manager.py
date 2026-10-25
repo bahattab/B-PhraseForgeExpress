@@ -149,6 +149,7 @@ class TriggerManager:
         self._foreground_hwnd = foreground_hwnd
         self.poll_interval_s = poll_interval_s
         self._clock = clock
+        self._double_ctrl = None       # filesearch.DoubleTap, set in reload()
         self._timer_factory = timer_factory or threading.Timer
 
         self.matcher = AutotextMatcher()
@@ -261,6 +262,10 @@ class TriggerManager:
             "programs": _parse_programs(s("app.restrict_programs", "")),
         }
         self.matcher.set_route_enter_tab(s("autotext.route_enter_tab", "0") == "1")
+        from phraseforge.filesearch import DoubleTap
+        self._double_ctrl = (DoubleTap({0x11, 0xA2, 0xA3}, clock=self._clock)
+                             if s("filesearch.double_ctrl", "1") == "1" and s("filesearch.enabled", "1") == "1"
+                             else None)
         lead = s("autotext.leading_delimiters", "")
         self.matcher.set_leading(lead or None)
         self.matcher.set_delimiters(s("autotext.delimiters", " \t\n.,;:!?)]}'\""))
@@ -389,6 +394,8 @@ class TriggerManager:
         """Runs on the hook thread: must return quickly. True = swallow the key."""
         if ev.vk == VK_CAPITAL and self._opt.get("disable_capslock"):
             return True                                   # Caps Lock disabled (down and up)
+        if self._double_ctrl is not None and self._double_ctrl.feed(ev.vk, ev.down) and self._active():
+            self._emit(self.on_command, "file_search")    # Listary-style double Ctrl
         if not ev.down:
             return self.hotkeys.on_key_up(ev.vk)
         if not self._active():

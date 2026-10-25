@@ -24,14 +24,17 @@ from phraseforge.ui.icons import app_icon
 from phraseforge.ui.popup import HEADER_H, ROW_H, SELECT, _Band
 
 ROLE_PATH = Qt.UserRole
+ROLE_URL = Qt.UserRole + 1
 
 
 class FileSearchWindow(QFrame):
     insert_path = Signal(str)      # Shift+Enter: type this path into the previous program
 
-    def __init__(self, index: filesearch.FileIndex, parent=None):
+    def __init__(self, index: filesearch.FileIndex, parent=None, web_keywords: dict[str, str] | None = None):
         super().__init__(parent, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.index = index
+        self.web_keywords = (web_keywords if web_keywords is not None
+                             else filesearch.parse_web_keywords(filesearch.DEFAULT_WEB_KEYWORDS))
         self._icons = QFileIconProvider()
         self.setWindowTitle(tr("Search files"))
         self.setWindowIcon(app_icon())
@@ -83,6 +86,14 @@ class FileSearchWindow(QFrame):
         if not q:
             self._show_status()
             return
+        web = filesearch.web_search(q, self.web_keywords)
+        if web:
+            key, url = web
+            it = QListWidgetItem(f"{tr('Search the web')} ({key}):  {q.partition(' ')[2].strip()}")
+            it.setSizeHint(QSize(10, ROW_H))
+            it.setData(ROLE_URL, url)
+            it.setToolTip(url)
+            self.list.addItem(it)
         hits = self.index.search(q, limit=60)
         for h in hits:
             folder = os.path.dirname(h.path)
@@ -92,7 +103,7 @@ class FileSearchWindow(QFrame):
             it.setToolTip(h.path)
             it.setIcon(self._icons.icon(QFileInfo(h.path)))
             self.list.addItem(it)
-        if hits:
+        if self.list.count():
             self.list.setCurrentRow(0)
         self._show_status(len(hits))
 
@@ -113,6 +124,11 @@ class FileSearchWindow(QFrame):
     def _open(self, it: QListWidgetItem | None, folder: bool = False) -> None:
         if it is None:
             return
+        url = it.data(ROLE_URL)
+        if url:
+            self.hide()
+            filesearch.open_path(url)
+            return
         path = it.data(ROLE_PATH)
         self.hide()
         self.index.record_open(path)
@@ -121,14 +137,14 @@ class FileSearchWindow(QFrame):
     def _copy(self) -> None:
         it = self.list.currentItem()
         if it:
-            QGuiApplication.clipboard().setText(it.data(ROLE_PATH))
+            QGuiApplication.clipboard().setText(it.data(ROLE_PATH) or it.data(ROLE_URL))
             self.hide()
 
     def _insert(self) -> None:
         it = self.list.currentItem()
         if it:
             self.hide()
-            self.insert_path.emit(it.data(ROLE_PATH))
+            self.insert_path.emit(it.data(ROLE_PATH) or it.data(ROLE_URL))
 
     def _handle_key(self, e) -> bool:
         k, mods = e.key(), e.modifiers()
