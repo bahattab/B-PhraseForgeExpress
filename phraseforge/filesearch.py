@@ -354,11 +354,23 @@ def _hidden(entry: os.DirEntry) -> bool:
     return bool(attrs & 0x2 or attrs & 0x4)   # FILE_ATTRIBUTE_HIDDEN | SYSTEM
 
 
+# Keywords and titles as in Listary's Options > Web Search list (observed); the
+# addresses are the sites' public search URLs, written here (not copied from Listary).
 DEFAULT_WEB_KEYWORDS = (
     "g=https://www.google.com/search?q={q}\n"
-    "yt=https://www.youtube.com/results?search_query={q}\n"
     "wiki=https://en.wikipedia.org/w/index.php?search={q}\n"
-    "maps=https://www.google.com/maps/search/{q}"
+    "so=https://stackoverflow.com/search?q={q}\n"
+    "bing=https://www.bing.com/search?q={q}\n"
+    "b=https://www.baidu.com/s?wd={q}\n"
+    "gmail=https://mail.google.com/mail/u/0/#search/{q}\n"
+    "twitter=https://twitter.com/search?q={q}\n"
+    "youtube=https://www.youtube.com/results?search_query={q}\n"
+    "yt=https://www.youtube.com/results?search_query={q}\n"
+    "maps=https://www.google.com/maps/search/{q}\n"
+    "amazon=https://www.amazon.com/s?k={q}\n"
+    "ebay=https://www.ebay.com/sch/i.html?_nkw={q}\n"
+    "imdb=https://www.imdb.com/find?q={q}\n"
+    "facebook=https://www.facebook.com/search/top/?q={q}"
 )
 
 
@@ -535,3 +547,55 @@ def run_command(key: str) -> bool:
     else:
         return False
     return True
+
+
+# ---- custom commands (observed: Options > Commands > Custom Command: Keyword, Title, Path,
+# Parameter with {query}, Working directory; example "notepad" -> C:\\Windows\\notepad.exe "{query}")
+DEFAULT_CUSTOM_COMMANDS = r'notepad = Open in Notepad | %SystemRoot%\notepad.exe | "{query}"'
+
+
+@dataclass(frozen=True)
+class CustomCommand:
+    keyword: str
+    title: str
+    program: str
+    parameter: str = ""
+    workdir: str = ""
+
+
+def parse_custom_commands(text: str) -> list[CustomCommand]:
+    """Lines 'keyword = Title | program | parameter | working directory'; {query} is what
+    you type after the keyword."""
+    out = []
+    for line in (text or "").splitlines():
+        key, sep, rest = line.strip().partition("=")
+        key = key.strip().lower()
+        if not sep or not key or " " in key:
+            continue
+        parts = [p.strip() for p in rest.split("|")]
+        if len(parts) < 2 or not parts[1]:
+            continue
+        out.append(CustomCommand(key, parts[0] or key, parts[1], parts[2] if len(parts) > 2 else "",
+                                 parts[3] if len(parts) > 3 else ""))
+    return out
+
+
+def match_custom_commands(query: str, commands: list[CustomCommand]) -> list[tuple[CustomCommand, str]]:
+    """'notepad todo.txt' -> [(notepad command, 'todo.txt')]; a bare prefix lists matching keywords."""
+    head, _, rest = query.strip().partition(" ")
+    head = head.lower()
+    if not head:
+        return []
+    if rest:
+        return [(c, rest.strip()) for c in commands if c.keyword == head]
+    return [(c, "") for c in commands if c.keyword.startswith(head)]
+
+
+def run_custom_command(cmd: CustomCommand, query: str) -> None:
+    fill = lambda t: _expand_env(t.replace("{query}", query))
+    shell_execute(fill(cmd.program), fill(cmd.parameter), cwd=fill(cmd.workdir) or None)
+
+
+def _expand_env(text: str) -> str:
+    """Expand Windows-style %VAR% (on every OS, so tests behave the same)."""
+    return re.sub(r"%([^%\\/]+)%", lambda m: os.environ.get(m.group(1), m.group(0)), text)

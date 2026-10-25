@@ -1282,6 +1282,20 @@ class SettingsDialog(QDialog):
         self.filesearch_prio.setFixedHeight(110)
         gl.addWidget(self.filesearch_prio)
         lay.addWidget(g)
+        g, gl = _group("Custom commands")
+        gl.addWidget(_wrap_label("Type a keyword, a space and your text, then Enter. One per line: "
+                                 "keyword = Title | program | parameters | working folder. "
+                                 "{query} is the text you typed."))
+        self.filesearch_commands = self.bind("filesearch.commands", QPlainTextEdit())
+        self.filesearch_commands.setFixedHeight(60)
+        gl.addWidget(self.filesearch_commands)
+        lay.addWidget(g)
+        g, gl = _group("Favorite folders")
+        gl.addWidget(_wrap_label("Shown in Search files before you type anything. One folder per line."))
+        self.filesearch_favorites = self.bind("filesearch.favorites", QPlainTextEdit())
+        self.filesearch_favorites.setFixedHeight(60)
+        gl.addWidget(self.filesearch_favorites)
+        lay.addWidget(g)
         g, gl = _group("Actions (Ctrl+O)")
         gl.addWidget(_wrap_label("Built in: Open Containing Folder, Copy, Cut, Copy Path, Copy File Name. "
                                  "Custom actions, one per line: Title = program | parameters | working folder. "
@@ -1293,7 +1307,7 @@ class SettingsDialog(QDialog):
         g, gl = _group("Web search keywords")
         gl.addWidget(_wrap_label("Type a keyword, a space and your words, e.g. \"g weather\", then Enter. "
                                  "One keyword per line: keyword=address with {q} where the words go. "
-                                 "Empty = g (Google), yt (YouTube), wiki (Wikipedia), maps (Google Maps)."))
+                                 "Empty = the built-in list: g, wiki, so, bing, b, gmail, twitter, youtube (yt), maps, amazon, ebay, imdb, facebook."))
         self.filesearch_web = self.bind("filesearch.web_keywords", QPlainTextEdit())
         self.filesearch_web.setFixedHeight(80)
         self.filesearch_web.setPlaceholderText(filesearch_defaults())

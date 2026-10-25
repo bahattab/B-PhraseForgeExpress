@@ -1167,7 +1167,10 @@ class PhraseForgeApp(QObject):
             self.file_window = FileSearchWindow(
                 self.file_index, web_keywords=kw,
                 filters=filesearch.parse_filters(self.store.setting("filesearch.filters", "")),
-                custom_actions=filesearch.parse_custom_actions(self.store.setting("filesearch.actions", "")))
+                custom_actions=filesearch.parse_custom_actions(self.store.setting("filesearch.actions", "")),
+                custom_commands=filesearch.parse_custom_commands(
+                    self.store.setting("filesearch.commands", filesearch.DEFAULT_CUSTOM_COMMANDS)),
+                favorites=filesearch.parse_roots(self.store.setting("filesearch.favorites", "")))
             self.file_window.insert_path.connect(lambda path: self._jobs.put(("text", path, self._file_hwnd)))
             self.file_window.open_settings.connect(self.show_settings)
         elif self.file_window.isVisible() and self.store.setting("filesearch.press_again", "hide") == "hide":

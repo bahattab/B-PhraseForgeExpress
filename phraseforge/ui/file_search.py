@@ -31,6 +31,7 @@ from phraseforge.ui.popup import HEADER_H, ROW_H, SELECT, _Band
 ROLE_PATH = Qt.UserRole
 ROLE_URL = Qt.UserRole + 1
 ROLE_CMD = Qt.UserRole + 2
+ROLE_CUSTOM = Qt.UserRole + 3      # (custom command index, query)
 
 
 class FileSearchWindow(QFrame):
@@ -38,11 +39,14 @@ class FileSearchWindow(QFrame):
     open_settings = Signal()       # "opt" command
 
     def __init__(self, index: filesearch.FileIndex, parent=None, web_keywords: dict[str, str] | None = None,
-                 filters: dict | None = None, custom_actions: list | None = None):
+                 filters: dict | None = None, custom_actions: list | None = None,
+                 custom_commands: list | None = None, favorites: list[str] | None = None):
         super().__init__(parent, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.index = index
         self.filters = filters if filters is not None else dict(filesearch.DEFAULT_FILTERS)
         self.custom_actions = custom_actions or []
+        self.custom_commands = custom_commands or []
+        self.favorites = favorites or []        # Listary "Menu": folders shown while the box is empty
         self.actions_menu: QMenu | None = None
         self.web_keywords = (web_keywords if web_keywords is not None
                              else filesearch.parse_web_keywords(filesearch.DEFAULT_WEB_KEYWORDS))
@@ -95,8 +99,21 @@ class FileSearchWindow(QFrame):
         q = self.search.text().strip()
         self.list.clear()
         if not q:
+            for path in self.favorites:
+                it = QListWidgetItem(f"★  {os.path.basename(path.rstrip(chr(92) + '/')) or path}    —  {path}")
+                it.setSizeHint(QSize(10, ROW_H))
+                it.setData(ROLE_PATH, path)
+                it.setToolTip(path)
+                self.list.addItem(it)
+            if self.list.count():
+                self.list.setCurrentRow(0)
             self._show_status()
             return
+        for i, (c, arg) in enumerate(filesearch.match_custom_commands(q, self.custom_commands)):
+            it = QListWidgetItem(f"{c.keyword}    —  {c.title}" + (f":  {arg}" if arg else ""))
+            it.setSizeHint(QSize(10, ROW_H))
+            it.setData(ROLE_CUSTOM, (self.custom_commands.index(c), arg))
+            self.list.addItem(it)
         for key in filesearch.match_commands(q):
             it = QListWidgetItem(f"{key}    —  {tr(filesearch.COMMANDS[key])}")
             it.setSizeHint(QSize(10, ROW_H))
@@ -143,6 +160,12 @@ class FileSearchWindow(QFrame):
     # ------------------------------------------------------------ actions
     def _open(self, it: QListWidgetItem | None, folder: bool = False) -> None:
         if it is None:
+            return
+        custom = it.data(ROLE_CUSTOM)
+        if custom:
+            self.hide()
+            i, arg = custom
+            filesearch.run_custom_command(self.custom_commands[i], arg)
             return
         cmd = it.data(ROLE_CMD)
         if cmd:

@@ -169,3 +169,18 @@ def test_filter_in_window(app, index):
     w.refresh()
     assert [w.list.item(i).text().split("    ")[0] for i in range(w.list.count())] == ["report notes.txt", "Quarterly report.xlsx"]
     assert w.status.text().startswith("Document: ")
+
+
+def test_custom_command_row_and_favorites(app, index, monkeypatch, tmp_path):
+    from phraseforge.ui.file_search import ROLE_CUSTOM, ROLE_PATH, FileSearchWindow
+    ran = []
+    monkeypatch.setattr(filesearch, "run_custom_command", lambda c, q: ran.append((c.keyword, q)))
+    cmds = filesearch.parse_custom_commands(filesearch.DEFAULT_CUSTOM_COMMANDS)
+    w = FileSearchWindow(index, custom_commands=cmds, favorites=[str(tmp_path)])
+    w.show_centered()
+    assert w.list.count() == 1 and w.list.item(0).data(ROLE_PATH) == str(tmp_path)
+    w.search.setText("notepad todo.txt")
+    w.refresh()
+    assert w.list.item(0).data(ROLE_CUSTOM) == (0, "todo.txt")
+    _key(w, Qt.Key_Return)
+    assert ran == [("notepad", "todo.txt")]

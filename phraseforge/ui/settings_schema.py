@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 
+from phraseforge.filesearch import DEFAULT_CUSTOM_COMMANDS as FILESEARCH_COMMANDS
 from phraseforge.filesearch import DEFAULT_PRIORITY_RULES as FILESEARCH_PRIORITIES
 from phraseforge.db import DEFAULT_SETTINGS
 from phraseforge.onenote import DEFAULT_EXE as _ONENOTE_EXE
@@ -124,6 +125,8 @@ SCHEMA: dict[str, str] = {
     "filesearch.filters": "",                # extra "keyword = Name; ext=pdf,docx; in=C:\\Docs"
     "filesearch.priorities": FILESEARCH_PRIORITIES,
     "filesearch.actions": 'Edit with Notepad = notepad.exe | "{path}"',
+    "filesearch.commands": FILESEARCH_COMMANDS,  # "keyword = Title | program | parameter with {query}"
+    "filesearch.favorites": "",              # folders listed while the search box is empty
     "onenote.clip_tool": "phraseforge",    # phraseforge | onenote (onenotecapture.exe)
     "onenote.clip_action": "image",        # image | ocr | both
     "onenote.include_ocr": "0",            # include text OneNote recognised in images

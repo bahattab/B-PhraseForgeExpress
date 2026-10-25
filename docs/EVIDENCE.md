@@ -39,7 +39,7 @@ original), **pending** (not captured yet).
 | OneNote screen clipping (onenotecapture.exe) | pending (no window) | `docs/menus/onenotecapture.md` |
 | Send to OneNote (ONENOTEM.EXE) | pending (tray only) | `docs/menus/onenotem.md` |
 | TextExpander | pending (tray only) | `docs/menus/textexpander.md` |
-| Listary | **observed**: Options window (General, Appearance, Hotkey, File Search, Actions, Commands) from 16 screenshots; tray menu pending | `docs/menus/listary.md` |
+| Listary | **observed**: all Options pages except About, from 26 screenshots; tray menu pending | `docs/menus/listary.md` |
 
 ## Feature ledger
 
@@ -62,12 +62,14 @@ original), **pending** (not captured yet).
 | Find (regex) → Replace rules per OCR language | Capture2Text Settings > Replace | observed | implemented as text rules `find => replace` with `[Language]` sections (Capture2Text uses a table) | `test_replace_rules_global_and_per_language` |
 | Search files: type name fragments, Enter opens, Ctrl+Enter opens folder, Shift+Enter types path | Listary | published, unconfirmed (Enter/Shift+Enter keys not in the screenshots) | implemented | `tests/test_filesearch.py`, `tests/test_filesearch_ui.py` |
 | Open Search files by pressing Ctrl twice; "When pressing again: Hide" | Listary Options > Hotkey | observed | implemented (Settings > Search files) | implemented (on by default, Settings > Search files) | `test_double_ctrl_tap`, `test_double_ctrl_opens_file_search` |
-| Web search keywords (`g`, `yt`, `wiki`, `maps`, user-defined) | Listary | published, unconfirmed | implemented | `test_web_keywords`, `test_web_keyword_row_opens_url` |
+| Web search keywords: Listary's list (g, wiki, so, bing, b, gmail, twitter, youtube, maps, amazon, ebay, imdb, facebook) plus yt and user-defined | Listary Options > Web Search | observed (keywords and titles); the URLs are the sites' public search addresses | implemented | `test_web_keywords`, `test_web_keyword_row_opens_url` |
 | Next / previous result Ctrl+N / Ctrl+P, actions menu Ctrl+O | Listary Options > Hotkey | observed | implemented | `test_actions_menu_commands_and_navigation` |
 | Search filters "keyword:" (Folder, File, Document, Picture, Video, Audio) plus user filters with extensions, folder/file choice and "search in" | Listary Options > File Search > Filters | observed (names); the built-in keywords folder/file/doc/pic/video/audio and the extension lists are **inferred** | implemented | `test_filters_by_keyword`, `test_filter_in_window` |
 | Priorities: High / Normal / Rarely used / Do not index, by folder or file-name regex, with Listary's default rules | Listary Options > File Search > Priorities | observed | implemented; a folder's priority passes to its contents. The `^[^.]+$` rule is left out because it would push every folder down | `test_priorities_order_and_skip` |
 | Actions: Open Containing Folder, Copy, Cut, Copy Path, Copy File Name, custom actions (program, parameter, working folder) | Listary Options > Actions | observed | implemented; hotkey, keyword, scope, silent and run-as-admin per action are not | `test_custom_actions_and_commands`, `test_actions_menu_commands_and_navigation` |
 | Command keywords: opt, rebuild, cmd, cmda, psh, psha, uninstall, connections, hosts | Listary Options > Commands | observed | implemented | same tests |
+| Custom commands: keyword + text → program with `{query}` (default example: notepad) | Listary Options > Commands > Custom Command | observed | implemented; hotkey, scope, silent, run as admin per command are not | `test_custom_commands_and_web_list`, `test_custom_command_row_and_favorites` |
+| Favourite folders shown before typing | Listary Options > Menu | observed | approximated: a flat list in Search files; Listary's submenus, separators and commands inside the menu are not | `test_custom_command_row_and_favorites` |
 | File index | Listary | inferred: folder walk with `os.scandir`, rebuilt every N minutes. Listary's own indexing method is **unknown** (not observed; no binary analysis). An NTFS MFT/USN index (as documented for the Everything search engine) is a possible later upgrade and needs admin rights | implemented (folder walk) | speed gate below |
 | Ribbon "Tools" tab: OneNote group (Send clipboard to OneNote, Screen clipping, New quick note), Capture group (Screen OCR, Sticky Notes), Find group (Search files) | OneNote Insert tab, ONENOTEM and onenotecapture tray tools | the tab row (File, Home, Insert, Draw, History, Review, View, Help, plus a Sticky Notes button) is **observed**; the commands inside OneNote's tabs are not captured yet, so the grouping is still an approximation | implemented (approximated) | `tests/test_ui.py::test_tools_tab_runs_app_commands` |
 
@@ -93,7 +95,8 @@ features of each program. It is based on vendor product information, not on scre
 | TextExpander | Snippets, abbreviations, fill-ins, CSV and `.textexpander` import | replicated | See the feature ledger |
 | TextExpander | Cloud team sharing, account sign-in, snippet suggestions service | not implemented | Needs TextExpander's online service; PhraseForge has its own optional Google Drive sync |
 | Listary | Search files by name, double Ctrl, open folder, web keywords | approximated | See the feature ledger. Ranking and keys may differ from Listary's |
-| Listary | Integration into Open/Save dialogs and Explorer (Quick Switch Ctrl+G, "folder jump") | not implemented | Hooks into other programs' file dialogs; the Integration page is not in the screenshots |
+| Listary | Integration into File Explorer, Open/Save dialogs and 14 file managers (Quick Switch Ctrl+G) | not implemented | Needs hooks inside other programs' windows; out of scope for this version |
+| Listary | Web search suggestion providers and per-site icons | not implemented | Would send what you type to a suggestion server while typing |
 | Listary | Commands `..`, mkdir, touch | not implemented | They act on the folder open in Explorer, which Search files does not track |
 | Listary | Commands shutdown, reboot | not implemented on purpose | One mistyped Enter would turn off the PC |
 | Listary | Preview (Alt+P), Dark theme, network drives in the index, per-action hotkeys and scope | not implemented | Not needed for the work packages; PhraseForge has its own light/dark theme |

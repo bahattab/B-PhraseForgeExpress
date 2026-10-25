@@ -106,7 +106,7 @@ def test_speed_gate_50k_entries_answers_in_milliseconds(tmp_path):
 def test_web_keywords():
     from phraseforge.filesearch import DEFAULT_WEB_KEYWORDS, parse_web_keywords, web_search
     kw = parse_web_keywords(DEFAULT_WEB_KEYWORDS + "\nbad line\nx=no-placeholder\n")
-    assert set(kw) == {"g", "yt", "wiki", "maps"}
+    assert {"g", "yt", "wiki", "maps"} <= set(kw) and "x" not in kw
     assert web_search("g weather riyadh", kw) == ("g", "https://www.google.com/search?q=weather+riyadh")
     assert web_search("G  ", kw) is None and web_search("report 2026", kw) is None
 
@@ -186,3 +186,19 @@ def test_custom_actions_and_commands(tmp_path):
     assert filesearch.match_commands("ps") == ["psh", "psha"]
     assert filesearch.match_commands("cmd x") == []
     assert "shutdown" not in filesearch.COMMANDS and "reboot" not in filesearch.COMMANDS
+
+
+def test_custom_commands_and_web_list(monkeypatch):
+    cmds = filesearch.parse_custom_commands(filesearch.DEFAULT_CUSTOM_COMMANDS + "\nbad line\nx = T |")
+    assert [c.keyword for c in cmds] == ["notepad"]
+    assert filesearch.match_custom_commands("notepad todo.txt", cmds) == [(cmds[0], "todo.txt")]
+    assert filesearch.match_custom_commands("note", cmds) == [(cmds[0], "")]
+    assert filesearch.match_custom_commands("other x", cmds) == []
+    calls = []
+    monkeypatch.setattr(filesearch, "shell_execute", lambda prog, params="", admin=False, cwd=None: calls.append((prog, params)))
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    filesearch.run_custom_command(cmds[0], "a b.txt")
+    assert calls == [(r"C:\Windows\notepad.exe", '"a b.txt"')]
+    kw = filesearch.parse_web_keywords(filesearch.DEFAULT_WEB_KEYWORDS)
+    for k in ("g", "wiki", "so", "bing", "b", "gmail", "twitter", "youtube", "maps", "amazon", "ebay", "imdb", "facebook"):
+        assert k in kw

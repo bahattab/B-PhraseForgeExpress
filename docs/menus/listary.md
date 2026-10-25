@@ -1,13 +1,12 @@
 # listary menu inventory
 
 Program: `C:\Program Files\Listary\Listary.exe`. The capture script found no window (Listary
-runs from the tray). The user then sent 16 screenshots of the Options window (2026-10-25).
+runs from the tray). The user then sent 26 screenshots of the Options window (2026-10-25).
 Everything below is **observed** from those screenshots. The tray menu itself is still pending.
 
 ## Options window: left list
 General · Appearance · Hotkey · File Search · Actions · Commands · Web Search · Menu ·
-Integration · About. Buttons: OK, Cancel, Apply. The Web Search, Menu, Integration and About pages
-are not in the screenshots.
+Integration · About. Buttons: OK, Cancel, Apply. The About page is not in the screenshots.
 
 1. **General**: Language (English); Listary 5 Settings: Import; Launcher position: Reset; Start
    Listary when Windows starts; Share anonymous analytics data; Check for updates automatically
@@ -37,3 +36,21 @@ are not in the screenshots.
    `..` Go to Parent Folder, mkdir Create Folder, cmd Command Prompt, cmda Command Prompt (Admin),
    psh PowerShell, psha PowerShell (Admin), touch Create File, shutdown Shutdown Computer, reboot
    Reboot Computer, uninstall Uninstall a Program, connections Network Connections, hosts Edit Hosts.
+   The + menu adds Custom Command or one of: Command Prompt, Command Prompt (Admin), PowerShell,
+   PowerShell (Admin), Go to Parent Folder, Create Folder, Create File, Show File Extension, Options,
+   Rebuild index. A custom command has Hotkey, Scope (Listary / File Explorer / Any app), Keyword,
+   Title, Path, Parameter, Working directory, Silent, Run as admin. Example shipped with Listary:
+   keyword `notepad`, title "Example: open in Notepad", path `C:\Windows\notepad.exe`, parameter
+   `"{query}"`.
+7. **Web Search** (keyword → title, each can be disabled): g Google, wiki Wikipedia, so Stack
+   Overflow, bing Bing, b Baidu, gmail Gmail, twitter Twitter, youtube YouTube, maps Google Maps,
+   amazon Amazon, ebay "Search Ebay for '{query}'", imdb IMDb, facebook Facebook. An entry has
+   Keyword, Title, Url with `{query}`, an icon, and Suggestion provider (None).
+8. **Menu**: a list of favourite folders (Quick Access, This PC, My Documents and the user's own
+   folders, names not recorded here). The + menu adds Folder, Submenu, Separator, Custom Command ▸
+   (New Custom Command, Shutdown Computer, Reboot Computer, Uninstall a Program, Network
+   Connections, Edit Hosts, Example: open in Notepad) or Command ▸ (Command Prompt, Command Prompt
+   (Admin), PowerShell, PowerShell (Admin), Go to Parent Folder, Show File Extension, Options).
+9. **Integration**: programs Listary works inside: File Explorer, File dialog, Folder dialog,
+   Desktop, Total Commander, Directory Opus, FreeCommander, XYplorer, xplorer2, Bandizip, AutoCAD,
+   Explzh, Files, OneCommander, WinRAR Extract Dialog, WPS File Dialog, and a user entry (idman.exe).
