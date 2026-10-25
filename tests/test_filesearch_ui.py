@@ -145,6 +145,7 @@ def test_actions_menu_commands_and_navigation(app, index, monkeypatch):
     w.run_action("cut")
     md = QGuiApplication.clipboard().mimeData()
     assert md.urls()[0].toLocalFile().endswith("report notes.txt")
+    QGuiApplication.clipboard().clear()   # don't leave file data on the real Windows clipboard
     w.show_centered(); w.search.setText("rep"); w.refresh()
     w.run_action("custom:0")
     assert ran and ran[0][0] == "Edit"

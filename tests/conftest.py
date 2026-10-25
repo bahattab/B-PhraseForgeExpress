@@ -16,6 +16,11 @@ def pytest_sessionfinish(session, exitstatus):
     app = QApplication.instance()
     if app is None:
         return
+    # Qt flushes its clipboard data to Windows at exit; leave nothing behind.
+    try:
+        app.clipboard().clear()
+    except Exception:
+        pass
     for w in QApplication.topLevelWidgets():
         w.close()
         w.deleteLater()
