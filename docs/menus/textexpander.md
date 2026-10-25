@@ -2,7 +2,7 @@
 
 Program: `C:\Program Files\Smile\TextExpander\TextExpander.exe`, version 8.4.8 (848.4) as shown in
 its About box. The capture script found no window: TextExpander runs from the tray. The user then
-sent 27 screenshots of the desktop app and 12 of the web dashboard (2026-10-25). Everything below is **observed** from them. The account's name,
+sent 27 screenshots of the desktop app and 18 of the web dashboard (2026-10-25). Everything below is **observed** from them. The account's name,
 e-mail address, picture and workspace name are visible in some screenshots and are left out here.
 
 ## Tray menu
@@ -79,6 +79,14 @@ app. Observed from 12 more screenshots (the user's own group names are left out)
   Sheets HTML exports (.html), macOS Text Replacements (.plist). Tips: CSV columns are
   abbreviation, snippet, optional label; quoted values can span lines. Export: one download per
   snippet group you can edit.
+- **Settings** (6 more screenshots): General (Organization name, Idle Session Timeout 24 hours,
+  Allow TextExpander to access your organization; TextExpander AI: Snippet Creation using
+  TextExpander AI; Publish snippets to the web, Manage published snippets; Enterprise controls:
+  "Everyone" sharing, Share outside the Organization, Execute scripts in Snippets, Import and export
+  Snippet Groups, Snippet requests) · Billing (plan, credits, trial end, billing contact,
+  redemption codes, account activity) · Single sign-on (SSO provider). Account pages: Profile
+  (name, non-essential cookies, staff access, delete account), Emails (addresses, notification
+  switches), Change Password.
 
 ## How PhraseForge maps these
 See `docs/EVIDENCE.md` (feature ledger and "Not replicated").

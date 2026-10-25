@@ -5,7 +5,7 @@ Status: **2026-10-25, partial capture.**
   The other five programs gave 0 items because they have no window (tray programs, or
   onenotecapture, which opens and closes at once).
 - The user also sent 9 screenshots of Capture2Text's tray menu and Settings pages, 26 of Listary's
-  Options window and 39 of TextExpander (tray, menus, Preferences, web dashboard).
+  Options window and 45 of TextExpander (tray, menus, Preferences, web dashboard).
 - The raw OneNote capture contained the user's own notebook, section and page names. Those were
   replaced with `<user content>` before committing, and the script now does this by itself.
 - Programs whose inventory says *pending* still need tray-menu screenshots.
@@ -35,11 +35,12 @@ original), **pending** (not captured yet).
 
 | Program | Capture status | Inventory |
 |---|---|---|
+| PhraseExpress (phraseexpress.exe), the main model | pending: added to the goal 2026-10-25; menus and Settings not captured yet. Current PhraseExpress-style features follow its public manual (*documented*) | `docs/menus/phraseexpress.md` |
 | Capture2Text v4.6.3 Arabic | **observed**: tray menu and 7 of 9 Settings pages, from the user's screenshots | `docs/menus/capture2text.md` |
 | OneNote (ONENOTE.EXE) | **observed**: title bar, Quick Access Toolbar, ribbon tab row, notebook/page panes (88 items, depth 10). The commands inside each tab are not captured yet | `docs/menus/onenote.md` |
 | OneNote screen clipping (onenotecapture.exe) | pending (no window) | `docs/menus/onenotecapture.md` |
 | Send to OneNote (ONENOTEM.EXE) | pending (tray only) | `docs/menus/onenotem.md` |
-| TextExpander 8.4.8 | **observed**: tray menu, menu bar, group and snippet editors, all six Preferences pages and the web dashboard, from 39 screenshots | `docs/menus/textexpander.md` |
+| TextExpander 8.4.8 | **observed**: tray menu, menu bar, group and snippet editors, all six Preferences pages and the web dashboard, from 45 screenshots | `docs/menus/textexpander.md` |
 | Listary | **observed**: all Options pages except About, from 26 screenshots; tray menu pending | `docs/menus/listary.md` |
 
 ## Feature ledger
@@ -107,6 +108,7 @@ features of each program. It is based on vendor product information, not on scre
 | TextExpander | Quick actions (Ctrl+Shift+/) | not implemented | The screenshots show only the hotkey, not what the panel offers |
 | TextExpander | Import ShortHand `.txt`, Instant Text `.glo`, Google Sheets `.html` | not implemented | Their file layouts are not published; guessing them could import wrong text |
 | TextExpander | Snippet Activity log per person, Snippet Requests, Members, Teams | not implemented | Team features of TextExpander's online service |
+| TextExpander | Web account pages: organization settings (idle timeout, staff access, TextExpander AI, publish snippets to the web, sharing controls), Billing, Single sign-on, Profile, e-mail notifications, password | not implemented | Account and billing pages of the online service; PhraseForge has no account. Its AI features use the user's own provider key |
 | TextExpander | One global expansion mode; "Scan typing for suggestions" per program; Appearance fonts for snippet display; update check frequency and beta channel | approximated / not implemented | PhraseForge sets the mode per phrase and uses one editor font setting; it has no update checker |
 | Listary | Search files by name, double Ctrl, open folder, web keywords | approximated | See the feature ledger. Ranking and keys may differ from Listary's |
 | Listary | Integration into File Explorer, Open/Save dialogs and 14 file managers (Quick Switch Ctrl+G) | not implemented | Needs hooks inside other programs' windows; out of scope for this version |

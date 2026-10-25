@@ -9,7 +9,7 @@ It reads the user interface only; it does not inspect the program's files.
 
 Usage (PowerShell, from the repository folder):
   powershell -ExecutionPolicy Bypass -File tools\capture_menus.ps1 -Exe "C:\Program Files\Listary\Listary.exe" -Name listary
-  powershell -ExecutionPolicy Bypass -File tools\capture_menus.ps1 -All      # the six reference programs
+  powershell -ExecutionPolicy Bypass -File tools\capture_menus.ps1 -All      # the seven reference programs
 Options: -MaxDepth 10  -NoScreenshots  -KeepNames
 Privacy: by default the names of list items, links, text boxes, tree items (notebooks, sections,
 pages, file names) and the window title are written as <user content>, so your own notes never
@@ -26,6 +26,7 @@ $CT = [System.Windows.Automation.ControlType]
 $Root = Split-Path $PSScriptRoot -Parent
 
 $Targets = @(
+  @{ Exe = "C:\Program Files (x86)\PhraseExpress\phraseexpress.exe"; Name = "phraseexpress" },
   @{ Exe = "C:\Program Files\00 - Capture2Text v4.6.3 - Arabic\Capture2Text.exe"; Name = "capture2text" },
   @{ Exe = "C:\Program Files\Microsoft Office\root\Office16\ONENOTE.EXE"; Name = "onenote" },
   @{ Exe = "C:\Program Files\Microsoft Office\root\Office16\onenotecapture.exe"; Name = "onenotecapture" },
