@@ -110,7 +110,7 @@ function Capture($exe, $name) {
   $dir = Join-Path $Root "reference\$name"; New-Item -ItemType Directory -Force $dir | Out-Null
   $out = Join-Path $Root "docs\menus\$name.md"; New-Item -ItemType Directory -Force (Split-Path $out) | Out-Null
   $script:lines = New-Object System.Collections.Generic.List[string]; $script:count = 0; $script:maxSeen = 0
-  if (-not (Test-Path $exe)) { Set-Content $out "# $name`n`nNot installed at $exe"; Write-Host "$name: not installed"; return }
+  if (-not (Test-Path $exe)) { Set-Content $out "# $name`n`nNot installed at $exe"; Write-Host "${name}: not installed"; return }
   $proc = Get-Process | Where-Object { $_.Path -eq $exe } | Select-Object -First 1
   if (-not $proc) { $proc = Start-Process $exe -PassThru; Start-Sleep -Seconds 8 }
   $windows = $UIA::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,
