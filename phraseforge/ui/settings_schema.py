@@ -82,6 +82,8 @@ SCHEMA: dict[str, str] = {
     "ai.anthropic_key": "",
     "ai.openrouter_key": "",
     "ai.ollama_url": DEFAULT_SETTINGS["ai.ollama_url"],
+    "ai.gpt4all_url": DEFAULT_SETTINGS["ai.gpt4all_url"],
+    "ai.deepl_key": "",
     "ai.presets": json.dumps(DEFAULT_PRESETS, ensure_ascii=False),
     "ai.instructions.about": "",
     "ai.instructions.respond": "",
@@ -89,6 +91,7 @@ SCHEMA: dict[str, str] = {
     "translation.provider": "openai",
     "translation.ignored_words": "",
     "translation.glossaries": "{}",
+    "translation.glossary_langs": "{}",
     # Network
     "net.proxy_server": "",
     "net.proxy_port": "80",

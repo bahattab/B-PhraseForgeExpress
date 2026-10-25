@@ -14,7 +14,8 @@ from typing import Callable
 from PySide6.QtCore import QLocale, Qt, QUrl
 from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtWidgets import (
-    QAbstractButton, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFontDialog,
+    QAbstractButton, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
+    QFontDialog,
     QFormLayout, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget,
     QMenu, QMessageBox, QPlainTextEdit, QPushButton, QRadioButton, QScrollArea, QSlider, QSpinBox,
     QStackedWidget, QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QColorDialog,
@@ -29,10 +30,32 @@ from phraseforge.ui.settings_schema import (
 )
 
 APP = "PhraseForge"
+# Engines as listed in PhraseExpress 18 (AI text processing / Language Translation)
 PROVIDERS = [("OpenAI", "openai", "https://platform.openai.com/api-keys"),
-             ("Anthropic", "anthropic", "https://console.anthropic.com/settings/keys"),
-             ("Ollama (local)", "ollama", "https://ollama.com/download"),
+             ("Anthropic (Claude)", "anthropic", "https://console.anthropic.com/settings/keys"),
+             ("GPT4All", "gpt4all", "https://www.nomic.ai/gpt4all"),
+             ("Ollama", "ollama", "https://ollama.com/download"),
              ("OpenRouter", "openrouter", "https://openrouter.ai/keys")]
+TRANSLATION_PROVIDERS = [("Deepl", "deepl", "https://www.deepl.com/your-account/keys")] + PROVIDERS
+LOCAL_ENGINES = {"ollama": "Ollama server URL:", "gpt4all": "GPT4All server URL (Settings > Enable local API server):"}
+# PhraseExpress 18 "Phrase menu contents" (order of the columns in a phrase row)
+MENU_CONTENTS = [("Description - QuickKey", "description_quickkey"),
+                 ("QuickKey - Description", "quickkey_description"),
+                 ("Autotext - Description - QuickKey", "autotext_description_quickkey"),
+                 ("Autotext - QuickKey - Description", "autotext_quickkey_description"),
+                 ("QuickKey - Description - Autotext", "quickkey_description_autotext"),
+                 ("Description - Autotext - QuickKey", "description_autotext_quickkey"),
+                 ("Description - Autotext - Hotkey - QuickKey", "description_autotext_hotkey_quickkey"),
+                 ("QuickKey - Autotext - Description - Hotkey", "quickkey_autotext_description_hotkey"),
+                 ("Autotext - QuickKey - Description - Hotkey", "autotext_quickkey_description_hotkey"),
+                 ("Autotext - Description - QuickKey - Hotkey", "autotext_description_quickkey_hotkey"),
+                 ("Description - Hotkey - QuickKey", "description_hotkey_quickkey"),
+                 ("QuickKey - Description - Hotkey", "quickkey_description_hotkey"),
+                 # older PhraseForge values (kept so existing settings still load)
+                 ("Description", "description"), ("Description - Autotext", "description_autotext"),
+                 ("Description - Autotext - Hotkey", "description_autotext_hotkey")]
+TRANSLATION_LANGUAGES = ["English", "Arabic", "Chinese", "Dutch", "French", "German", "Italian", "Japanese",
+                         "Korean", "Polish", "Portuguese", "Russian", "Spanish", "Swedish", "Turkish", "Ukrainian"]
 
 # (page key, tree text, parent key or None)
 PAGES: list[tuple[str, str, str | None]] = [
@@ -796,7 +819,7 @@ class SettingsDialog(QDialog):
     # ---- AI
     @staticmethod
     def _key_setting(provider: str) -> str:
-        return "ai.ollama_url" if provider == "ollama" else f"ai.{provider}_key"
+        return f"ai.{provider}_url" if provider in LOCAL_ENGINES else f"ai.{provider}_key"
 
     def _page_ai(self) -> QWidget:
         w, lay = self._page()
@@ -839,10 +862,10 @@ class SettingsDialog(QDialog):
         self._ai_current = prov
         if prov not in self._ai_keys:
             self._ai_keys[prov] = self.store.setting(self._key_setting(prov), SCHEMA.get(self._key_setting(prov), ""))
-        ollama = prov == "ollama"
-        self.ai_key.setEchoMode(QLineEdit.Normal if ollama else QLineEdit.Password)
+        local = prov in LOCAL_ENGINES
+        self.ai_key.setEchoMode(QLineEdit.Normal if local else QLineEdit.Password)
         self.ai_key.setText(self._ai_keys[prov])
-        self.ai_key_label.setText("Ollama server URL:" if ollama else "Your API key:")
+        self.ai_key_label.setText(LOCAL_ENGINES.get(prov, "Your API key:"))
         name = next(t for t, v, _ in PROVIDERS if v == prov).split(" (")[0]
         self.ai_visit.setText(f"Visit {name}")
         self.ai_status.setText("")
@@ -899,16 +922,17 @@ class SettingsDialog(QDialog):
             data = []
         for p in data:
             if isinstance(p, dict) and p.get("name"):
-                it = self._preset_item(p["name"], p.get("prompt", ""))
+                it = self._preset_item(p["name"], p.get("prompt", ""), p.get("model", ""))
                 self.presets_list.addItem(it)
         if self.presets_list.count():
             self.presets_list.setCurrentRow(0)
 
     @staticmethod
-    def _preset_item(name: str, prompt: str):
+    def _preset_item(name: str, prompt: str, model: str = ""):
         from PySide6.QtWidgets import QListWidgetItem
         it = QListWidgetItem(name)
         it.setData(Qt.UserRole, prompt)
+        it.setData(Qt.UserRole + 1, "" if (model or "").lower() == "auto" else (model or ""))
         it.setToolTip(prompt)
         return it
 
@@ -916,25 +940,58 @@ class SettingsDialog(QDialog):
         out = []
         for i in range(self.presets_list.count()):
             it = self.presets_list.item(i)
-            out.append({"name": it.text(), "prompt": it.data(Qt.UserRole) or ""})
+            row = {"name": it.text(), "prompt": it.data(Qt.UserRole) or ""}
+            if it.data(Qt.UserRole + 1):
+                row["model"] = it.data(Qt.UserRole + 1)
+            out.append(row)
         return json.dumps(out, ensure_ascii=False)
 
-    def _preset_dialog(self, name: str = "", prompt: str = "") -> tuple[str, str] | None:
+    def _preset_dialog(self, name: str = "", prompt: str = "", model: str = "",
+                       run: bool = True):
+        """PhraseExpress "AI Presets": Preset label, Instruction ("Prompt") and, behind the
+        gear button, Model (Auto = the engine's model) with Reset to defaults.
+        Returns (label, prompt, model) or None; run=False returns the dialog (tests)."""
+        from phraseforge.ai import DEFAULT_MODELS
         d = QDialog(self)
-        d.setWindowTitle("AI preset")
-        d.resize(460, 260)
-        f = QFormLayout(d)
-        n = QLineEdit(name)
-        p = QPlainTextEdit(prompt)
-        f.addRow("Name:", n)
-        f.addRow("Instruction:", p)
+        d.setWindowTitle("AI Presets")
+        d.resize(480, 200)
+        v = QVBoxLayout(d)
+        v.addWidget(QLabel("Preset label:"))
+        d.label_edit = QLineEdit(name)
+        v.addWidget(d.label_edit)
+        v.addWidget(QLabel('Instruction ("Prompt"):'))
+        d.prompt_edit = QPlainTextEdit(prompt)
+        d.prompt_edit.setFixedHeight(60)
+        gear = _icon_button("settings", "Model options", lambda: d.model_box.setVisible(not d.model_box.isVisible()))
+        v.addWidget(_row(d.prompt_edit, gear, stretch=False))
+        d.model_box = QWidget()
+        mb = QVBoxLayout(d.model_box)
+        mb.setContentsMargins(0, 0, 0, 0)
+        mb.addWidget(QLabel("Model:"))
+        d.model_combo = QComboBox()
+        d.model_combo.setEditable(True)
+        d.model_combo.addItems(["Auto"] + sorted(set(DEFAULT_MODELS.values())))
+        d.model_combo.setCurrentText(model or "Auto")
+        reset = QPushButton("Reset to defaults")
+        reset.clicked.connect(lambda: d.model_combo.setCurrentText("Auto"))
+        mb.addWidget(_row(d.model_combo, reset))
+        d.model_box.setVisible(bool(model))
+        v.addWidget(d.model_box)
         ok, cancel = QPushButton("OK"), QPushButton("Cancel")
         ok.setDefault(True)
         ok.clicked.connect(d.accept)
         cancel.clicked.connect(d.reject)
-        f.addRow(_row(ok, cancel))
-        if d.exec() == QDialog.Accepted and n.text().strip():
-            return n.text().strip(), p.toPlainText().strip()
+        v.addWidget(_row(QWidget(), ok, cancel))
+
+        def result():
+            m = d.model_combo.currentText().strip()
+            return d.label_edit.text().strip(), d.prompt_edit.toPlainText().strip(), \
+                "" if m.lower() in ("", "auto") else m
+        d.result_tuple = result
+        if not run:
+            return d
+        if d.exec() == QDialog.Accepted and d.label_edit.text().strip():
+            return result()
         return None
 
     def _add_preset(self) -> None:
@@ -946,10 +1003,11 @@ class SettingsDialog(QDialog):
     def _edit_preset(self) -> None:
         it = self.presets_list.currentItem()
         if it:
-            r = self._preset_dialog(it.text(), it.data(Qt.UserRole) or "")
+            r = self._preset_dialog(it.text(), it.data(Qt.UserRole) or "", it.data(Qt.UserRole + 1) or "")
             if r:
                 it.setText(r[0])
                 it.setData(Qt.UserRole, r[1])
+                it.setData(Qt.UserRole + 1, r[2])
                 it.setToolTip(r[1])
 
     def _delete_preset(self) -> None:
@@ -972,16 +1030,25 @@ class SettingsDialog(QDialog):
         w, lay = self._page()
         lay.setSpacing(6)
         lay.addWidget(_wrap_label(f"{APP} can translate phrases and text into other languages using a 3rd party "
-                                  "AI service. The API key is shared with the AI text processing page."))
+                                  "AI service. If an API key is required, it can be obtained from the service "
+                                  "provider."))
         lay.addSpacing(8)
         lay.addWidget(QLabel("Translation Engine:"))
-        self.tr_provider = self.bind("translation.provider", DataCombo([(t, v) for t, v, _ in PROVIDERS]))
+        self.tr_provider = self.bind("translation.provider",
+                                     DataCombo([(t, v) for t, v, _ in TRANSLATION_PROVIDERS]))
         self.tr_provider.setFixedWidth(181)
-        visit = QPushButton("Visit provider")
-        visit.setObjectName("WideButton")
-        visit.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(next(
-            u for _, v, u in PROVIDERS if v == self.tr_provider.value()))))
-        lay.addWidget(_row(self.tr_provider, visit))
+        self.tr_visit = QPushButton("Visit provider")
+        self.tr_visit.setObjectName("WideButton")
+        self.tr_visit.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(next(
+            u for _, v, u in TRANSLATION_PROVIDERS if v == self.tr_provider.value()))))
+        lay.addWidget(_row(self.tr_provider, self.tr_visit))
+        self.tr_key_label = QLabel("API key:")
+        lay.addWidget(self.tr_key_label)
+        self.tr_key = QLineEdit()           # same key store as the AI page (one key per engine)
+        self.tr_key.setEchoMode(QLineEdit.Password)
+        self.tr_key.setMinimumWidth(518)
+        self.tr_key.textEdited.connect(self._translation_key_edited)
+        lay.addWidget(self.tr_key)
         self.tr_status = QLabel()
         self.tr_status.setWordWrap(True)
         lay.addWidget(self.tr_status)
@@ -989,14 +1056,32 @@ class SettingsDialog(QDialog):
         self.tr_provider.currentIndexChanged.connect(lambda _i: self._update_translation_status())
         return w
 
-    def _update_translation_status(self) -> None:
+    def _translation_key_edited(self, text: str) -> None:
         prov = self.tr_provider.value()
-        key = self._ai_keys.get(prov) if prov in self._ai_keys else self.store.setting(self._key_setting(prov), "")
-        if prov == "ollama":
-            self.tr_status.setText(f"Uses the local Ollama server at {key or SCHEMA['ai.ollama_url']}.")
+        if getattr(self, "_ai_current", "") == prov:
+            self.ai_key.setText(text.strip())
+        self._ai_keys[prov] = text.strip()
+        self._update_translation_status(reload_key=False)
+
+    def _update_translation_status(self, reload_key: bool = True) -> None:
+        prov = self.tr_provider.value()
+        if getattr(self, "_ai_current", "") == prov and hasattr(self, "ai_key"):
+            self._ai_keys[prov] = self.ai_key.text().strip()
+        key = self._ai_keys.get(prov) if prov in self._ai_keys else \
+            self.store.setting(self._key_setting(prov), SCHEMA.get(self._key_setting(prov), ""))
+        if not hasattr(self, "tr_key"):
+            return
+        name = next(t for t, v, _ in TRANSLATION_PROVIDERS if v == prov).split(" (")[0]
+        self.tr_visit.setText(f"Visit {name}")
+        local = prov in LOCAL_ENGINES
+        self.tr_key_label.setText(LOCAL_ENGINES.get(prov, "API key:"))
+        self.tr_key.setEchoMode(QLineEdit.Normal if local else QLineEdit.Password)
+        if reload_key:
+            self.tr_key.setText(key or "")
+        if local:
+            self.tr_status.setText(f"Uses the local server at {key or SCHEMA.get(self._key_setting(prov), '')}.")
         else:
-            self.tr_status.setText("API key is set." if key else
-                                   "No API key for this engine yet. Enter it on the AI text processing page.")
+            self.tr_status.setText("API key is set." if key else "No API key for this engine yet.")
 
     def _page_translation_ignored(self) -> QWidget:
         w, lay = self._page()
@@ -1018,9 +1103,14 @@ class SettingsDialog(QDialog):
         self.gloss_text = QPlainTextEdit()
         lay.addWidget(self.gloss_text, 1)
         self._glossaries: dict[str, str] = {}
+        self._gloss_langs: dict[str, list[str]] = {}
         self._gloss_current = ""
         self.gloss_combo.currentTextChanged.connect(self._switch_glossary)
         self.bind_custom("translation.glossaries", self._glossaries_json, self._set_glossaries)
+        self.bind_custom("translation.glossary_langs",
+                         lambda: json.dumps({k: v for k, v in self._gloss_langs.items() if k in self._glossaries},
+                                            ensure_ascii=False),
+                         self._set_glossary_langs)
         return w
 
     def _stash_glossary(self) -> None:
@@ -1046,19 +1136,57 @@ class SettingsDialog(QDialog):
         self.gloss_combo.blockSignals(False)
         self._switch_glossary(self.gloss_combo.currentText())
 
+    def _set_glossary_langs(self, v: str) -> None:
+        try:
+            data = json.loads(v or "{}")
+        except ValueError:
+            data = {}
+        self._gloss_langs = {str(k): list(p)[:2] for k, p in data.items()
+                             if isinstance(p, (list, tuple)) and len(p) == 2} if isinstance(data, dict) else {}
+
+    def _glossary_dialog(self, name: str = "", src: str = "English", dst: str = "English", run: bool = True):
+        """PhraseExpress "New Glossary": Name, Source language, Target language."""
+        d = QDialog(self)
+        d.setWindowTitle("New Glossary" if not name else "Edit Glossary")
+        g = QGridLayout(d)
+        g.addWidget(QLabel("Name:"), 0, 0, 1, 2)
+        d.name_edit = QLineEdit(name)
+        g.addWidget(d.name_edit, 1, 0, 1, 2)
+        g.addWidget(QLabel("Source language:"), 2, 0)
+        g.addWidget(QLabel("Target language:"), 2, 1)
+        d.src_combo, d.dst_combo = QComboBox(), QComboBox()
+        for c, val in ((d.src_combo, src), (d.dst_combo, dst)):
+            c.setEditable(True)
+            c.addItems(TRANSLATION_LANGUAGES)
+            c.setCurrentText(val)
+        g.addWidget(d.src_combo, 3, 0)
+        g.addWidget(d.dst_combo, 3, 1)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(d.accept)
+        bb.rejected.connect(d.reject)
+        g.addWidget(bb, 4, 0, 1, 2)
+        d.result_tuple = lambda: (d.name_edit.text().strip(), d.src_combo.currentText().strip(),
+                                  d.dst_combo.currentText().strip())
+        if not run:
+            return d
+        return d.result_tuple() if d.exec() == QDialog.Accepted else None
+
     def _glossaries_json(self) -> str:
         self._stash_glossary()
         return json.dumps(self._glossaries, ensure_ascii=False)
 
-    def _add_glossary(self, name: str | None = None) -> None:
+    def _add_glossary(self, name: str | None = None, src: str = "", dst: str = "") -> None:
         if name is None:
-            name, ok = QInputDialog.getText(self, "Glossaries", "Glossary name:")
-            if not ok:
+            r = self._glossary_dialog()
+            if not r:
                 return
+            name, src, dst = r
         name = (name or "").strip()
         if name and name not in self._glossaries:
             self._stash_glossary()
             self._glossaries[name] = ""
+            if src and dst:
+                self._gloss_langs[name] = [src, dst]
             self.gloss_combo.addItem(name)
             self.gloss_combo.setCurrentText(name)
 
@@ -1066,11 +1194,16 @@ class SettingsDialog(QDialog):
         old = self.gloss_combo.currentText()
         if not old:
             return
-        new, ok = QInputDialog.getText(self, "Glossaries", "Glossary name:", text=old)
-        new = new.strip()
-        if ok and new and new != old and new not in self._glossaries:
+        src, dst = self._gloss_langs.get(old, ["English", "English"])
+        r = self._glossary_dialog(old, src, dst)
+        if not r:
+            return
+        new, src, dst = r
+        if new and (new == old or new not in self._glossaries):
             self._stash_glossary()
             self._glossaries[new] = self._glossaries.pop(old)
+            self._gloss_langs.pop(old, None)
+            self._gloss_langs[new] = [src, dst]
             self._gloss_current = new
             self.gloss_combo.setItemText(self.gloss_combo.currentIndex(), new)
 
@@ -1078,6 +1211,7 @@ class SettingsDialog(QDialog):
         name = self.gloss_combo.currentText()
         if name:
             self._glossaries.pop(name, None)
+            self._gloss_langs.pop(name, None)
             self._gloss_current = ""
             self.gloss_combo.removeItem(self.gloss_combo.currentIndex())
 
@@ -1554,17 +1688,15 @@ class SettingsDialog(QDialog):
         gl = QGridLayout(g)
         gl.setContentsMargins(12, 10, 12, 10)
         gl.setVerticalSpacing(6)
-        contents = self.bind("menu.contents", DataCombo([
-            ("Description - QuickKey", "description_quickkey"), ("Description", "description"),
-            ("Description - Autotext", "description_autotext"),
-            ("Description - Autotext - Hotkey", "description_autotext_hotkey")]))
+        contents = self.bind("menu.contents", DataCombo(MENU_CONTENTS))
         gl.addWidget(QLabel("Phrase menu contents:"), 0, 0)
         gl.addWidget(contents, 0, 1, 1, 3)
         sort = self.bind("menu.sort_enabled", QCheckBox("Sort by..."))
         by = self.bind("menu.sort_by", DataCombo([("Description", "description"), ("Autotext", "autotext"),
-                                                  ("Usage count", "usage"), ("Last used", "last_used"),
+                                                  ("Usage count", "usage"), ("Last use", "last_used"),
                                                   ("Creation date", "created")]))
-        method = self.bind("menu.sort_method", DataCombo([("Alphabetically", "alpha"), ("Numerically", "numeric")]))
+        method = self.bind("menu.sort_method", DataCombo([("Alphabetically", "alpha"), ("Length", "length"),
+                                                          ("Numerically", "numeric")]))
         order = self.bind("menu.sort_order", DataCombo([("Ascending", "asc"), ("Descending", "desc")]))
         gl.addWidget(sort, 1, 0)
         gl.addWidget(by, 1, 1)
@@ -1584,11 +1716,19 @@ class SettingsDialog(QDialog):
         g = QGroupBox("Phrase Menu Position")
         gl2 = QGridLayout(g)
         gl2.setContentsMargins(12, 10, 12, 10)
-        pos = self.bind("menu.position", DataCombo([("next to the caret", "caret"),
-                                                    ("next to the mouse cursor", "mouse"),
+        pos = self.bind("menu.position", DataCombo([("next to the caret", "caret"), ("below the caret", "below"),
+                                                    ("above the caret", "above"),
+                                                    ("next to the mouse pointer", "mouse"),
+                                                    ("near task tray icon", "tray"),
+                                                    ("at a fixed position", "fixed"),
                                                     ("in the screen center", "center")]))
         pos.setFixedWidth(172)
-        fb = self.bind("menu.position_fallback", DataCombo([("Next to the mouse cursor", "mouse"),
+        fb = self.bind("menu.position_fallback", DataCombo([("Near the task tray", "tray"),
+                                                            ("Centered in current window", "window"),
+                                                            ("Centered in primary monitor", "primary"),
+                                                            ("Centered in current monitor", "monitor"),
+                                                            ("Next to the mouse cursor", "mouse"),
+                                                            ("Fixed", "fixed"),
                                                             ("In the screen center", "center")]))
         fb.setFixedWidth(196)
         gl2.addWidget(_row("Show phrase menus", pos), 0, 0)
@@ -1713,13 +1853,13 @@ class SettingsDialog(QDialog):
         gl.addWidget(QLabel("Phrase confirmation hotkey"))
         gl.addWidget(self.bind("menu.confirm_hotkey", KeyCombo()))
         gl.addWidget(QLabel('Phrase selection hotkey in the phrase menu ("QuickKey")'))
-        mod = self.bind("menu.quickkey_modifier", DataCombo([("None", "none"), ("Ctrl", "ctrl"), ("Alt", "alt"),
-                                                             ("Shift", "shift")]))
+        mod = self.bind("menu.quickkey_modifier", DataCombo([("None", "none"), ("Shift", "shift"), ("Alt", "alt"),
+                                                             ("Ctrl", "ctrl"), ("Win", "win")]))
         mod.setFixedWidth(84)
-        keys = self.bind("menu.quickkey_keys", DataCombo([("Numpad [Num1-Num9]", "numpad"),
-                                                          ("Number keys [1-9]", "digits"),
-                                                          ("Function keys [F1-F12]", "fkeys"),
-                                                          ("Letters [A-Z]", "letters")]))
+        keys = self.bind("menu.quickkey_keys", DataCombo([("None", "none"), ("Numbers [1-9]", "digits"),
+                                                          ("Numpad [Num1-Num9]", "numpad"),
+                                                          ("Letters [a-z]", "letters"),
+                                                          ("Function keys [F1-F12]", "fkeys")]))
         keys.setFixedWidth(260)
         gl.addWidget(_row(mod, keys))
         gl.addWidget(QLabel("Search in the phrase menu"))

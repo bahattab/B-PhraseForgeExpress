@@ -49,6 +49,16 @@ ROLE_RIGHT = Qt.UserRole + 2     # grey secondary text on the right (autotext, p
 ROLE_QUERY = Qt.UserRole + 3     # text to highlight
 ROLE_TEXT = Qt.UserRole + 4      # clipboard text
 ROLE_QK = Qt.UserRole + 5        # QuickKey label shown on the right ("NumPad1")
+ROLE_LEFT = Qt.UserRole + 6      # grey text before the description (menu.contents puts it first)
+
+CONTENT_TOKENS = ("description", "quickkey", "autotext", "hotkey")
+
+
+def content_tokens(contents: str) -> list[str]:
+    """menu.contents value -> column order, e.g. "autotext_description_quickkey" ->
+    ["autotext", "description", "quickkey"] (PhraseExpress "Phrase menu contents")."""
+    toks = [t for t in (contents or "").split("_") if t in CONTENT_TOKENS]
+    return toks if "description" in toks else ["description", "quickkey"]
 
 CLIPBOARD = "clipboard"
 LAST_USED = "last_used"
@@ -225,6 +235,13 @@ class _RowDelegate(QStyledItemDelegate):
             return
         query = index.data(ROLE_QUERY) or ""
         base_y = r.top() + (r.height() + fm.ascent() - fm.descent()) // 2
+        left = index.data(ROLE_LEFT) or ""
+        if left:
+            lw = min(fm.horizontalAdvance(left), avail // 2)
+            p.setPen(QColor(colors["autotext"]))
+            p.drawText(x, base_y, fm.elidedText(left, Qt.ElideRight, lw))
+            x += lw + 10
+            avail -= lw + 10
         cx = x
         bold = QFont(font)
         bold.setBold(True)
@@ -277,6 +294,25 @@ class _Band(QWidget):
                         "QToolButton:checked{background:rgba(255,255,255,0.35)}")
         self.lay.addWidget(b)
         return b
+
+    # drag the band to move the menu (PhraseExpress: "at a fixed position" then reopens there)
+    def mousePressEvent(self, e):  # noqa: N802
+        if e.button() == Qt.LeftButton:
+            self._drag = e.globalPosition().toPoint() - self.window().pos()
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):  # noqa: N802
+        if getattr(self, "_drag", None) is not None and e.buttons() & Qt.LeftButton:
+            self.window().move(e.globalPosition().toPoint() - self._drag)
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e):  # noqa: N802
+        if getattr(self, "_drag", None) is not None:
+            self._drag = None
+            fn = getattr(self.window(), "remember_position", None)
+            if callable(fn):
+                fn()
+        super().mouseReleaseEvent(e)
 
     def paintEvent(self, _e):  # noqa: N802
         p = QPainter(self)
@@ -467,18 +503,31 @@ class _Panel(QFrame):
             it = self.list.item(i)
             if it.data(ROLE_KIND) == "empty":
                 continue
-            label = quickkey_label(pop.quickkey_keys, n) if pop.contents == "description_quickkey" else ""
+            toks = content_tokens(pop.contents)
+            label = quickkey_label(pop.quickkey_keys, n) if "quickkey" in toks else ""
             if label and pop.quickkey_modifier != "none":
                 label = f"{pop.quickkey_modifier.capitalize()}+{label}"
             it.setData(ROLE_QK, label)
+            is_phrase = it.data(ROLE_KIND) == "phrase"
+            parts = dict(pop.phrase_parts(it.data(ROLE_ID))) if is_phrase else {}
+            parts["quickkey"] = label
+            i_desc = toks.index("description")
+            before = [parts.get(t, "") for t in toks[:i_desc] if parts.get(t, "")]
+            after = [parts.get(t, "") for t in toks[i_desc + 1:] if parts.get(t, "")]
+            it.setData(ROLE_LEFT, "   ".join(before))
+            if label in before:
+                it.setData(ROLE_QK, "")          # drawn on the left instead
+            if is_phrase:
+                # a QuickKey alone on the right is drawn from ROLE_QK in its own colour
+                it.setData(ROLE_RIGHT, "" if after == [label] else "   ".join(after))
             n += 1
 
     def quickkey_row(self, e) -> QListWidgetItem | None:
         """The row a QuickKey press selects, if the key and modifier match."""
         pop = self.popup
-        mods = e.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.ShiftModifier)
+        mods = e.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.ShiftModifier | Qt.MetaModifier)
         want = {"none": Qt.NoModifier, "ctrl": Qt.ControlModifier, "alt": Qt.AltModifier,
-                "shift": Qt.ShiftModifier}.get(pop.quickkey_modifier, Qt.NoModifier)
+                "shift": Qt.ShiftModifier, "win": Qt.MetaModifier}.get(pop.quickkey_modifier, Qt.NoModifier)
         if mods != want:
             return None
         idx = quickkey_index(pop.quickkey_keys, e.key(), bool(e.modifiers() & Qt.KeypadModifier))
@@ -785,13 +834,20 @@ class PhrasePopup(_Panel):
         return True
 
     def right_text(self, p) -> str:
-        """Grey text right of a phrase, per menu.contents."""
-        if self.contents not in ("description_autotext", "description_autotext_hotkey"):
-            return ""
-        abbr = ", ".join(t.value for t in p.autotexts())
-        hot = ", ".join(t.value.upper().replace("+", "-") for t in p.hotkeys()) \
-            if self.contents == "description_autotext_hotkey" else ""
-        return "   ".join(x for x in (f"[{abbr}]" if abbr else "", f"({hot})" if hot else "") if x)
+        """Grey autotext/hotkey text of a phrase, per menu.contents (also cached for the
+        column layout done in assign_quickkeys)."""
+        toks = content_tokens(self.contents)
+        abbr = ", ".join(t.value for t in p.autotexts()) if "autotext" in toks else ""
+        hot = ", ".join(t.value.upper().replace("+", "-") for t in p.hotkeys()) if "hotkey" in toks else ""
+        parts = {"autotext": f"[{abbr}]" if abbr else "", "hotkey": f"({hot})" if hot else ""}
+        if not hasattr(self, "_parts"):
+            self._parts = {}
+        self._parts[p.id] = parts
+        after = toks[toks.index("description") + 1:]
+        return "   ".join(parts[t] for t in after if t in parts and parts[t])
+
+    def phrase_parts(self, phrase_id) -> dict:
+        return getattr(self, "_parts", {}).get(phrase_id, {})
 
     def _sorted_phrases(self, phrases):
         """Order phrases per menu.sort_*; with sorting off keep the user's manual order."""
@@ -814,6 +870,8 @@ class PhrasePopup(_Panel):
             v = field(p)
             if isinstance(v, int):
                 return (v, natural_key(p.description))
+            if self.sort_method == "length":
+                return (len(v or ""), (v or "").lower())
             return natural_key(v) if self.sort_method == "numeric" else (v or "").lower()
         return sorted(phrases, key=key, reverse=self.sort_order == "desc")
 
@@ -995,16 +1053,66 @@ class PhrasePopup(_Panel):
         `caret` is the caret position if known (None = no caret); x, y are used if the
         caller already resolved a point and no caret lookup is possible."""
         mode = self.position
-        if mode == "caret":
+        if mode in ("caret", "below", "above"):
             if caret is not None:
-                return "caret", caret[0], caret[1]
+                return mode, caret[0], caret[1]
             mode = self.position_fallback
-        if mode == "mouse":
+        if mode == "fixed" and not self.fixed_pos():
+            mode = "mouse"
+        if mode in ("mouse", "window", "monitor", "center"):
             c = QCursor.pos()
-            return "mouse", c.x(), c.y()
-        if mode == "center":
-            return "center", x, y
+            return mode, c.x(), c.y()
+        if mode in ("tray", "primary", "fixed"):
+            return mode, x, y
         return "caret", x, y
+
+    def fixed_pos(self):
+        """(x, y) saved by dragging the title band (menu.fixed_pos), or None."""
+        try:
+            a, b = (int(v) for v in _setting(self.store, "menu.fixed_pos", "").split(","))
+            return a, b
+        except Exception:
+            return None
+
+    def remember_position(self) -> None:
+        """Called after the band was dragged: "at a fixed position" reopens the menu here."""
+        try:
+            self.store.set_setting("menu.fixed_pos", f"{self.x()},{self.y()}")
+        except Exception:
+            pass
+
+    def popup_origin(self, mode: str, x: int, y: int, w: int, h: int) -> tuple[int, int]:
+        """Top-left corner for the menu for each PhraseExpress position choice."""
+        if mode == "primary":
+            g = QGuiApplication.primaryScreen().availableGeometry()
+            return g.center().x() - w // 2, g.center().y() - h // 2
+        scr = QGuiApplication.screenAt(QPoint(x, y)) or QGuiApplication.primaryScreen()
+        g = scr.availableGeometry()
+        if mode == "tray":
+            g = QGuiApplication.primaryScreen().availableGeometry()
+            return g.right() - w - 8, g.bottom() - h - 8
+        if mode == "fixed":
+            fx, fy = self.fixed_pos() or (x, y)
+            return min(max(g.left(), fx), g.right() - w), min(max(g.top(), fy), g.bottom() - h)
+        if mode == "window":
+            rect = None
+            try:
+                from phraseforge.platform import windows
+                rect = windows.foreground_rect()
+            except Exception:
+                rect = None
+            if rect:
+                l, t, r, b = rect
+                return (l + r) // 2 - w // 2, (t + b) // 2 - h // 2
+            mode = "monitor"
+        if mode in ("monitor", "center"):
+            return g.center().x() - w // 2, g.center().y() - h // 2
+        px = min(max(g.left(), x), g.right() - w)
+        if mode == "above":
+            return px, max(g.top(), y - h - 24)
+        if mode == "below":
+            return px, min(y + 20, g.bottom() - h)
+        return px, (y + 4 if y + 4 + h <= g.bottom() else max(g.top(), y - h - 24))
 
     @staticmethod
     def _caret() -> tuple[int, int] | None:
@@ -1048,15 +1156,7 @@ class PhrasePopup(_Panel):
         self.refresh()
         caret_pos = self._caret() if caret is True else caret
         mode, x, y = self.placement(x, y, caret_pos)
-        scr = QGuiApplication.screenAt(QPoint(x, y)) or QGuiApplication.primaryScreen()
-        g = scr.availableGeometry()
-        h = self.sizeHint().height()
-        w = self.width()
-        if mode == "center":
-            px, py = g.center().x() - w // 2, g.center().y() - h // 2
-        else:
-            px = min(max(g.left(), x), g.right() - w)
-            py = y + 4 if y + 4 + h <= g.bottom() else max(g.top(), y - h - 24)
+        px, py = self.popup_origin(mode, x, y, self.width(), self.sizeHint().height())
         self.move(px, py)
         self.show()
         self.raise_()

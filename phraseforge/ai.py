@@ -1,6 +1,6 @@
 """AI completions for the {#ai} and {#translate} macros.
 
-Providers: openai, anthropic, ollama, openrouter. Keys and defaults come from
+Providers: openai, anthropic, gpt4all, ollama, openrouter (and deepl for translation only). Keys and defaults come from
 the settings table (ai.provider, ai.model, ai.*_key, ai.ollama_url).
 Settings > AI text processing adds:
 - ai.instructions.about / ai.instructions.respond: always added to the system prompt
@@ -17,6 +17,7 @@ import httpx
 DEFAULT_MODELS = {
     "openai": "gpt-4.1-mini",
     "anthropic": "claude-sonnet-5-5",
+    "gpt4all": "Llama 3 8B Instruct",   # GPT4All desktop app, local API server (OpenAI format)
     "ollama": "llama3.2",
     "openrouter": "openrouter/auto",
 }
@@ -63,11 +64,35 @@ def presets(settings: dict[str, str]) -> list[dict]:
         return []
 
 
-def preset_prompt(settings: dict[str, str], name: str) -> str:
+def _find_preset(settings: dict[str, str], name: str) -> dict:
     for p in presets(settings):
         if p["name"].strip().lower() == (name or "").strip().lower():
-            return str(p.get("prompt", ""))
+            return p
     raise AIError(f"AI preset '{name}' not found (Settings > AI text processing > Custom presets)")
+
+
+def preset_prompt(settings: dict[str, str], name: str) -> str:
+    return str(_find_preset(settings, name).get("prompt", ""))
+
+
+def preset_model(settings: dict[str, str], name: str) -> str:
+    """Model chosen for a preset (PhraseExpress AI Presets > Model); "" = Auto."""
+    m = str(_find_preset(settings, name).get("model", "") or "").strip()
+    return "" if m.lower() == "auto" else m
+
+
+def glossary_langs(settings: dict[str, str]) -> dict[str, tuple[str, str]]:
+    """{glossary name: (source language, target language)} from translation.glossary_langs."""
+    try:
+        v = json.loads(settings.get("translation.glossary_langs") or "{}")
+    except ValueError:
+        return {}
+    out = {}
+    if isinstance(v, dict):
+        for k, pair in v.items():
+            if isinstance(pair, (list, tuple)) and len(pair) == 2:
+                out[str(k)] = (str(pair[0]), str(pair[1]))
+    return out
 
 
 def translation_system(settings: dict[str, str], to: str, src: str = "", glossary: str = "") -> str:
@@ -83,6 +108,16 @@ def translation_system(settings: dict[str, str], to: str, src: str = "", glossar
     except ValueError:
         gl = {}
     names = [glossary] if glossary else list(gl) if isinstance(gl, dict) else []
+    if not glossary:
+        # a glossary with languages set applies only when they match this translation
+        langs = glossary_langs(settings)
+
+        def fits(n):
+            if n not in langs:
+                return True
+            s_lang, t_lang = (x.lower() for x in langs[n])
+            return t_lang == to.lower() and (not src or s_lang == src.lower())
+        names = [n for n in names if fits(n)]
     pairs = []
     for n in names:
         for line in str(gl.get(n, "")).splitlines() if isinstance(gl, dict) else []:
@@ -118,6 +153,15 @@ def complete(settings: dict[str, str], prompt: str, provider: str = "", model: s
                      payload, timeout_s)
         return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
 
+    if provider == "gpt4all":
+        base = (settings.get("ai.gpt4all_url") or "http://localhost:4891/v1").rstrip("/")
+        data = _post(f"{base}/chat/completions", {}, {"model": model, "max_tokens": max_tokens,
+                                                      "messages": _messages(prompt, system)}, timeout_s)
+        try:
+            return data["choices"][0]["message"]["content"] or ""
+        except (KeyError, IndexError) as e:
+            raise AIError(f"unexpected response: {str(data)[:200]}") from e
+
     if provider == "ollama":
         base = (settings.get("ai.ollama_url") or "http://localhost:11434").rstrip("/")
         data = _post(f"{base}/api/chat", {}, {"model": model, "stream": False,
@@ -136,3 +180,47 @@ def complete(settings: dict[str, str], prompt: str, provider: str = "", model: s
         return data["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError) as e:
         raise AIError(f"unexpected response: {str(data)[:200]}") from e
+
+
+# ---------------------------------------------------------------- DeepL (translation only)
+DEEPL_LANGS = {
+    "arabic": "AR", "bulgarian": "BG", "chinese": "ZH", "czech": "CS", "danish": "DA", "dutch": "NL",
+    "english": "EN", "estonian": "ET", "finnish": "FI", "french": "FR", "german": "DE", "greek": "EL",
+    "hungarian": "HU", "indonesian": "ID", "italian": "IT", "japanese": "JA", "korean": "KO",
+    "latvian": "LV", "lithuanian": "LT", "norwegian": "NB", "polish": "PL", "portuguese": "PT",
+    "romanian": "RO", "russian": "RU", "slovak": "SK", "slovenian": "SL", "spanish": "ES",
+    "swedish": "SV", "turkish": "TR", "ukrainian": "UK",
+}
+
+
+def deepl_code(lang: str) -> str:
+    """Language name or code -> DeepL code ("Arabic" -> "AR", "en-us" -> "EN-US")."""
+    lang = (lang or "").strip()
+    return DEEPL_LANGS.get(lang.lower(), lang.upper())
+
+
+def deepl_translate(settings: dict[str, str], text: str, to: str, src: str = "", timeout_s: float = 60) -> str:
+    """Translate with the DeepL API (Free keys end in ':fx'). Ignored words are wrapped in
+    <keep> tags that DeepL leaves untranslated."""
+    key = (settings.get("ai.deepl_key") or "").strip()
+    if not key:
+        raise AIError("DeepL API key is not set (Settings > Language Translation)")
+    host = "api-free.deepl.com" if key.endswith(":fx") else "api.deepl.com"
+    ignored = [w.strip() for w in (settings.get("translation.ignored_words") or "").replace(",", "\n").splitlines()
+               if w.strip()]
+    body = text
+    payload: dict = {"target_lang": deepl_code(to)}
+    if ignored:
+        import re
+        body = re.sub("|".join(re.escape(w) for w in sorted(ignored, key=len, reverse=True)),
+                      lambda m: f"<keep>{m.group(0)}</keep>", text)
+        payload.update(tag_handling="xml", ignore_tags=["keep"])
+    payload["text"] = [body]
+    if src:
+        payload["source_lang"] = deepl_code(src).split("-")[0]
+    data = _post(f"https://{host}/v2/translate", {"Authorization": f"DeepL-Auth-Key {key}"}, payload, timeout_s)
+    try:
+        out = data["translations"][0]["text"]
+    except (KeyError, IndexError) as e:
+        raise AIError(f"unexpected response: {str(data)[:200]}") from e
+    return out.replace("<keep>", "").replace("</keep>", "")

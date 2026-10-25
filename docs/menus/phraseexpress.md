@@ -63,6 +63,29 @@ Buttons: Settings options ▾ (Revert to default settings, Load settings, Export
 10. **AutoComplete**: Learn individual spelling corrections; Suggest entered sentences; Suggest entered words; Filter: must begin with a letter / an UPPER CASE letter / a number / a special character.
 11. **Expert Options**: default leading and trailing delimiters; Route Enter and Tab-key through PhraseExpress; Execute only in specific programs; Email delivery: MAPI / Outlook OLE / Gmail / mailto (UTF-8 option). **Text Insertion**: clipboard or key-by-key (VK_Packet), clipboard if longer than 100 characters, Phrase output format Auto, Restore clipboard, Specific paste method per application, Force focus change, Auto-minimize main window, Output in UPPERCASE if 2 chars are typed in uppercase. **Delays**: focus change 200 ms, clipboard restore 450 ms, key press 90 ms, clipboard paste 50 ms (the user's current values). **Phrase Formatting**: Default phrase format (Formatted), font for unformatted phrases (Arial 10pt), HTML font formatting output (Auto).
 
+## Settings drop-down lists (observed, user screenshots 2026-10-25)
+- AI text processing > Engine / Language Translation > Translation Engine: Deepl (translation only),
+  OpenAI, Anthropic (Claude), GPT4All, Ollama, OpenRouter. The translation page has its own API key box
+  and shows "Invalid API key. Please check API key and your account status." when the test fails.
+- Custom presets > "AI Presets" dialog: Preset label, Instruction ("Prompt"), gear button that shows
+  Model (Auto) and Reset to defaults.
+- Glossaries > "New Glossary": Name, Source language, Target language.
+- Phrase Menu > Phrase menu contents: Description - QuickKey · QuickKey - Description ·
+  Autotext - Description - QuickKey · Autotext - QuickKey - Description · QuickKey - Description - Autotext ·
+  Description - Autotext - QuickKey · Description - Autotext - Hotkey - QuickKey ·
+  QuickKey - Autotext - Description - Hotkey · Autotext - QuickKey - Description - Hotkey ·
+  Autotext - Description - QuickKey - Hotkey · Description - Hotkey - QuickKey · QuickKey - Description - Hotkey
+- Sort by: Description, Autotext, Usage count, Last use · Alphabetically, Length · Ascending, Descending
+- Show phrase menus: next to the caret, below the caret, above the caret, next to the mouse pointer,
+  near task tray icon, at a fixed position
+- If caret position is indeterminable: Near the task tray, Centered in current window, Centered in primary
+  monitor, Centered in current monitor, Next to the mouse cursor, Fixed
+- Phrase Menu > Hotkeys: QuickKey modifier None, Shift, Alt, Ctrl, Win; keys None, Numbers [1-9],
+  Numpad [Num1-Num9], Letters [a-z], Function keys [F1-F12]; confirmation and search key lists
+  (Tab, Enter, Caps Lock, Ins, LWin, RWin, Apps, Num0-9, F1-F24 ...)
+- Expert Options > Text Insertion: key-by-key method VK_Packet (recommended) / SendKey; Phrase output
+  format Auto, RTF & HTML, RTF only, HTML only.
+
 ## Tray icon right-click menu (observed, user screenshot 2026-10-25)
 1. About PhraseExpress Free v18.0.84f
 2. Language selection >

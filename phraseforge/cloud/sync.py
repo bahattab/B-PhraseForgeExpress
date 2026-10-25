@@ -39,7 +39,8 @@ BACKUP_PREFIX = "backup-"
 LOCAL_SETTING_PREFIXES = ("sync.", "gdrive.", "backup.cloud_", "ocr.cli_path", "app.start_with_windows",
                           "app.first_run_done", "ui.item_colors",
                           # API keys: encrypted for this Windows account, never uploaded
-                          "ai.openai_key", "ai.anthropic_key", "ai.openrouter_key")
+                          "ai.openai_key", "ai.anthropic_key", "ai.openrouter_key",
+                          "ai.deepl_key")
 
 
 @dataclass

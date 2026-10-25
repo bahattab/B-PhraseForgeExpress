@@ -57,6 +57,17 @@ def foreground_app() -> tuple[str, str]:
     return exe, _window_text(hwnd)
 
 
+def foreground_rect() -> tuple[int, int, int, int] | None:
+    """(left, top, right, bottom) of the foreground window, or None."""
+    hwnd = user32.GetForegroundWindow()
+    if not hwnd:
+        return None
+    r = wt.RECT()
+    if not user32.GetWindowRect(hwnd, ctypes.byref(r)):
+        return None
+    return r.left, r.top, r.right, r.bottom
+
+
 def find_window(title_substring: str) -> int | None:
     needle = title_substring.lower()
     found: list[int] = []

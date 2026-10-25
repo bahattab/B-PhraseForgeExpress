@@ -101,6 +101,8 @@ DEFAULT_SETTINGS = {
     "ai.anthropic_key": "",
     "ai.openrouter_key": "",
     "ai.ollama_url": "http://localhost:11434",
+    "ai.gpt4all_url": "http://localhost:4891/v1",
+    "ai.deepl_key": "",
     "ui.theme": "system",
     "ui.language": "en",
     "app.start_with_windows": "0",
@@ -118,7 +120,7 @@ def hash_password(pw: str) -> str:
 
 # API keys are encrypted with Windows DPAPI before they are written, so a copied
 # database file does not reveal them (other platforms: stored base64-encoded only).
-SECRET_SETTINGS = frozenset({"ai.openai_key", "ai.anthropic_key", "ai.openrouter_key"})
+SECRET_SETTINGS = frozenset({"ai.openai_key", "ai.anthropic_key", "ai.openrouter_key", "ai.deepl_key"})
 _SEALED = "dpapi:"
 
 

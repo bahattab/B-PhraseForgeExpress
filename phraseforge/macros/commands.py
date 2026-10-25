@@ -960,16 +960,19 @@ def _waitfor(rt, args, opts):
 
 
 # ====================================================================== AI / OCR
-@macro("ai", "AI", '{#ai "prompt" -provider openai|anthropic|ollama|openrouter -model name -system "role" '
+@macro("ai", "AI", '{#ai "prompt" -provider openai|anthropic|gpt4all|ollama|openrouter -model name -system "role" '
        '-preset "Summarize"}',
        "Insert an AI model's answer. -preset uses a prompt from Settings > AI text processing > Custom presets "
        "(the macro text becomes the input).", '{#ai "Rewrite politely: {#clipboard}"}', aliases=("openai", "chatgpt"))
 def _ai(rt, args, opts):
     prompt = " ".join(args)
     if opts.get("preset"):
-        from phraseforge.ai import preset_prompt
-        instruction = preset_prompt({"ai.presets": rt.setting("ai.presets", "[]")}, opts["preset"])
+        from phraseforge.ai import preset_model, preset_prompt
+        ps = {"ai.presets": rt.setting("ai.presets", "[]")}
+        instruction = preset_prompt(ps, opts["preset"])
         prompt = f"{instruction}\n\n{prompt}" if prompt else instruction
+        if not opts.get("model") and not opts.get("provider"):
+            opts = dict(opts, model=preset_model(ps, opts["preset"]))
     return rt.host.ai_complete(prompt, provider=opts.get("provider", ""), model=opts.get("model", ""),
                                system=opts.get("system", "")).strip()
 
@@ -978,11 +981,14 @@ def _ai(rt, args, opts):
        "Translate text using the translation engine from Settings > Language Translation "
        "(ignored words and glossaries are applied).", '{#translate {#clipboard} -to Arabic}')
 def _translate(rt, args, opts):
-    from phraseforge.ai import translation_system
-    keys = ("translation.ignored_words", "translation.glossaries")
+    from phraseforge.ai import deepl_translate, translation_system
+    keys = ("translation.ignored_words", "translation.glossaries", "translation.glossary_langs")
+    provider = opts.get("provider", "") or rt.setting("translation.provider", "")
+    if provider == "deepl":
+        settings = {k: rt.setting(k, "") for k in keys + ("ai.deepl_key",)}
+        return deepl_translate(settings, " ".join(args), opts.get("to", "English"), opts.get("from", "")).strip()
     system = translation_system({k: rt.setting(k, "") for k in keys}, opts.get("to", "English"),
                                 opts.get("from", ""), opts.get("glossary", ""))
-    provider = opts.get("provider", "") or rt.setting("translation.provider", "")
     return rt.host.ai_complete(" ".join(args), provider=provider, model=opts.get("model", ""),
                                system=system).strip()
 
