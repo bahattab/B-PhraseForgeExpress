@@ -10,6 +10,9 @@ from phraseforge.ui.iconset import icon
 from phraseforge.ui.icons import app_icon
 
 
+LANGUAGES = (("en", "Default (English)"), ("ar", "العربية (Arabic)"))
+
+
 class Tray(QSystemTrayIcon):
     open_main = Signal()
     show_popup = Signal()
@@ -26,6 +29,8 @@ class Tray(QSystemTrayIcon):
     quick_note = Signal()               # "New quick note" (like ONENOTEM)
     new_phrase_from_clipboard = Signal()   # TextExpander "New Snippet from Clipboard"
     edit_last_phrase = Signal()            # TextExpander "Edit Last Expanded Snippet"
+    app_enabled = Signal(str, bool)        # PhraseExpress 'Enabled in "<program>"' (exe, on)
+    language = Signal(str)                 # PhraseExpress "Language selection"
 
     def __init__(self, icon_: QIcon | None = None, parent=None):
         super().__init__(icon_ or app_icon(), parent)
@@ -59,6 +64,22 @@ class Tray(QSystemTrayIcon):
         m.addAction(icon("settings"), tr("Settings"), self.settings.emit)
         m.addAction(icon("about"), tr("About PhraseForge"), self._about)
         m.addSeparator()
+        # PhraseExpress tray menu (observed): Language selection, Enabled in "<last program>"
+        self.language_provider = None          # () -> current language code
+        self.language_menu = m.addMenu(icon("languages"), tr("Language selection"))
+        for code, text in LANGUAGES:
+            a = self.language_menu.addAction(text)
+            a.setCheckable(True)
+            a.setData(code)
+            a.triggered.connect(lambda _=False, c=code: self.language.emit(c))
+        self.last_app_provider = None          # () -> (exe, label) of the last program used, or None
+        self.excluded_provider = None          # () -> set of excluded exe names
+        self._app_exe = ""
+        self.app_toggle_action = QAction("", m, checkable=True)
+        self.app_toggle_action.triggered.connect(lambda on: self.app_enabled.emit(self._app_exe, on))
+        self.app_toggle_action.setVisible(False)
+        m.addAction(self.app_toggle_action)
+        m.addSeparator()
         self.pause_action = QAction(tr("Pause"), m, checkable=True)
         self.pause_action.toggled.connect(self._on_pause)
         m.addAction(self.pause_action)
@@ -81,12 +102,33 @@ class Tray(QSystemTrayIcon):
 
     def _before_show(self) -> None:
         self._fill_ocr_languages()
+        self._fill_app_toggle()
+        cur = self.language_provider() if self.language_provider else "en"
+        for a in self.language_menu.actions():
+            a.setChecked(a.data() == cur)
         connected = self.isSignalConnected(QMetaMethod.fromSignal(self.show_statistics))
         self.stats_action.setVisible(connected)
         # OneNote items appear once the app has wired them
         for act, sig in ((self.onenote_send_action, self.onenote_send_clipboard),
                          (self.onenote_clip_action, self.onenote_clip)):
             act.setVisible(self.isSignalConnected(QMetaMethod.fromSignal(sig)))
+
+    def _fill_app_toggle(self) -> None:
+        last = self.last_app_provider() if self.last_app_provider else None
+        act = self.app_toggle_action
+        if not last or not last[0]:
+            self._app_exe = ""
+            act.setVisible(False)
+            return
+        exe, label = last
+        self._app_exe = exe
+        label = (label or exe).strip()
+        if len(label) > 40:
+            label = label[:39] + "\u2026"
+        act.setText(tr("Enabled in") + f' "{label}"')
+        excluded = self.excluded_provider() if self.excluded_provider else set()
+        act.setChecked(exe not in excluded)
+        act.setVisible(True)
 
     def _about(self) -> None:
         from phraseforge.ui.about_dialog import AboutDialog

@@ -63,23 +63,44 @@ Buttons: Settings options ▾ (Revert to default settings, Load settings, Export
 10. **AutoComplete**: Learn individual spelling corrections; Suggest entered sentences; Suggest entered words; Filter: must begin with a letter / an UPPER CASE letter / a number / a special character.
 11. **Expert Options**: default leading and trailing delimiters; Route Enter and Tab-key through PhraseExpress; Execute only in specific programs; Email delivery: MAPI / Outlook OLE / Gmail / mailto (UTF-8 option). **Text Insertion**: clipboard or key-by-key (VK_Packet), clipboard if longer than 100 characters, Phrase output format Auto, Restore clipboard, Specific paste method per application, Force focus change, Auto-minimize main window, Output in UPPERCASE if 2 chars are typed in uppercase. **Delays**: focus change 200 ms, clipboard restore 450 ms, key press 90 ms, clipboard paste 50 ms (the user's current values). **Phrase Formatting**: Default phrase format (Formatted), font for unformatted phrases (Arial 10pt), HTML font formatting output (Auto).
 
-## Tray icon and phrase menu (published, not confirmed by screenshots)
-Source: PhraseExpress Windows help, "User interface" and "Phrase Menu" pages
-(https://www.phraseexpress.com/doc/ui/, https://www.phraseexpress.com/doc/settings/phrase-menu/),
-read through a web search summary on 2026-10-25. Screen control could not right-click the tray icon,
-so none of this is observed yet.
-- Tray icon: left click opens the phrase menu; double click opens the main window; right click opens
-  the options context menu; Ctrl+click disables PhraseExpress for a while; Alt+click opens the settings.
-- Icon states: running, busy, triggers disabled, error. Hovering or right-clicking shows details.
-- Phrase menu: number keys 1-9 pick the first nine entries, letters and function keys also navigate;
-  it can open at a fixed position after being dragged by its title bar; right-clicking the title bar
-  (or an entry) offers Edit.
-- The items of the right-click context menu are not listed in the summary that could be read, so
-  PhraseForge keeps its own tray menu (Open, New phrase from clipboard, Edit last used phrase, Phrase
-  menu, Clipboard history, Settings, Pause, Quit and more).
+## Tray icon right-click menu (observed, user screenshot 2026-10-25)
+1. About PhraseExpress Free v18.0.84f
+2. Language selection >
+3. ✓ Enabled in "<program used last>" (per-program on/off; showed the name of the program that had focus)
+4. Open PhraseExpress
+5. Settings
+6. **Register for professional use**
+7. Exit
+
+## Phrase menu (popup) (observed, user screenshot 2026-10-25)
+- Blue title band with the PHRASE EXPRESS wordmark, a search button and a pin button.
+- Scroll arrows at the top and bottom of the list.
+- Folders first, sorted by name, with the special folders Clipboard Cache and Last Used sorted in
+  among them; then the phrases of the root folder. Each folder row has a ">" arrow.
+- Footer: "New phrase..." and **Register for professional use**.
+- (The user's own folder and phrase names are not recorded here.)
+
+## New phrase dialog (observed, user screenshots 2026-10-25)
+"Enter additional information for the new phrase..." (after the Create new phrase hotkey, when
+Settings > Display "Prompt for additional information after creating a new phrase" is on):
+- Description
+- Trigger: type list (Autotext, SmartComplete, RegEx Autotext, Hotkey, Window, Time, Clipboard,
+  RegEx Clipboard), value box with delimiter and case buttons, execution-mode button, remove (X),
+  and a green (+) button with the same type list to add another trigger.
+- Execution-mode menu: Execute immediately after autotext input · After manual confirmation ·
+  When pausing after autotext input · When continue typing quickly after autotext · Help
+- Execute only in specific programs (checkbox)
+- Save in folder (list) + folder button opening "Select target folder..." (search box and folder tree)
+- OK / Cancel
+
+## Tray icon clicks (published, not confirmed by screenshots)
+Source: PhraseExpress Windows help, "User interface" page (https://www.phraseexpress.com/doc/ui/),
+read through a web search summary on 2026-10-25: left click opens the phrase menu, double click
+the main window, right click the menu above, Ctrl+click disables PhraseExpress for a while,
+Alt+click opens the settings.
 
 ## Not captured
 - Tray-icon menu and the popup phrase menu: screen control is limited to left clicks on the
-  Windows taskbar, so the tray icon could not be right-clicked. The published behaviour above stands in until a
-  screenshot of the right-click menu arrives.
+  Windows taskbar, so the tray icon could not be right-clicked; the user sent screenshots of the tray menu and
+  the phrase menu instead (above). The click behaviour is still only from the published help.
 - The ends of the long Bulk edit and Sort submenus, which ran below the screen.

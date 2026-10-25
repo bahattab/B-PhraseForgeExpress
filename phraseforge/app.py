@@ -659,6 +659,13 @@ class PhraseForgeApp(QObject):
                 getattr(self.tray, sig).connect(lambda _=None, c=sig: self.on_command(c))
         self.tray.quit.connect(self.quit)
         self._apply_tray_click()
+        self.tray.language_provider = lambda: self.store.setting("ui.language", "en")
+        self.tray.language.connect(self._set_language)
+        self.tray.last_app_provider = lambda: self._last_app
+        self.tray.excluded_provider = self.store.excluded_apps
+        self.tray.app_enabled.connect(self._set_app_enabled)
+        self._last_app = None
+        self._start_app_tracker()
         self.tray.show()
 
     def _build_triggers(self):
@@ -777,6 +784,47 @@ class PhraseForgeApp(QObject):
         if kind == "setting" and getattr(self, "tray", None) is not None:
             self.poster.posted.emit(self._apply_tray_click)
 
+    # PhraseExpress tray: 'Enabled in "<program>"' acts on the program used last,
+    # so remember the last foreground window that is not ours or the taskbar.
+    def _start_app_tracker(self) -> None:
+        if sys.platform != "win32":
+            return
+        from PySide6.QtCore import QTimer
+        self._app_timer = QTimer(self)
+        self._app_timer.timeout.connect(self._track_foreground_app)
+        self._app_timer.start(1000)
+
+    def _track_foreground_app(self, fg=None) -> None:
+        try:
+            if fg is None:
+                from phraseforge.platform.windows import foreground_app
+                fg = foreground_app()
+            exe, title = fg
+        except Exception:
+            return
+        own = os.path.basename(sys.executable).lower()
+        if exe and title and exe != own:
+            self._last_app = (exe, title)
+
+    def _set_app_enabled(self, exe: str, on: bool) -> None:
+        if not exe:
+            return
+        apps = set(self.store.excluded_apps())
+        if on:
+            apps.discard(exe.lower())
+        else:
+            apps.add(exe.lower())
+        self.store.set_excluded_apps(apps)
+
+    def _set_language(self, code: str) -> None:
+        mw = getattr(self, "main_window", None)
+        if mw is not None and hasattr(mw, "set_language"):
+            mw.set_language(code)
+            return
+        self.store.set_setting("ui.language", code)
+        from phraseforge.ui import i18n
+        i18n.set_language(code)
+
     def _apply_tray_click(self) -> None:
         on = self.store.setting("tray.left_click_popup", "0") == "1"
         self.tray.left_click = "popup" if on else "main"
@@ -812,9 +860,25 @@ class PhraseForgeApp(QObject):
         except Exception:
             pass
         desc = (text.strip().splitlines() or ["New phrase"])[0][:60]
-        p = self.store.add_phrase(Phrase(desc, text))
+        p = self._ask_new_phrase_info(Phrase(desc, text))
+        if p is None:
+            return None
         self.show_main()
         self.main_window.select_phrase(p.id)
+        return p
+
+    def _ask_new_phrase_info(self, phrase):
+        """PhraseExpress "Enter additional information for the new phrase..." (Settings >
+        Display > Prompt for additional information). Returns the stored phrase, or None
+        when the user cancels. With the setting off the phrase is stored as given."""
+        if self.store.setting("display.prompt_after_new_phrase", "1") != "1":
+            return self.store.add_phrase(phrase)
+        from phraseforge.ui.main_dialogs import NewPhraseInfoDialog
+        dlg = NewPhraseInfoDialog(self.store, phrase.description, phrase.folder_id)
+        dlg.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        if not dlg.exec():
+            return None
+        return self.store.add_phrase(dlg.phrase(phrase.content))
 
     def _new_phrase_from_clipboard(self):
         """TextExpander "New Snippet from Clipboard": a new phrase holding the clipboard text."""
@@ -1167,7 +1231,9 @@ class PhraseForgeApp(QObject):
         """Popup footer "New phrase...": create it in the popup's folder and open the editor."""
         from phraseforge.models import Phrase
         folder_id = getattr(self.popup, "new_phrase_folder_id", None)
-        p = self.store.add_phrase(Phrase("New phrase", "", folder_id=folder_id))
+        p = self._ask_new_phrase_info(Phrase("New phrase", "", folder_id=folder_id))
+        if p is None:
+            return
         self.show_main()
         if hasattr(self.main_window, "select_phrase"):
             self.main_window.select_phrase(p.id)

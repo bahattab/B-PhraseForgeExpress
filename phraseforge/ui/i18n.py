@@ -18,6 +18,8 @@ AR = {
     "Suggestions": "الاقتراحات",
     "Variables": "المتغيرات",
     "Settings": "الإعدادات",
+    "Language selection": "اختيار اللغة",
+    "Enabled in": "مفعّل في",
     "About": "حول",
     "Search": "بحث",
     "New folder": "مجلد جديد",
