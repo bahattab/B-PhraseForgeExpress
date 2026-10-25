@@ -252,7 +252,10 @@ class Store:
             except Exception:  # listeners must not break storage
                 pass
 
+    closed = False
+
     def close(self) -> None:
+        self.closed = True
         self.conn.close()
 
     # ------------------------------------------------------------ folders

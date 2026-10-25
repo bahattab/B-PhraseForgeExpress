@@ -828,6 +828,8 @@ class MainWindow(QMainWindow):
                 self._refresh_timer.start()
 
     def refresh_tree(self) -> None:
+        if getattr(self.store, "closed", False):   # a queued refresh after the store was closed
+            return
         self.panel.refresh()
         if self.three_columns:
             k, i = self.panel.current()
