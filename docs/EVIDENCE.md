@@ -5,7 +5,7 @@ Status: **2026-10-25, partial capture.**
   The other five programs gave 0 items because they have no window (tray programs, or
   onenotecapture, which opens and closes at once).
 - The user also sent 9 screenshots of Capture2Text's tray menu and Settings pages, 26 of Listary's
-  Options window and 27 of TextExpander (tray, menus, Preferences).
+  Options window and 39 of TextExpander (tray, menus, Preferences, web dashboard).
 - The raw OneNote capture contained the user's own notebook, section and page names. Those were
   replaced with `<user content>` before committing, and the script now does this by itself.
 - Programs whose inventory says *pending* still need tray-menu screenshots.
@@ -39,7 +39,7 @@ original), **pending** (not captured yet).
 | OneNote (ONENOTE.EXE) | **observed**: title bar, Quick Access Toolbar, ribbon tab row, notebook/page panes (88 items, depth 10). The commands inside each tab are not captured yet | `docs/menus/onenote.md` |
 | OneNote screen clipping (onenotecapture.exe) | pending (no window) | `docs/menus/onenotecapture.md` |
 | Send to OneNote (ONENOTEM.EXE) | pending (tray only) | `docs/menus/onenotem.md` |
-| TextExpander 8.4.8 | **observed**: tray menu, menu bar, group and snippet editors, all six Preferences pages, from 27 screenshots | `docs/menus/textexpander.md` |
+| TextExpander 8.4.8 | **observed**: tray menu, menu bar, group and snippet editors, all six Preferences pages and the web dashboard, from 39 screenshots | `docs/menus/textexpander.md` |
 | Listary | **observed**: all Options pages except About, from 26 screenshots; tray menu pending | `docs/menus/listary.md` |
 
 ## Feature ledger
@@ -49,6 +49,8 @@ original), **pending** (not captured yet).
 | Abbreviation expands to text (autotext triggers, delimiters, case handling) | TextExpander, PhraseExpress | documented (TextExpander public snippet docs; SPEC.md) | implemented | `tests/test_triggers.py`, `tests/test_triggers_advanced.py` |
 | Fill-ins (`%filltext%`, `%fillpopup%` … → `{#ask*}` macros) | TextExpander | documented (export format) | implemented | `tests/test_textexpander_import.py` |
 | Import TextExpander CSV / `.textexpander` groups | TextExpander | documented (export formats) | implemented | `tests/test_textexpander_import.py` |
+| Import macOS Text Replacements (`.plist`, shortcut → phrase) | TextExpander web Import/Export, "Supported formats" | observed (format list); the file layout is Apple's documented export | implemented (Phrases > Import > TextExpander / macOS) | `test_import_macos_text_replacements_plist` |
+| Statistics: phrases expanded and time saved from a typing speed | TextExpander web Statistics (Words Per Minute 50, Snippets Expanded, Time Saved, Daily Activity) | observed | already implemented (Statistics window; speed set in characters per minute, default 180 ≈ 36 words per minute) | `tests/test_ui.py` |
 | Send clipboard text/picture to OneNote page or Quick Notes | Send to OneNote (ONENOTEM) | documented (OneNote COM API) | implemented | `tests/test_onenote*.py` (fake client) |
 | New quick note window (tray, hotkey): Ctrl+Enter sends to OneNote Quick Notes or the default page, Ctrl+S saves as a phrase | Send to OneNote (ONENOTEM) | published, unconfirmed (ONENOTEM's tray menu not captured yet); sending uses the documented OneNote COM API | implemented | `tests/test_quick_note.py` |
 | Screen clip to OneNote, or OCR the clip | onenotecapture.exe | documented (starts `onenotecapture.exe`; Capture2Text CLI) | implemented | `tests/test_onenote*.py` |
@@ -103,6 +105,8 @@ features of each program. It is based on vendor product information, not on scre
 | TextExpander | Snippets, abbreviations, fill-ins, CSV and `.textexpander` import | replicated | See the feature ledger |
 | TextExpander | Cloud team sharing, account sign-in, Public groups, web dashboard (Members, Teams, Snippet Requests, Statistics) | not implemented | Needs TextExpander's online service; PhraseForge has its own optional Google Drive sync and local statistics |
 | TextExpander | Quick actions (Ctrl+Shift+/) | not implemented | The screenshots show only the hotkey, not what the panel offers |
+| TextExpander | Import ShortHand `.txt`, Instant Text `.glo`, Google Sheets `.html` | not implemented | Their file layouts are not published; guessing them could import wrong text |
+| TextExpander | Snippet Activity log per person, Snippet Requests, Members, Teams | not implemented | Team features of TextExpander's online service |
 | TextExpander | One global expansion mode; "Scan typing for suggestions" per program; Appearance fonts for snippet display; update check frequency and beta channel | approximated / not implemented | PhraseForge sets the mode per phrase and uses one editor font setting; it has no update checker |
 | Listary | Search files by name, double Ctrl, open folder, web keywords | approximated | See the feature ledger. Ranking and keys may differ from Listary's |
 | Listary | Integration into File Explorer, Open/Save dialogs and 14 file managers (Quick Switch Ctrl+G) | not implemented | Needs hooks inside other programs' windows; out of scope for this version |

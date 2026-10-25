@@ -586,7 +586,7 @@ class MainWindow(QMainWindow):
         imp = menu_with(self, [("File import (JSON, CSV, TXT)...", "import", self.import_file),
                                ("Files including directory structure...", "folder_tree", self.import_folder),
                                None,
-                               ("TextExpander (.csv / .textexpander)...", "textexpander", self.import_textexpander),
+                               ("TextExpander / macOS (.csv / .textexpander / .plist)...", "textexpander", self.import_textexpander),
                                ("From OneNote...", "on_notebook", self.import_onenote)])
         exp = menu_with(self, [("Export to file (JSON, CSV)...", "export", self.export_file),
                                ("Text files (one file per phrase)...", "text_file", self.export_text_folder)])
@@ -1636,7 +1636,7 @@ class MainWindow(QMainWindow):
 
     def import_textexpander(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Import from TextExpander", "",
-                                              "TextExpander exports (*.csv *.textexpander);;All files (*)")
+                                              "TextExpander / macOS exports (*.csv *.textexpander *.plist);;All files (*)")
         if path:
             self.import_textexpander_path(path)
 
