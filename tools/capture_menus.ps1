@@ -10,10 +10,13 @@ It reads the user interface only; it does not inspect the program's files.
 Usage (PowerShell, from the repository folder):
   powershell -ExecutionPolicy Bypass -File tools\capture_menus.ps1 -Exe "C:\Program Files\Listary\Listary.exe" -Name listary
   powershell -ExecutionPolicy Bypass -File tools\capture_menus.ps1 -All      # the six reference programs
-Options: -MaxDepth 10  -NoScreenshots
+Options: -MaxDepth 10  -NoScreenshots  -KeepNames
+Privacy: by default the names of list items, links, text boxes, tree items (notebooks, sections,
+pages, file names) and the window title are written as <user content>, so your own notes never
+end up in the inventory. -KeepNames writes them as they are.
 #>
 param(
-  [string]$Exe, [string]$Name, [int]$MaxDepth = 10, [switch]$NoScreenshots, [switch]$All
+  [string]$Exe, [string]$Name, [int]$MaxDepth = 10, [switch]$NoScreenshots, [switch]$All, [switch]$KeepNames
 )
 $ErrorActionPreference = "Continue"
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Windows.Forms, System.Drawing
@@ -45,10 +48,14 @@ function Shot($el, $dir, [ref]$n) {
   } catch {}
 }
 
+function IsUserContent($c) {
+  return (-not $KeepNames) -and ($c.ControlType -in @($CT::ListItem, $CT::Hyperlink, $CT::Edit, $CT::TreeItem, $CT::Document))
+}
+
 function Label($el) {
   $c = $el.Current
   $t = $c.ControlType.ProgrammaticName -replace "ControlType\.", ""
-  $s = "$($c.Name)"
+  $s = if (IsUserContent $c) { "<user content>" } else { "$($c.Name)" }
   if ($c.AcceleratorKey) { $s += "  [$($c.AcceleratorKey)]" }
   if ($c.AccessKey) { $s += "  (Alt: $($c.AccessKey))" }
   if (-not $c.IsEnabled) { $s += "  {disabled}" }
@@ -99,7 +106,8 @@ function Walk($el, $depth, $dir, [ref]$n, $seen) {
         try { $exp.Collapse() } catch { [System.Windows.Forms.SendKeys]::SendWait("{ESC}") }
         Start-Sleep -Milliseconds 200
       } catch {
-        $script:lines.Add(("  " * ($depth + 1)) + "- (could not expand automatically: open '$($c.Name)' by hand)  [manual]")
+        $nm = if ((IsUserContent $c) -or -not $KeepNames) { "<user content>" } else { $c.Name }
+        $script:lines.Add(("  " * ($depth + 1)) + "- (could not expand automatically: open '$nm' by hand)  [manual]")
       }
     } elseif ($depth -lt $MaxDepth) {
       Walk $ch ($depth + 1) $dir $n $seen
@@ -107,7 +115,7 @@ function Walk($el, $depth, $dir, [ref]$n, $seen) {
   }
 }
 
-function Capture($exe, $name) {
+function Capture([string]$exe, [string]$name) {
   $dir = Join-Path $Root "reference\$name"; New-Item -ItemType Directory -Force $dir | Out-Null
   $out = Join-Path $Root "docs\menus\$name.md"; New-Item -ItemType Directory -Force (Split-Path $out) | Out-Null
   $script:lines = New-Object System.Collections.Generic.List[string]; $script:count = 0; $script:maxSeen = 0
@@ -125,7 +133,8 @@ function Capture($exe, $name) {
     $script:lines.Add("No visible window. This program lives in the tray: right-click its tray icon and run the script again, or record the menu by hand.  [manual]")
   }
   foreach ($w in $windows) {
-    $script:lines.Add("## Window: $($w.Current.Name)")
+    $title = if ($KeepNames) { $w.Current.Name } else { "<window title hidden>" }
+    $script:lines.Add("## Window: $title")
     Shot $w $dir ([ref]$n)
     Walk $w 0 $dir ([ref]$n) $seen
     $script:lines.Add("")
@@ -137,6 +146,6 @@ function Capture($exe, $name) {
   Write-Host "$name -> $out ($($script:count) items, depth $($script:maxSeen))"
 }
 
-if ($All) { foreach ($t in $Targets) { Capture $t.Exe $t.Name } }
-elseif ($Exe -and $Name) { Capture $Exe $Name }
+if ($All) { foreach ($t in $Targets) { Capture -exe $t.Exe -name $t.Name } }
+elseif ($Exe -and $Name) { Capture -exe $Exe -name $Name }
 else { Write-Host "Give -Exe and -Name, or -All. See the comment at the top of this file." }

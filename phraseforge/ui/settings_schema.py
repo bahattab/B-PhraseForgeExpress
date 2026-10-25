@@ -93,6 +93,17 @@ SCHEMA: dict[str, str] = {
     "ocr.language": DEFAULT_SETTINGS["ocr.language"],
     "ocr.keep_line_breaks": "1",
     "ocr.hotkey": DEFAULT_SETTINGS["ocr.hotkey"],
+    # modelled on Capture2Text's tray menu and Settings pages (docs/menus/capture2text.md)
+    "ocr.save_to_clipboard": "1",
+    "ocr.show_popup": "1",
+    "ocr.quick_languages": "Arabic, English",
+    "ocr.recapture_hotkey": "",
+    "ocr.quick1_hotkey": "",
+    "ocr.quick2_hotkey": "",
+    "ocr.quick3_hotkey": "",
+    "ocr.replace_rules": "",
+    "ocr.log_file": "",
+    "ocr.log_format": "${capture}${linebreak}",
     # OneNote (desktop app, official COM API)
     "onenote.exe": _ONENOTE_EXE,
     "onenote.default_target": "",          # page/section path; "" = Quick Notes

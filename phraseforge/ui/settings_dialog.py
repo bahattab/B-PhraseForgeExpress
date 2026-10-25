@@ -1124,13 +1124,46 @@ class SettingsDialog(QDialog):
         gl.addWidget(_row(self.ocr_language, test))
         gl.addWidget(self.bind("ocr.keep_line_breaks", QCheckBox("Keep line breaks")))
         lay.addWidget(g)
-        g, gl = _group("Hotkey: recognize a screen area and copy the text")
+        g, gl = _group("Output")
+        gl.addWidget(self.bind("ocr.save_to_clipboard", QCheckBox("Save to clipboard")))
+        gl.addWidget(self.bind("ocr.show_popup", QCheckBox("Show the result in a notification")))
+        gl.addWidget(QLabel("Log captures to file (empty = off):"))
+        self.ocr_log_file = self.bind("ocr.log_file", QLineEdit())
+        gl.addWidget(_row(self.ocr_log_file, _icon_button("folder", "Browse", self._browse_ocr_log), stretch=False))
+        gl.addWidget(QLabel("Log format (${capture}, ${linebreak}, ${tab}, ${timestamp}):"))
+        self.ocr_log_format = self.bind("ocr.log_format", QLineEdit())
+        gl.addWidget(self.ocr_log_format)
+        lay.addWidget(g)
+        g, gl = _group("Hotkeys")
+        gl.addWidget(QLabel("Recognize a screen area and copy the text:"))
         self.ocr_hotkey = self.bind("ocr.hotkey", Hotkey())
         gl.addWidget(self.ocr_hotkey)
+        gl.addWidget(QLabel("Re-capture the last area:"))
+        gl.addWidget(self.bind("ocr.recapture_hotkey", Hotkey()))
+        gl.addWidget(QLabel("Quick-access languages (up to 3, comma separated):"))
+        self.ocr_quick = self.bind("ocr.quick_languages", QLineEdit())
+        gl.addWidget(self.ocr_quick)
+        for i in (1, 2, 3):
+            gl.addWidget(QLabel(f"Capture with quick-access language {i}:"))
+            gl.addWidget(self.bind(f"ocr.quick{i}_hotkey", Hotkey()))
+        lay.addWidget(g)
+        g, gl = _group("Replace")
+        gl.addWidget(_wrap_label("Fix recognised text with regular expressions, one rule per line: "
+                                 "find => replace. Start a section with [Arabic] to apply the rules "
+                                 "below it to that OCR language only."))
+        self.ocr_replace = self.bind("ocr.replace_rules", QPlainTextEdit())
+        self.ocr_replace.setPlaceholderText("\\s+([.,;:!?]) => \\1\n[Arabic]\nي => ی")
+        self.ocr_replace.setFixedHeight(90)
+        gl.addWidget(self.ocr_replace)
         lay.addWidget(g)
         lay.addStretch(1)
         self.ocr_path.editingFinished.connect(lambda: self._fill_ocr_languages(self.ocr_language.currentText()))
         return w
+
+    def _browse_ocr_log(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "OCR log file", self.ocr_log_file.text(), "Text files (*.txt);;All files (*)")
+        if path:
+            self.ocr_log_file.setText(path)
 
     def _browse_ocr(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Capture2Text_CLI.exe", self.ocr_path.text(), "Programs (*.exe)")

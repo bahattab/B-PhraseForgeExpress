@@ -259,12 +259,20 @@ class QtHost:
             return self.store.setting("ocr.keep_line_breaks", "1") != "0"
         return bool(keep_line_breaks)
 
-    def ocr_region(self, language="", keep_line_breaks=None):
-        rect = self.select_screen_region()
-        if not rect:
-            raise Cancelled()
+    def ocr_region(self, language="", keep_line_breaks=None, rect=None):
+        """OCR a screen area. rect=None asks the user to draw one; the area is kept
+        for "Re-capture last" (like Capture2Text). Settings > Screen OCR > Replace
+        rules are applied to the result."""
+        from phraseforge.ocr import apply_replacements, parse_replace_rules
+        if rect is None:
+            rect = self.select_screen_region()
+            if not rect:
+                raise Cancelled()
+        self.last_ocr_rect = tuple(rect)
         lang = language or self.store.setting("ocr.language", "English")
-        return self._ocr().ocr_rect(*rect, language=lang, keep_line_breaks=self._keep_breaks(keep_line_breaks))
+        text = self._ocr().ocr_rect(*rect, language=lang, keep_line_breaks=self._keep_breaks(keep_line_breaks))
+        rules = parse_replace_rules(self.store.setting("ocr.replace_rules", ""))
+        return apply_replacements(text, rules, lang) if rules else text
 
     def onenote_page_text(self, ref, include_title=False, include_ocr=False):
         """{#onenote} macro: text of a OneNote page (worker thread, own COM apartment)."""
@@ -426,7 +434,8 @@ class PhraseForgeApp(QObject):
         reg("confirm", lambda arg, hwnd: self._confirm_cmd(arg, hwnd))
         reg("popup", lambda arg, hwnd: post(lambda: self._show_popup(hwnd)))
         reg("clipboard_history", lambda arg, hwnd: post(lambda: self._show_clipboard(hwnd)))
-        reg("ocr", lambda arg, hwnd: self._jobs.put(("ocr", None, hwnd)))
+        # "ocr", "ocr:recapture", "ocr:quick1".."ocr:quick3" (Capture2Text-style hotkeys)
+        reg("ocr", lambda arg, hwnd: self._jobs.put(("ocr", arg, hwnd)))
         reg("new_phrase", lambda arg, hwnd: post(self._new_phrase_with_selection))
         reg("edit_last_phrase", lambda arg, hwnd: post(self._edit_last_phrase))
         reg("open_settings", lambda arg, hwnd: post(self.show_settings))
@@ -634,6 +643,8 @@ class PhraseForgeApp(QObject):
         self.tray.open_main.connect(self.show_main)
         self.tray.show_popup.connect(lambda: self.on_command("popup"))
         self.tray.ocr_to_clipboard.connect(lambda: self.on_command("ocr"))
+        self.tray.ocr_languages_provider = self._ocr_language_choices
+        self.tray.ocr_language.connect(lambda lang: self.store.set_setting("ocr.language", lang))
         self.tray.clipboard_history.connect(lambda: self.on_command("clipboard_history"))
         self.tray.toggle_pause.connect(self.set_paused)
         self.tray.settings.connect(self.show_settings)
@@ -808,7 +819,7 @@ class PhraseForgeApp(QObject):
                 if kind == "expand":
                     self._expand(payload, hwnd)
                 elif kind == "ocr":
-                    self._ocr_to_clipboard()
+                    self._ocr_to_clipboard(payload or "")
                 elif kind == "text":
                     hwnd = self._prepare_target(hwnd)
                     self._with_triggers_paused(lambda: self.output.execute(
@@ -1025,14 +1036,51 @@ class PhraseForgeApp(QObject):
         flush()
         return out
 
-    def _ocr_to_clipboard(self):
-        text = self.host.ocr_region()
-        if text:
-            self.host.set_clipboard(text)
-            preview = text if len(text) < 120 else text[:117] + "..."
-            self.poster.posted.emit(lambda: self.tray.notify("OCR copied to clipboard", preview))
-        else:
+    def _ocr_language_choices(self):
+        """Tray "OCR language" menu: the current language plus the quick-access ones."""
+        from phraseforge.ocr import quick_languages
+        current = self.store.setting("ocr.language", "English")
+        langs = quick_languages(self.store.setting("ocr.quick_languages", ""))
+        if current and current not in langs:
+            langs.insert(0, current)
+        return langs, current
+
+    def _ocr_to_clipboard(self, mode: str = ""):
+        """mode: "" draw an area; "recapture" OCR the last area again; "quickN" draw an
+        area and use quick-access language N (Settings > Screen OCR)."""
+        from phraseforge.ocr import format_log_entry, quick_languages
+        s = self.store.setting
+        language, rect = "", None
+        if mode == "recapture":
+            rect = getattr(self.host, "last_ocr_rect", None)
+            if not rect:
+                self.poster.posted.emit(lambda: self.tray.notify("OCR", "Nothing captured yet"))
+                return
+        elif mode.startswith("quick"):
+            langs = quick_languages(s("ocr.quick_languages", ""))
+            i = int(mode[5:] or 1) - 1
+            if not 0 <= i < len(langs):
+                self.poster.posted.emit(lambda: self.tray.notify("OCR", f"Quick-access language {i + 1} is not set"))
+                return
+            language = langs[i]
+        text = self.host.ocr_region(language=language, rect=rect)
+        if not text:
             self.poster.posted.emit(lambda: self.tray.notify("OCR", "No text recognised"))
+            return
+        log_file = s("ocr.log_file", "").strip()
+        if log_file:
+            try:
+                with open(log_file, "a", encoding="utf-8") as f:
+                    f.write(format_log_entry(text, s("ocr.log_format", "${capture}${linebreak}")))
+            except OSError:
+                log.exception("OCR log file")
+        copied = s("ocr.save_to_clipboard", "1") != "0"
+        if copied:
+            self.host.set_clipboard(text)
+        if s("ocr.show_popup", "1") != "0":
+            preview = text if len(text) < 120 else text[:117] + "..."
+            title = "OCR copied to clipboard" if copied else "OCR"
+            self.poster.posted.emit(lambda: self.tray.notify(title, preview))
 
     # ---------------------------------------------------------- main-thread UI
     def _caret_or_cursor(self):

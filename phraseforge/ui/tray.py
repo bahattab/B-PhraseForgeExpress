@@ -22,6 +22,7 @@ class Tray(QSystemTrayIcon):
     onenote_send_clipboard = Signal()   # "Send clipboard to OneNote"
     onenote_clip = Signal()             # "Screen clip to OneNote"
     file_search = Signal()              # "Search files"
+    ocr_language = Signal(str)          # picked in "OCR language" (like Capture2Text's tray menu)
     quick_note = Signal()               # "New quick note" (like ONENOTEM)
 
     def __init__(self, icon_: QIcon | None = None, parent=None):
@@ -38,6 +39,10 @@ class Tray(QSystemTrayIcon):
         m.addAction(icon("search"), tr("Phrase menu"), self.show_popup.emit)
         m.addAction(icon("clipboard_cache"), tr("Clipboard history"), self.clipboard_history.emit)
         m.addAction(icon("m_ocr"), tr("OCR to clipboard"), self.ocr_to_clipboard.emit)
+        # filled before showing from ocr_languages_provider() -> (languages, current)
+        self.ocr_languages_provider = None
+        self.ocr_lang_menu = m.addMenu(icon("languages"), tr("OCR language"))
+        self.ocr_lang_menu.menuAction().setVisible(False)
         m.addAction(icon("file_search"), tr("Search files"), self.file_search.emit)
         m.addSeparator()
         self.onenote_send_action = m.addAction(icon("on_send"), tr("Send clipboard to OneNote"),
@@ -59,7 +64,19 @@ class Tray(QSystemTrayIcon):
         self.setContextMenu(m)
         self.activated.connect(self._on_activated)
 
+    def _fill_ocr_languages(self) -> None:
+        menu = self.ocr_lang_menu
+        menu.clear()
+        langs, current = self.ocr_languages_provider() if self.ocr_languages_provider else ([], "")
+        menu.menuAction().setVisible(bool(langs))
+        for lang in langs:
+            a = menu.addAction(lang)
+            a.setCheckable(True)
+            a.setChecked(lang == current)
+            a.triggered.connect(lambda _=False, l=lang: self.ocr_language.emit(l))
+
     def _before_show(self) -> None:
+        self._fill_ocr_languages()
         connected = self.isSignalConnected(QMetaMethod.fromSignal(self.show_statistics))
         self.stats_action.setVisible(connected)
         # OneNote items appear once the app has wired them

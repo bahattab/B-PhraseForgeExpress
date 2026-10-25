@@ -1,18 +1,17 @@
 # Evidence & verification report
 
-Status: **2026-10-25, menu capture still pending.** The menus of the six reference programs
-have not been captured. Remote sessions on the user's PC failed five times: Claude Code could not
-start in the PC's registered folder (`L:\My Drive\…`). A direct screen-control attempt was also
-stopped. Terminals and the desktop shell were limited to clicks with no typing, so the capture
-script could not be started, and there was a risk of clicking files on a crowded desktop.
-`tools/capture_menus.ps1 -All` can be run by hand. Each program below stays *pending* until
-`docs/menus/<app>.md` exists. Nothing here claims a capture or test that did not run.
+Status: **2026-10-25, partial capture.**
+- The user ran `tools/capture_menus.ps1 -All` on their PC. OneNote: 88 items, 10 levels deep.
+  The other five programs gave 0 items because they have no window (tray programs, or
+  onenotecapture, which opens and closes at once).
+- The user also sent 9 screenshots of Capture2Text's tray menu and Settings pages.
+- The raw OneNote capture contained the user's own notebook, section and page names. Those were
+  replaced with `<user content>` before committing, and the script now does this by itself.
+- Programs whose inventory says *pending* still need tray-menu screenshots.
 
-Observed during the screen-control attempt (2026-10-25, Windows app list on the user's PC):
-- "TextExpander" did not resolve as an installed Start-menu app.
-- Listary was running, with a "File Search - Listary" window.
-- Starting `ONENOTE.EXE` showed OneNote's warning that note search is slower while the Windows
-  Search service is stopped.
+Earlier attempts to capture from this session failed. Remote sessions could not start in the
+PC's registered folder. Screen control allowed only clicks in terminals, so the script could not
+be started that way.
 
 ## Method and limits
 
@@ -35,12 +34,12 @@ original), **pending** (not captured yet).
 
 | Program | Capture status | Inventory |
 |---|---|---|
-| Capture2Text v4.6.3 Arabic | pending | `docs/menus/capture2text.md` |
-| OneNote (ONENOTE.EXE) | pending | `docs/menus/onenote.md` |
-| OneNote screen clipping (onenotecapture.exe) | pending | `docs/menus/onenotecapture.md` |
-| Send to OneNote (ONENOTEM.EXE) | pending | `docs/menus/onenotem.md` |
-| TextExpander | pending | `docs/menus/textexpander.md` |
-| Listary | pending | `docs/menus/listary.md` |
+| Capture2Text v4.6.3 Arabic | **observed**: tray menu and 7 of 9 Settings pages, from the user's screenshots | `docs/menus/capture2text.md` |
+| OneNote (ONENOTE.EXE) | **observed**: title bar, Quick Access Toolbar, ribbon tab row, notebook/page panes (88 items, depth 10). The commands inside each tab are not captured yet | `docs/menus/onenote.md` |
+| OneNote screen clipping (onenotecapture.exe) | pending (no window) | `docs/menus/onenotecapture.md` |
+| Send to OneNote (ONENOTEM.EXE) | pending (tray only) | `docs/menus/onenotem.md` |
+| TextExpander | pending (tray only) | `docs/menus/textexpander.md` |
+| Listary | pending (tray only) | `docs/menus/listary.md` |
 
 ## Feature ledger
 
@@ -55,11 +54,17 @@ original), **pending** (not captured yet).
 | Import OneNote pages as phrases | OneNote | documented (OneNote COM `GetHierarchy`/`GetPageContent`) | implemented | `tests/test_onenote.py` |
 | Adapt output case to the typed abbreviation (ALL CAPS / Capitalised) | TextExpander, PhraseExpress | published, unconfirmed | already implemented | `tests/test_triggers*.py` |
 | Screen OCR to clipboard, any Capture2Text language incl. Arabic (Ctrl+Alt+O) | Capture2Text | documented (Capture2Text CLI options, open source) | already implemented | `tests/test_macros.py::test_ocr` |
+| OCR output options: Save to clipboard, show result popup, keep line breaks | Capture2Text tray menu and Settings > Output | observed | implemented (Settings > Screen OCR > Output) | `tests/test_ocr_options.py::test_ocr_modes_log_and_clipboard` |
+| Log captures to a file with a format (`${capture}${linebreak}`, plus `${tab}`, `${timestamp}`) | Capture2Text Settings > Output > Logging | observed | implemented | `test_log_format`, `test_ocr_modes_log_and_clipboard` |
+| Re-capture last area (hotkey) | Capture2Text Settings > Hotkeys "Re-Capture Last" | observed | implemented (no default key) | `test_ocr_modes_log_and_clipboard`, `test_ocr_hotkeys_map_to_commands` |
+| Three quick-access OCR languages, each with a hotkey | Capture2Text Settings > OCR 1 and Hotkeys | observed | implemented (default languages Arabic, English; no default keys) | same tests |
+| OCR language menu in the tray icon | Capture2Text tray menu "OCR Language ▸" | observed | implemented (current plus quick-access languages) | `test_tray_language_menu` |
+| Find (regex) → Replace rules per OCR language | Capture2Text Settings > Replace | observed | implemented as text rules `find => replace` with `[Language]` sections (Capture2Text uses a table) | `test_replace_rules_global_and_per_language` |
 | Search files: type name fragments, Enter opens, Ctrl+Enter opens folder, Shift+Enter types path | Listary | published, unconfirmed; exact keys and ranking **pending capture** | implemented | `tests/test_filesearch.py`, `tests/test_filesearch_ui.py` |
 | Open Search files by pressing Ctrl twice | Listary | published, unconfirmed | implemented (on by default, Settings > Search files) | `test_double_ctrl_tap`, `test_double_ctrl_opens_file_search` |
 | Web search keywords (`g`, `yt`, `wiki`, `maps`, user-defined) | Listary | published, unconfirmed | implemented | `test_web_keywords`, `test_web_keyword_row_opens_url` |
 | File index | Listary | inferred: folder walk with `os.scandir`, rebuilt every N minutes. Listary's own indexing method is **unknown** (not observed; no binary analysis). An NTFS MFT/USN index (as documented for the Everything search engine) is a possible later upgrade and needs admin rights | implemented (folder walk) | speed gate below |
-| Ribbon "Tools" tab: OneNote group (Send clipboard to OneNote, Screen clipping, New quick note), Capture group (Screen OCR, Sticky Notes), Find group (Search files) | OneNote Insert tab, ONENOTEM and onenotecapture tray tools | published, unconfirmed: grouping follows OneNote's public ribbon layout (File, Home, Insert, Draw, View…); exact labels and order **pending capture** | implemented (approximated) | `tests/test_ui.py::test_tools_tab_runs_app_commands` |
+| Ribbon "Tools" tab: OneNote group (Send clipboard to OneNote, Screen clipping, New quick note), Capture group (Screen OCR, Sticky Notes), Find group (Search files) | OneNote Insert tab, ONENOTEM and onenotecapture tray tools | the tab row (File, Home, Insert, Draw, History, Review, View, Help, plus a Sticky Notes button) is **observed**; the commands inside OneNote's tabs are not captured yet, so the grouping is still an approximation | implemented (approximated) | `tests/test_ui.py::test_tools_tab_runs_app_commands` |
 
 ## Verification gates
 
@@ -85,4 +90,9 @@ features of each program. It is based on vendor product information, not on scre
 | Listary | Search files by name, double Ctrl, open folder, web keywords | approximated | See the feature ledger. Ranking and keys may differ from Listary's |
 | Listary | Integration into Open/Save dialogs and Explorer ("folder jump"), app launcher actions menu | not implemented | Hooks into other programs' file dialogs. Planned only after the capture shows the exact behavior |
 | Capture2Text | OCR of a screen region, Arabic and other languages | replicated by calling it | PhraseForge runs `Capture2Text_CLI.exe`; no GPL code copied |
-| Capture2Text | Text-line capture, forward-line capture, translation, speech | not implemented | Not part of the requested work packages |
+| Capture2Text | Output (clipboard, popup, line breaks, log file), Re-capture last, quick-access languages, tray language menu, Replace rules | replicated | See the feature ledger (observed from screenshots) |
+| Capture2Text | Text Line / Forward Text Line / Bubble capture (OCR around the mouse without drawing a box) | not implemented | Needs Capture2Text's own line-finding code; its CLI only takes a box or an image |
+| Capture2Text | Whitelist/Blacklist characters, Tesseract config file, scale factor, deskew, trim | not implemented | Capture2Text's own settings already apply when PhraseForge runs its CLI |
+| Capture2Text | Translate (Google Translate) and Speech | approximated / not implemented | PhraseForge has `{#translate}` through its AI settings; speech is not implemented |
+| Capture2Text | Capture box colours, debug image saving, Call Executable | not implemented | Low value for a phrase manager |
+| OneNote | Ribbon tab row, Quick Access Toolbar, Sticky Notes button | observed, partly mirrored | PhraseForge's ribbon has File, Phrases, View, Tools, Help. A Sticky Notes button is in the Tools tab |

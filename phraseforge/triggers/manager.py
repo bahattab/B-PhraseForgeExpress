@@ -47,6 +47,10 @@ log = logging.getLogger(__name__)
 COMMAND_HOTKEY_SETTINGS = {
     "popup.hotkey": "popup",
     "ocr.hotkey": "ocr",
+    "ocr.recapture_hotkey": "ocr:recapture",
+    "ocr.quick1_hotkey": "ocr:quick1",
+    "ocr.quick2_hotkey": "ocr:quick2",
+    "ocr.quick3_hotkey": "ocr:quick3",
     "clipboard_history.hotkey": "clipboard_history",
     # Settings > Hotkeys page
     "hotkey.new_phrase": "new_phrase",
