@@ -18,8 +18,8 @@ from PySide6.QtGui import (
     QTextCharFormat, QTextCursor, QTextDocument, QTextFormat, QTextOption,
 )
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QFrame, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMenu,
-    QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTextEdit, QToolButton, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QComboBox, QFrame, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMenu,
+    QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTabBar, QTextEdit, QToolButton, QVBoxLayout, QWidget,
 )
 
 from phraseforge.models import Phrase, TriggerKind
@@ -170,6 +170,18 @@ class ChipObject(QPyTextObject):
         painter.restore()
 
 
+def first_strong_rtl(text: str) -> bool:
+    """True when the first letter with a direction is Arabic/Hebrew (Unicode bidi rule)."""
+    import unicodedata
+    for ch in text or "":
+        d = unicodedata.bidirectional(ch)
+        if d in ("R", "AL"):
+            return True
+        if d == "L":
+            return False
+    return False
+
+
 class ChipTextEdit(QTextEdit):
     focus_changed = Signal(bool)
     chip_activated = Signal(int)          # document position of a double-clicked chip
@@ -186,6 +198,42 @@ class ChipTextEdit(QTextEdit):
         self.setTabChangesFocus(False)
         self.document().setDocumentMargin(6)
         self.context_menu_hook = None   # callable(QMenu, chip_pos|None) set by PhraseEditor
+        # Arabic/Hebrew: each paragraph takes its direction from its first strong letter
+        opt = self.document().defaultTextOption()
+        opt.setTextDirection(Qt.LayoutDirectionAuto)
+        self.document().setDefaultTextOption(opt)
+
+    # -------------------------------------------------- right-to-left writing
+    def set_paragraph_direction(self, rtl: bool) -> None:
+        """Make the selected paragraphs right-to-left (Arabic) or left-to-right, like
+        Windows' Ctrl+Right Shift / Ctrl+Left Shift. Kept in rich (HTML) phrases."""
+        c = self.textCursor()
+        fmt = c.blockFormat()
+        fmt.setLayoutDirection(Qt.RightToLeft if rtl else Qt.LeftToRight)
+        fmt.setAlignment((Qt.AlignRight if rtl else Qt.AlignLeft) | Qt.AlignAbsolute)
+        c.mergeBlockFormat(fmt)
+        self.setTextCursor(c)
+
+    def paragraph_is_rtl(self) -> bool:
+        b = self.textCursor().block()
+        d = b.blockFormat().layoutDirection()
+        if d == Qt.LayoutDirectionAuto:
+            return first_strong_rtl(b.text())
+        return d == Qt.RightToLeft
+
+    def keyPressEvent(self, e):  # noqa: N802
+        self._shift_side = 0
+        if e.key() == Qt.Key_Shift and e.modifiers() & Qt.ControlModifier:
+            # scan codes: 0x36 right Shift, 0x2A left Shift (Windows)
+            sc = e.nativeScanCode()
+            self._shift_side = 1 if sc == 0x36 else -1 if sc == 0x2A else 0
+        super().keyPressEvent(e)
+
+    def keyReleaseEvent(self, e):  # noqa: N802
+        if e.key() == Qt.Key_Shift and getattr(self, "_shift_side", 0) and e.modifiers() & Qt.ControlModifier:
+            self.set_paragraph_direction(self._shift_side > 0)
+            self._shift_side = 0
+        super().keyReleaseEvent(e)
 
     # -------------------------------------------------- content in/out
     def chip_format(self, token: str, base: QTextCharFormat | None = None) -> QTextCharFormat:
@@ -551,7 +599,31 @@ class PhraseEditor(QWidget):
         self.tags_label.setVisible(False)
         lay.addWidget(self.tags_label)
 
-        lay.addWidget(caption("Phrase content"))
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        head.addWidget(caption("Phrase content"))
+        head.addStretch(1)
+        # PhraseExpress-style language versions of the same phrase
+        self.lang_bar = QTabBar()
+        self.lang_bar.setProperty("pf_user", True)      # language names, not UI text
+        self.lang_bar.setDrawBase(False)
+        self.lang_bar.setExpanding(False)
+        self.lang_bar.setDocumentMode(True)
+        self.lang_bar.currentChanged.connect(self._switch_language)
+        head.addWidget(self.lang_bar)
+        self.lang_button = QToolButton()
+        self.lang_button.setIcon(icon("languages"))
+        self.lang_button.setAutoRaise(True)
+        self.lang_button.setToolTip("Language versions")
+        self.lang_button.setPopupMode(QToolButton.InstantPopup)
+        self.lang_menu = QMenu(self.lang_button)
+        self.lang_menu.aboutToShow.connect(self._fill_lang_menu)
+        self.lang_button.setMenu(self.lang_menu)
+        head.addWidget(self.lang_button)
+        lay.addLayout(head)
+        self._versions: dict[str, tuple[str, str]] = {}
+        self._deleted_versions: set[str] = set()
+        self._lang = ""                     # "" = default version (the phrase's own content)
         self.ruler = Ruler()
         self.ruler.setVisible(False)
         lay.addWidget(self.ruler)
@@ -623,6 +695,11 @@ class PhraseEditor(QWidget):
             self.triggers.set_rows(rows_for_triggers(p.triggers) or [default_row("autotext")])
             self.output_target.set(p.output_target, p.output_target_arg)
             self._refresh_tags(p.tags)
+            self._versions = dict(self.store.phrase_versions(p.id)) if hasattr(self.store, "phrase_versions") else {}
+            self._deleted_versions = set()
+            self._lang = ""
+            self._default = (p.content, p.content_format)
+            self._fill_lang_bar()
         finally:
             self._loading = False
             self.dirty = False
@@ -633,15 +710,160 @@ class PhraseEditor(QWidget):
         if p is None or not self.dirty:
             return False
         p.description = self.description.text().strip() or p.description
-        p.content = self.content_edit.content()
-        p.content_format = "html" if self.content_edit.rich else "text"
+        self._stash_language()
+        p.content, p.content_format = getattr(self, "_default", (self.content_edit.content(),
+                                                                 "html" if self.content_edit.rich else "text"))
         p.triggers = self.triggers.triggers()
         p.output_target = self.output_target.target()
         p.output_target_arg = self.output_target.target_arg()
         self.store.update_phrase(p)
+        if hasattr(self.store, "set_phrase_version"):
+            for lang in self._deleted_versions:
+                self.store.delete_phrase_version(p.id, lang)
+            old = self.store.phrase_versions(p.id)
+            for lang, (text, fmt) in self._versions.items():
+                if old.get(lang) != (text, fmt):
+                    self.store.set_phrase_version(p.id, lang, text, fmt)
+            self._deleted_versions = set()
         self.dirty = False
         self.saved.emit(p.id)
         return True
+
+    # -------------------------------------------------- language versions
+    def languages(self) -> list[str]:
+        """Configured languages plus any this phrase already has."""
+        langs = list(self.store.phrase_languages()) if hasattr(self.store, "phrase_languages") else []
+        for k in self._versions:
+            if k.lower() not in (x.lower() for x in langs):
+                langs.append(k)
+        return langs
+
+    def _fill_lang_bar(self) -> None:
+        bar = self.lang_bar
+        bar.blockSignals(True)
+        while bar.count():
+            bar.removeTab(0)
+        langs = self.languages()
+        bar.addTab("Default")
+        bar.setTabData(0, "")
+        highlight = self.store.setting("display.highlight_unedited", "1") == "1"
+        for lang in langs:
+            i = bar.addTab(lang)
+            bar.setTabData(i, lang)
+            if lang not in self._versions and highlight:
+                bar.setTabTextColor(i, QColor("#b06000"))   # no own text yet: uses the default
+                bar.setTabToolTip(i, f"No {lang} version yet; the default text is used.")
+        idx = next((i for i in range(bar.count()) if bar.tabData(i) == self._lang), 0)
+        bar.setCurrentIndex(idx)
+        bar.setVisible(bool(langs))
+        bar.blockSignals(False)
+
+    def _stash_language(self) -> None:
+        """Keep the editor's text as the current language's version."""
+        if self.phrase is None:
+            return
+        text = self.content_edit.content()
+        fmt = "html" if self.content_edit.rich else "text"
+        if not self._lang:
+            self._default = (text, fmt)
+        elif text.strip() and (text, fmt) != getattr(self, "_default", None):
+            self._versions[self._lang] = (text, fmt)
+            self._deleted_versions.discard(self._lang)
+
+    def _switch_language(self, index: int) -> None:
+        if self.phrase is None or index < 0:
+            return
+        was_dirty = self.dirty
+        self._stash_language()
+        self._lang = self.lang_bar.tabData(index) or ""
+        text, fmt = self._versions.get(self._lang, self._default) if self._lang else self._default
+        self._loading = True
+        try:
+            self.content_edit.set_content(text, html=(fmt == "html"))
+        finally:
+            self._loading = False
+        self.dirty = was_dirty
+        self._fill_lang_bar()
+
+    def current_language(self) -> str:
+        return self._lang
+
+    def add_language(self, lang: str) -> None:
+        lang = (lang or "").strip()
+        if not lang:
+            return
+        langs = self.store.phrase_languages()
+        if lang.lower() not in (x.lower() for x in langs):
+            self.store.set_phrase_languages(langs + [lang])
+        self._fill_lang_bar()
+        i = next((i for i in range(self.lang_bar.count()) if (self.lang_bar.tabData(i) or "").lower()
+                  == lang.lower()), 0)
+        self.lang_bar.setCurrentIndex(i)
+
+    def remove_language_version(self) -> None:
+        if not self._lang:
+            return
+        self._versions.pop(self._lang, None)
+        self._deleted_versions.add(self._lang)
+        self.dirty = True
+        self._loading = True
+        try:
+            self.content_edit.set_content(self._default[0], html=(self._default[1] == "html"))
+        finally:
+            self._loading = False
+        self._fill_lang_bar()
+
+    def translate_current(self, translate=None) -> bool:
+        """Fill the current language version with an AI/DeepL translation of the default text."""
+        if not self._lang or self.phrase is None:
+            return False
+        src = self._default[0]
+        if translate is None:
+            translate = self._ai_translate
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            out = translate(src, self._lang)
+        except Exception as e:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, "Translate", f"Translation failed: {str(e)[:200]}")
+            return False
+        QApplication.restoreOverrideCursor()
+        self.content_edit.set_content(out, html=False)
+        self._versions[self._lang] = (out, "text")
+        self.dirty = True
+        self._fill_lang_bar()
+        return True
+
+    def _ai_translate(self, text: str, lang: str) -> str:
+        from phraseforge import ai
+        st = dict(self.store.settings())
+        prov = st.get("translation.provider", "")
+        if prov == "deepl":
+            return ai.deepl_translate(st, text, lang)
+        return ai.complete(st, text, provider=prov, system=ai.translation_system(st, lang), raw_system=True).strip()
+
+    def _fill_lang_menu(self) -> None:
+        m = self.lang_menu
+        m.clear()
+        add = m.addMenu("Add language")
+        have = {x.lower() for x in self.languages()}
+        from phraseforge.ui.settings_dialog import TRANSLATION_LANGUAGES
+        for lang in TRANSLATION_LANGUAGES:
+            if lang.lower() not in have:
+                add.addAction(lang).triggered.connect(lambda _=False, l=lang: self.add_language(l))
+        add.addSeparator()
+        add.addAction("Other...").triggered.connect(self._ask_language)
+        a = m.addAction("Translate default text into this language")
+        a.setEnabled(bool(self._lang))
+        a.triggered.connect(lambda: self.translate_current())
+        a = m.addAction("Delete this language version")
+        a.setEnabled(bool(self._lang) and self._lang in self._versions)
+        a.triggered.connect(self.remove_language_version)
+
+    def _ask_language(self) -> None:
+        lang, ok = QInputDialog.getText(self, "Add language", "Language name:")
+        if ok:
+            self.add_language(lang)
 
     def _autosave(self):
         if self.dirty and not self._loading:
@@ -773,6 +995,11 @@ class PhraseEditor(QWidget):
         ins = m.addMenu("Insert macro")
         self._fill_insert_macro_menu(ins)
         m.addAction("AI text generator").triggered.connect(self._ai_generator)
+        m.addSeparator()
+        a = m.addAction("Right-to-left paragraph"); a.setShortcut("Ctrl+Right Shift")
+        a.triggered.connect(lambda: ed.set_paragraph_direction(True))
+        a = m.addAction("Left-to-right paragraph"); a.setShortcut("Ctrl+Left Shift")
+        a.triggered.connect(lambda: ed.set_paragraph_direction(False))
         m.addSeparator()
         m.addAction("Preview").triggered.connect(self.preview)
         m.addSeparator()

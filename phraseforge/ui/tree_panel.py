@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 
 from phraseforge.db import Store
 from phraseforge.models import Phrase
+from phraseforge.ui.i18n import tr
 from phraseforge.ui.iconset import icon
 
 ROLE_KIND = Qt.UserRole
@@ -185,7 +186,7 @@ class TreePanel(QWidget):
         return it
 
     def _special(self, kind: str, text: str, icon_name: str) -> QTreeWidgetItem:
-        it = QTreeWidgetItem([text])
+        it = QTreeWidgetItem([tr(text)])
         it.setIcon(0, icon(icon_name))
         it.setData(0, ROLE_KIND, kind)
         it.setData(0, ROLE_ID, None)

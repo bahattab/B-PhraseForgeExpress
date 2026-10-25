@@ -298,6 +298,7 @@ class NewPhraseInfoDialog(QDialog):
         row.addSpacing(30)
         row.addWidget(QLabel("Save in folder"))
         self.folder = QComboBox()
+        self.folder.setProperty("pf_user", True)        # the user's folder names
         self.folder.setMinimumWidth(180)
         self._fill_folders(folder_id)
         row.addWidget(self.folder)

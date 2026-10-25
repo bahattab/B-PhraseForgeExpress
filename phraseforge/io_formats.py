@@ -65,8 +65,11 @@ def import_dict(store: Store, d: dict, into_folder_id: int | None = None) -> dic
         if "output_mode" in kw:
             kw["output_mode"] = OutputMode(kw["output_mode"])
         triggers = [Trigger.from_dict(t) for t in p.get("triggers", [])]
-        store.add_phrase(Phrase(**kw, folder_id=id_map.get(p.get("folder_id"), into_folder_id),
-                                tags=list(p.get("tags", [])), triggers=triggers))
+        np_ = store.add_phrase(Phrase(**kw, folder_id=id_map.get(p.get("folder_id"), into_folder_id),
+                                      tags=list(p.get("tags", [])), triggers=triggers))
+        for lang, v in (p.get("versions") or {}).items():
+            if isinstance(v, dict):
+                store.set_phrase_version(np_.id, lang, v.get("content", ""), v.get("content_format", "text"))
         n += 1
     for v in d.get("vars", []):
         store.set_var(v["name"], v["value"], v.get("scope", "global"))
@@ -243,6 +246,9 @@ def import_file(store: Store, path: str | Path, into_folder_id: int | None = Non
     ext = p.suffix.lower()
     if p.is_dir():
         return import_text_folder(store, p, into_folder_id)
+    if ext in (".pexdb", ".pexdbhub", ".pxp"):
+        from phraseforge.importers.phraseexpress import check_phraseexpress_file
+        check_phraseexpress_file(p)          # encrypted: explains how to export a CSV
     if ext == ".json":
         return import_json(store, p, into_folder_id)
     if ext == ".csv":

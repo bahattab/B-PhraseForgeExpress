@@ -34,6 +34,7 @@ from __future__ import annotations
 from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor, QCursor, QFont, QFontMetrics, QGuiApplication, QLinearGradient, QPainter, QPen,
+    QTextDocument, QTextOption,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
@@ -41,6 +42,7 @@ from PySide6.QtWidgets import (
 )
 
 from phraseforge.db import Store
+from phraseforge.ui.i18n import tr
 from phraseforge.ui.iconset import icon
 
 ROLE_KIND = Qt.UserRole          # "folder" | "phrase" | "clip" | "special" | "empty"
@@ -169,6 +171,11 @@ def _dim(color: str, factor: float = 0.55) -> str:
     return c.name()
 
 
+def has_rtl(text: str) -> bool:
+    """True when the text contains Arabic or Hebrew letters."""
+    return any("\u0590" <= ch <= "\u08ff" or "\ufb1d" <= ch <= "\ufefc" for ch in text or "")
+
+
 def highlight_spans(text: str, query: str, match_case: bool = False) -> list[tuple[str, bool]]:
     """Split text into (segment, is_match) for every occurrence of query."""
     if not query:
@@ -198,6 +205,14 @@ class _RowDelegate(QStyledItemDelegate):
         return QSize(option.rect.width(), ROW_H)
 
     def paint(self, p: QPainter, option, index):
+        text = index.data(Qt.DisplayRole) or ""
+        if option.direction == Qt.RightToLeft or has_rtl(text):
+            p.save()
+            try:
+                self._paint_bidi(p, option, index, option.direction == Qt.RightToLeft)
+            finally:
+                p.restore()
+            return
         p.save()
         r = option.rect
         kind = index.data(ROLE_KIND)
@@ -268,6 +283,104 @@ class _RowDelegate(QStyledItemDelegate):
             p.drawLine(cx - 3, cy - 4, cx + 1, cy)
             p.drawLine(cx + 1, cy, cx - 3, cy + 4)
         p.restore()
+
+    def _paint_bidi(self, p: QPainter, option, index, rtl: bool):
+        """Row painting for Arabic text and for the right-to-left layout.
+
+        The description goes through QTextDocument so Arabic letters stay joined
+        and in the right order even when the search match is highlighted. With
+        rtl=True the whole row is mirrored: icon on the right, QuickKey/autotext
+        and the folder chevron on the left."""
+        r = option.rect
+        kind = index.data(ROLE_KIND)
+        colors = self.panel.popup.colors
+        selected = option.state & QStyle.State_Selected and kind != "empty"
+        p.fillRect(r, QColor(colors["selection" if selected else "background"]))
+        font = QFont(self.panel.font())
+        p.setFont(font)
+        fm = QFontMetrics(font)
+
+        def box(x, w):          # an LTR box (x from the row's left edge) mirrored when rtl
+            return QRect(r.right() - x - w + 1, r.top(), w, r.height()) if rtl else QRect(r.left() + x, r.top(), w, r.height())
+
+        x = 8
+        if self.panel.popup.show_icons and kind in ("folder", "phrase", "special", "clip", "note"):
+            name = {"folder": "folder", "phrase": "phrase", "clip": "clipboard_cache",
+                    "note": "sticky_notes"}.get(kind)
+            if kind == "special":
+                name = {CLIPBOARD: "clipboard_cache", STICKY: "sticky_notes"}.get(index.data(ROLE_ID), "last_used")
+            b = box(x, 16)
+            icon(name).paint(p, QRect(b.left(), r.top() + (ROW_H - 16) // 2, 16, 16))
+            x += 22
+        right_text = index.data(ROLE_RIGHT) or ""
+        qk = index.data(ROLE_QK) or ""
+        if qk and not right_text:
+            right_text = qk
+        is_qk = bool(qk) and right_text == qk
+        chevron = kind in ("folder", "special")
+        right_w = 18 if chevron else 6
+        if right_text:
+            right_w += min(fm.horizontalAdvance(right_text) + 12, r.width() // 3)
+        avail = r.width() - right_w - x
+        text = index.data(Qt.DisplayRole) or ""
+        start = Qt.AlignRight if rtl else Qt.AlignLeft
+        end = Qt.AlignLeft if rtl else Qt.AlignRight
+        if kind == "empty":
+            p.setPen(QColor("#8a8a8a"))
+            p.drawText(box(x, avail), Qt.AlignVCenter | start, text)
+            return
+        left = index.data(ROLE_LEFT) or ""
+        if left:
+            lw = min(fm.horizontalAdvance(left), avail // 2)
+            p.setPen(QColor(colors["autotext"]))
+            p.drawText(box(x, lw), Qt.AlignVCenter | start, fm.elidedText(left, Qt.ElideRight, lw))
+            x += lw + 10
+            avail -= lw + 10
+        # description with highlighted matches
+        from html import escape
+        parts = []
+        for seg, hit in highlight_spans(text, index.data(ROLE_QUERY) or "", self.panel.popup.match_case):
+            seg = escape(seg)
+            parts.append(f'<b style="color:{MATCH.name()}">{seg}</b>' if hit else seg)
+        doc = QTextDocument()
+        doc.setDocumentMargin(0)
+        doc.setDefaultFont(font)
+        opt = QTextOption()
+        opt.setWrapMode(QTextOption.NoWrap)
+        opt.setTextDirection(Qt.RightToLeft if (rtl or has_rtl(text)) else Qt.LeftToRight)
+        doc.setDefaultTextOption(opt)
+        doc.setDefaultStyleSheet(f"body {{ color: {QColor(colors['description']).name()}; }}")
+        doc.setHtml(f"<body>{''.join(parts)}</body>")
+        if doc.idealWidth() > avail:     # too long: plain elided text keeps the row tidy
+            elided = fm.elidedText(text, Qt.ElideRight, max(0, avail))
+            p.setPen(QColor(colors["description"]))
+            p.drawText(box(x, avail), Qt.AlignVCenter | start, elided)
+        else:
+            w = int(doc.idealWidth()) + 1
+            doc.setTextWidth(w)
+            b = box(x, avail)
+            left_x = b.right() - w + 1 if rtl else b.left()     # start side of the row
+            top_y = r.top() + (r.height() - doc.size().height()) / 2
+            p.translate(left_x, top_y)
+            doc.drawContents(p, QRect(0, 0, w, r.height()))
+            p.translate(-left_x, -top_y)
+        if right_text:
+            p.setPen(QColor(colors["quickkey" if is_qk else "autotext"]))
+            inner = right_w - (18 if chevron else 6)
+            rb = box(r.width() - right_w, inner)
+            p.drawText(rb, Qt.AlignVCenter | end, fm.elidedText(right_text, Qt.ElideMiddle, inner))
+        if chevron:
+            p.setPen(QPen(QColor(colors["description"]), 1.3))
+            cy = r.center().y()
+            p.setRenderHint(QPainter.Antialiasing)
+            if rtl:              # points left
+                cx = r.left() + 10
+                p.drawLine(cx + 3, cy - 4, cx - 1, cy)
+                p.drawLine(cx - 1, cy, cx + 3, cy + 4)
+            else:
+                cx = r.right() - 10
+                p.drawLine(cx - 3, cy - 4, cx + 1, cy)
+                p.drawLine(cx + 1, cy, cx - 3, cy + 4)
 
 
 class _Band(QWidget):
@@ -599,6 +712,9 @@ class _Panel(QFrame):
         scr = QGuiApplication.screenAt(self.pos()) or QGuiApplication.primaryScreen()
         avail_h = scr.availableGeometry().height() if scr else 900
         chrome = HEADER_H + 2 + (ROW_H + 1 if self.footer.isVisible() else 0)
+        strip = getattr(self, "lang_strip", None)
+        if strip is not None and not strip.isHidden():
+            chrome += strip.sizeHint().height()
         max_rows = max(3, min(pop.max_items, (avail_h - chrome - 24) // ROW_H))
         rows = min(n, max_rows)
         scroll = n > rows
@@ -657,6 +773,9 @@ class _Panel(QFrame):
         if qk is not None:
             self.list.setCurrentItem(qk)
             self._activate(qk)
+            return True
+        if k in (Qt.Key_Left, Qt.Key_Right) and pop.language_key_matches(e):
+            pop.cycle_language(1 if k == Qt.Key_Right else -1)   # PhraseExpress "Language selection"
             return True
         if k == Qt.Key_Right and cur is not None and cur.data(ROLE_KIND) in ("folder", "special"):
             self.popup.open_submenu(self, cur, focus=True)
@@ -740,7 +859,72 @@ class PhrasePopup(_Panel):
         self.header.addWidget(bar)
         self.search_bar = bar
         self.band.setToolTip("PhraseForge")
+        # language buttons (Settings > Phrase Menu > Show phrase language buttons)
+        self.language = ""
+        self.lang_strip = QWidget(self)
+        self.lang_strip.setStyleSheet("background:#f3f3f3")
+        self._lang_lay = QHBoxLayout(self.lang_strip)
+        self._lang_lay.setContentsMargins(4, 2, 4, 2)
+        self._lang_lay.setSpacing(2)
+        self.lang_buttons: list[QToolButton] = []
+        self.outer.insertWidget(1, self.lang_strip)
+        self.lang_strip.setVisible(False)
         self.apply_appearance()
+
+    # -------------------------------------------- language versions
+    def _build_language_strip(self) -> None:
+        for b in self.lang_buttons:
+            b.setParent(None)
+            b.deleteLater()
+        self.lang_buttons = []
+        langs = self.languages
+        show = bool(langs) and self.show_language_buttons
+        self.lang_strip.setVisible(show)
+        if not langs:
+            self.language = ""
+            return
+        if self.language and self.language not in langs:
+            self.language = ""
+        for code in [""] + langs:
+            b = QToolButton(self.lang_strip)
+            b.setText(code or "Default")
+            b.setToolTip(f"Insert the {code} version" if code else "Insert the default version")
+            b.setCheckable(True)
+            b.setAutoRaise(True)
+            b.setChecked(code == self.language)
+            b.setStyleSheet("QToolButton{padding:1px 6px;border:1px solid transparent}"
+                            "QToolButton:checked{background:#dbe8f7;border:1px solid #7da2ce}")
+            b.clicked.connect(lambda _=False, c=code: self.set_language(c))
+            self._lang_lay.addWidget(b)
+            self.lang_buttons.append(b)
+        self._lang_lay.addStretch(1)
+
+    def set_language(self, code: str) -> None:
+        """Language version inserted from this menu ("" = default text)."""
+        self.language = code if code in self.languages else ""
+        for b in self.lang_buttons:
+            b.setChecked((b.text() if b.text() != "Default" else "") == self.language)
+        for panel in [self] + self.subs:
+            for i in range(panel.list.count()):
+                it = panel.list.item(i)
+                if it.data(ROLE_KIND) == "phrase" and self.show_preview:
+                    tip = self.preview_text("phrase", it.data(ROLE_ID))
+                    it.setToolTip(tip or "")
+
+    def cycle_language(self, step: int) -> None:
+        order = [""] + self.languages
+        if len(order) < 2:
+            return
+        i = order.index(self.language) if self.language in order else 0
+        self.set_language(order[(i + step) % len(order)])
+
+    def language_key_matches(self, e) -> bool:
+        want = {"ctrl": Qt.ControlModifier, "alt": Qt.AltModifier, "shift": Qt.ShiftModifier,
+                "win": Qt.MetaModifier}.get(self.language_modifier)
+        if want is None or not self.languages:
+            return False
+        mods = e.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.ShiftModifier | Qt.MetaModifier)
+        return mods == want
 
     # -------------------------------------------- settings / data
     def _load_settings(self) -> None:
@@ -758,6 +942,14 @@ class PhrasePopup(_Panel):
         self.sort_order = _setting(st, "menu.sort_order")
         self.show_preview = on("menu.show_preview")
         self.hide_restricted = on("menu.hide_restricted")
+        try:
+            self.languages = list(st.phrase_languages())
+        except Exception:
+            self.languages = []
+        self.show_language_buttons = _setting(st, "menu.language_buttons", "1") == "1"
+        self.language_modifier = _setting(st, "menu.language_modifier", "ctrl")
+        if hasattr(self, "lang_strip"):
+            self._build_language_strip()
         self.confirm_hotkey = _setting(st, "menu.confirm_hotkey")
         self.quickkey_modifier = _setting(st, "menu.quickkey_modifier")
         self.quickkey_keys = _setting(st, "menu.quickkey_keys")
@@ -802,8 +994,9 @@ class PhrasePopup(_Panel):
         p = self.store.get_phrase(ident)
         if not p:
             return ""
-        text = p.content
-        if p.content_format == "html":
+        text, fmt = self.store.phrase_text(p, getattr(self, "language", "")) \
+            if hasattr(self.store, "phrase_text") else (p.content, p.content_format)
+        if fmt == "html":
             from PySide6.QtGui import QTextDocument
             d = QTextDocument()
             d.setHtml(text)
@@ -880,11 +1073,11 @@ class PhrasePopup(_Panel):
         folders = [("folder", f.id, f.name, "") for f in self.store.folders(folder_id) if self._folder_visible(f)]
         if folder_id is None:
             if self.show_clipboard:
-                folders.append(("special", CLIPBOARD, "Clipboard Cache", ""))
+                folders.append(("special", CLIPBOARD, tr("Clipboard Cache"), ""))
             if self.show_last_used:
-                folders.append(("special", LAST_USED, "Last Used", ""))
+                folders.append(("special", LAST_USED, tr("Last Used"), ""))
             if self.show_sticky:
-                folders.append(("special", STICKY, "Sticky Notes", ""))
+                folders.append(("special", STICKY, tr("Sticky Notes"), ""))
         folders.sort(key=lambda r: r[2].lower())
         phrases = [p for p in self.store.phrases(folder_id) if self._allowed(p)]
         rows = [("phrase", p.id, p.description, self.right_text(p)) for p in self._sorted_phrases(phrases)]
@@ -1130,7 +1323,7 @@ class PhrasePopup(_Panel):
             folder = CLIPBOARD
         if folder in (LAST_USED, CLIPBOARD, STICKY):
             key = folder
-            title = {LAST_USED: "Last Used", CLIPBOARD: "Clipboard Cache", STICKY: "Sticky Notes"}[folder]
+            title = tr({LAST_USED: "Last Used", CLIPBOARD: "Clipboard Cache", STICKY: "Sticky Notes"}[folder])
         elif folder is not None and str(folder).strip().lstrip("-").isdigit():
             f = self.store.get_folder(int(folder))
             if f is not None:

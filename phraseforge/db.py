@@ -71,6 +71,10 @@ CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS suggestions (
   text TEXT PRIMARY KEY, count INTEGER DEFAULT 0, last_seen TEXT, dismissed INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS excluded_apps (exe TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS phrase_versions (
+  phrase_id INTEGER REFERENCES phrases(id) ON DELETE CASCADE, lang TEXT NOT NULL,
+  content TEXT DEFAULT '', content_format TEXT DEFAULT 'text', modified TEXT,
+  PRIMARY KEY (phrase_id, lang));
 """
 
 DEFAULT_SETTINGS = {
@@ -607,6 +611,55 @@ class Store:
             return {r[0]: _unseal(r[1]) if r[0] in SECRET_SETTINGS else r[1]
                     for r in self.conn.execute("SELECT key, value FROM settings")}
 
+    # ------------------------------------------------------------ language versions
+    # PhraseExpress-style: one phrase, several language versions. The phrase's own
+    # content is the default version; phrase_versions holds the others.
+    def phrase_languages(self) -> list[str]:
+        """Languages offered for phrase versions (setting phrase.languages, JSON list)."""
+        try:
+            v = json.loads(self.setting("phrase.languages", "[]") or "[]")
+        except ValueError:
+            return []
+        return [str(x).strip() for x in v if str(x).strip()] if isinstance(v, list) else []
+
+    def set_phrase_languages(self, langs: Iterable[str]) -> None:
+        seen: list[str] = []
+        for x in langs:
+            x = str(x).strip()
+            if x and x.lower() not in (s.lower() for s in seen):
+                seen.append(x)
+        self.set_setting("phrase.languages", json.dumps(seen, ensure_ascii=False))
+
+    def phrase_versions(self, phrase_id: int) -> dict[str, tuple[str, str]]:
+        """{language: (content, content_format)} for a phrase (default version excluded)."""
+        with self.lock:
+            rows = self.conn.execute("SELECT lang, content, content_format FROM phrase_versions "
+                                     "WHERE phrase_id=? ORDER BY lang", (phrase_id,)).fetchall()
+        return {r[0]: (r[1] or "", r[2] or "text") for r in rows}
+
+    def set_phrase_version(self, phrase_id: int, lang: str, content: str, content_format: str = "text") -> None:
+        lang = (lang or "").strip()
+        if not lang:
+            raise ValueError("language is required")
+        with self.lock, self.conn:
+            self.conn.execute("INSERT OR REPLACE INTO phrase_versions VALUES (?,?,?,?,?)",
+                              (phrase_id, lang, content, content_format or "text", _now()))
+        self._changed("phrase", phrase_id)
+
+    def delete_phrase_version(self, phrase_id: int, lang: str) -> None:
+        with self.lock, self.conn:
+            self.conn.execute("DELETE FROM phrase_versions WHERE phrase_id=? AND lang=?", (phrase_id, lang))
+        self._changed("phrase", phrase_id)
+
+    def phrase_text(self, p: Phrase, lang: str = "") -> tuple[str, str]:
+        """(content, format) of the version in `lang`; the default version when `lang` is
+        empty or the phrase has no such version."""
+        if lang and p.id is not None:
+            for k, v in self.phrase_versions(p.id).items():
+                if k.lower() == lang.lower():
+                    return v
+        return p.content, p.content_format
+
     def excluded_apps(self) -> set[str]:
         with self.lock:
             return {r[0] for r in self.conn.execute("SELECT exe FROM excluded_apps")}
@@ -688,7 +741,9 @@ class Store:
                         for f in self.folders()],
             "phrases": [{**{k: v for k, v in vars(p).items() if k != "triggers"},
                          "output_mode": OutputMode(p.output_mode).value,
-                         "triggers": [t.to_dict() for t in p.triggers]}
+                         "triggers": [t.to_dict() for t in p.triggers],
+                         "versions": {lang: {"content": c, "content_format": f}
+                                      for lang, (c, f) in self.phrase_versions(p.id).items()}}
                         for p in self.phrases()],
             "special_triggers": {s: [t.to_dict() for t in self.special_triggers(s)]
                                  for s in ("last_used", "clipboard_cache") if self.special_triggers(s)},

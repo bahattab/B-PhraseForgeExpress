@@ -214,7 +214,7 @@ class QtHost:
         if str(description_or_id).isdigit():
             p = self.store.get_phrase(int(description_or_id))
         p = p or self.store.find_phrase(str(description_or_id))
-        return (p.content, p.content_format) if p else None
+        return self.store.phrase_text(p, self.store.setting("phrase.active_language", "")) if p else None
 
     def get_var(self, name, scope="global"):
         return self.store.get_var(name, scope)
@@ -823,7 +823,7 @@ class PhraseForgeApp(QObject):
             return
         self.store.set_setting("ui.language", code)
         from phraseforge.ui import i18n
-        i18n.set_language(code)
+        i18n.install(self.qapp, i18n.resolve_language(code))
 
     def _apply_tray_click(self) -> None:
         on = self.store.setting("tray.left_click_popup", "0") == "1"
@@ -971,6 +971,9 @@ class PhraseForgeApp(QObject):
             return
         ctx = req.context
         ctx.phrase_id, ctx.phrase_description = p.id, p.description
+        # language version: chosen in the phrase menu, else the active language (Settings)
+        lang = getattr(req, "language", "") or self.store.setting("phrase.active_language", "")
+        p.content, p.content_format = self.store.phrase_text(p, lang)
         if "{#selection" in p.content and not ctx.selected_text:
             from phraseforge.platform import windows
             ctx.selected_text = windows.get_selected_text() or ""
@@ -1206,7 +1209,8 @@ class PhraseForgeApp(QObject):
             self.popup = PhrasePopup(self.store)
             self.popup.phrase_chosen.connect(
                 lambda pid: self._jobs.put(("expand", ExpansionRequest(
-                    phrase_id=pid, context=ExpansionContext(app_exe=self._popup_app)), self._popup_hwnd)))
+                    phrase_id=pid, context=ExpansionContext(app_exe=self._popup_app),
+                    language=getattr(self.popup, "language", "")), self._popup_hwnd)))
             if hasattr(self.popup, "clipboard_chosen"):
                 self.popup.clipboard_chosen.connect(
                     lambda text: self._jobs.put(("text", text, self._popup_hwnd)))
@@ -1326,7 +1330,9 @@ class PhraseForgeApp(QObject):
         except Exception:
             log.exception("autostart update failed")
         from phraseforge.ui.theme import apply_theme
-        apply_theme(self.qapp, self.store.setting("ui.theme", "system"))
+        from phraseforge.ui import i18n
+        apply_theme(self.qapp, self.store.setting("ui.theme", "system"),
+                    i18n.resolve_language(self.store.setting("ui.language", "auto")))
         self._apply_service_settings()
         self.triggers.reload()
 
@@ -1357,7 +1363,8 @@ def main(argv: list[str] | None = None) -> int:
     store = Store(paths.db_path())
     configure_logging(store)          # diagnostic mode from the start
     from phraseforge.ui.theme import apply_theme
-    apply_theme(qapp, store.setting("ui.theme", "system"))
+    from phraseforge.ui import i18n
+    apply_theme(qapp, store.setting("ui.theme", "system"), i18n.resolve_language(store.setting("ui.language", "auto")))
     app = PhraseForgeApp(qapp, store)
     if store.setting("app.first_run_done", "0") != "1":
         from phraseforge.ui.wizard import FirstRunWizard

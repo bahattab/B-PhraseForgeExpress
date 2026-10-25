@@ -56,6 +56,11 @@ SCHEMA: dict[str, str] = {
     "clipboard_history.hotkey": DEFAULT_SETTINGS["clipboard_history.hotkey"],
     # Display
     "ui.language": "auto",
+    "phrase.languages": "[]",            # languages offered for phrase versions (JSON list)
+    "phrase.active_language": "",        # version inserted by autotext/hotkeys ("" = default)
+    "display.highlight_unedited": "1",
+    "menu.language_buttons": "1",
+    "menu.language_modifier": "ctrl",    # + Left/Right in the phrase menu picks the language
     "display.prompt_after_new_phrase": "1",
     "ui.theme": DEFAULT_SETTINGS["ui.theme"],
     # Sounds (enabled flag + optional .wav file per event)

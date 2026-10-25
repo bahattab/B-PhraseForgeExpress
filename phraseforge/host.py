@@ -124,3 +124,4 @@ class ExpansionRequest:
     erase_chars: int = 0            # chars of typed abbreviation to delete first
     context: ExpansionContext = field(default_factory=ExpansionContext)
     trailing_delimiter: str = ""    # delimiter typed after abbreviation, re-typed after expansion
+    language: str = ""              # language version to insert ("" = phrase.active_language / default)

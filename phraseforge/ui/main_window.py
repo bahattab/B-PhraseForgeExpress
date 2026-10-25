@@ -586,10 +586,15 @@ class MainWindow(QMainWindow):
         imp = menu_with(self, [("File import (JSON, CSV, TXT)...", "import", self.import_file),
                                ("Files including directory structure...", "folder_tree", self.import_folder),
                                None,
+                               ("From PhraseExpress (CSV export)...", "import", self.import_phraseexpress),
                                ("TextExpander / macOS (.csv / .textexpander / .plist)...", "textexpander", self.import_textexpander),
                                ("From OneNote...", "on_notebook", self.import_onenote)])
         exp = menu_with(self, [("Export to file (JSON, CSV)...", "export", self.export_file),
-                               ("Text files (one file per phrase)...", "text_file", self.export_text_folder)])
+                               ("Text files (one file per phrase)...", "text_file", self.export_text_folder),
+                               None,
+                               ("For PhraseExpress (CSV)...", "export", lambda: self.export_for("phraseexpress")),
+                               ("For TextExpander (CSV)...", "textexpander", lambda: self.export_for("textexpander")),
+                               ("For macOS Text Replacements (.plist)...", "export", lambda: self.export_for("macos"))])
         self.btn_import = g.add_large("Import", "import", menu=imp, split=False)
         self.btn_export = g.add_large("Export", "export", menu=exp, split=False)
         g.add_large("Print\nphrases", "print", self.print_phrases)
@@ -936,7 +941,13 @@ class MainWindow(QMainWindow):
                 return f"{n} {word}{'' if n == 1 else 's'}"
             saved = ", ".join(x for x in (unit(d, "day") if d else "", unit(h, "hour") if h else "",
                                           unit(m, "minute") if m or not (d or h) else "") if x)
-            self.breadcrumb.setText(f"PhraseForge inserted {st['expansions']} phrases and saved {saved} for you.")
+            from phraseforge.ui import i18n
+            if i18n.language() == "ar":
+                saved_ar = "، ".join(x for x in (f"{d} يوم" if d else "", f"{h} ساعة" if h else "",
+                                                 f"{m} دقيقة" if m or not (d or h) else "") if x)
+                self.breadcrumb.setText(f"أدرج PhraseForge ‏{st['expansions']} عبارة ووفّر لك {saved_ar}.")
+            else:
+                self.breadcrumb.setText(f"PhraseForge inserted {st['expansions']} phrases and saved {saved} for you.")
         if kind != "phrase":
             self.info.setText("")
 
@@ -1390,10 +1401,10 @@ class MainWindow(QMainWindow):
         self.store.set_setting("ui.language", code)
         try:
             from phraseforge.ui import i18n
-            i18n.set_language(code)
-            QApplication.instance().setLayoutDirection(Qt.RightToLeft if code == "ar" else Qt.LeftToRight)
+            i18n.install(QApplication.instance(), i18n.resolve_language(code))
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).exception("language switch failed")
 
     # ---------------------------------------------------------------- context menus
     def _tree_menu(self, pos) -> None:
@@ -1690,6 +1701,60 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Import", f"Imported {n} phrase(s).")
         except Exception as e:
             QMessageBox.warning(self, "Import", str(e))
+
+    def import_phraseexpress(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Import from PhraseExpress", "",
+                                              "PhraseExpress export (*.csv *.txt *.tsv);;"
+                                              "PhraseExpress phrase files (*.pexdb *.pexdbhub *.pxp);;All files (*)")
+        if path:
+            self.import_phraseexpress_path(path)
+
+    def import_phraseexpress_path(self, path: str, show_message: bool = True):
+        """Import a PhraseExpress CSV export; returns the report (None on error)."""
+        try:
+            from phraseforge.importers.phraseexpress import import_any
+            rep = import_any(self.store, path)
+        except Exception as e:
+            if show_message:
+                QMessageBox.warning(self, "Import from PhraseExpress", str(e))
+            return None
+        self.refresh_tree()
+        if rep.folder_id is not None:
+            self.select_folder(rep.folder_id)
+        self.last_import_summary = f"Imported {rep.imported} phrase(s)." + (
+            f" Skipped {rep.skipped} empty row(s)." if rep.skipped else "")
+        if show_message:
+            QMessageBox.information(self, "Import from PhraseExpress", self.last_import_summary)
+        return rep
+
+    EXPORT_KINDS = {
+        "phraseexpress": ("Export for PhraseExpress", "phrases-phraseexpress.csv", "CSV (*.csv)"),
+        "textexpander": ("Export for TextExpander", "phrases-textexpander.csv", "CSV (*.csv)"),
+        "macos": ("Export for macOS Text Replacements", "Text Substitutions.plist", "Property list (*.plist)"),
+    }
+
+    def export_for(self, kind: str, path: str | None = None, show_message: bool = True):
+        """Export all phrases in another program's format (active phrase language)."""
+        self.save_current()
+        title, default, flt = self.EXPORT_KINDS[kind]
+        if path is None:
+            path, _ = QFileDialog.getSaveFileName(self, title, default, flt)
+            if not path:
+                return None
+        try:
+            from phraseforge.importers.phraseexpress import export_any
+            rep = export_any(self.store, path, kind, language=self.store.setting("phrase.active_language", ""))
+        except Exception as e:
+            if show_message:
+                QMessageBox.warning(self, title, str(e))
+            return None
+        lines = [f"Exported {rep.exported} phrase(s)."] + rep.notes
+        if rep.kept_as_text:
+            lines.append("Macros without an equivalent were kept as text: "
+                         + ", ".join(f"{k} ×{n}" for k, n in sorted(rep.kept_as_text.items())))
+        if show_message:
+            QMessageBox.information(self, title, "\n".join(lines))
+        return rep
 
     def import_textexpander(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Import from TextExpander", "",

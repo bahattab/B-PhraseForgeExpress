@@ -306,6 +306,14 @@ def _group(title: str) -> tuple[QGroupBox, QVBoxLayout]:
     return g, lay
 
 
+def _json_list(v: str) -> list[str]:
+    try:
+        data = json.loads(v or "[]")
+    except ValueError:
+        return []
+    return [str(x) for x in data if str(x).strip()] if isinstance(data, list) else []
+
+
 def _row(*widgets, stretch: bool = True) -> QWidget:
     w = QWidget()
     lay = QHBoxLayout(w)
@@ -415,6 +423,7 @@ class SettingsDialog(QDialog):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
         self.tree = QTreeWidget()
+        self.tree.setProperty("pf_i18n", True)          # page names are UI text
         self.tree.setObjectName("SettingsTree")
         self.tree.setHeaderHidden(True)
         self.tree.setFixedWidth(183)
@@ -711,6 +720,11 @@ class SettingsDialog(QDialog):
         lay.addStretch(1)
         return w
 
+    def _set_active_language(self, v: str) -> None:
+        self.active_lang.clear()
+        self.active_lang.addItems(["Default"] + _json_list(self.store.setting("phrase.languages", "[]")))
+        self.active_lang.setCurrentText(v or "Default")
+
     # ---- Display
     def _page_display(self) -> QWidget:
         w, lay = self._page()
@@ -723,12 +737,31 @@ class SettingsDialog(QDialog):
         g, gl = _group("Display")
         gl.addWidget(self.bind("display.prompt_after_new_phrase",
                                QCheckBox("Prompt for additional information after creating a new phrase")))
-        gl.addSpacing(40)
+        gl.addWidget(self.bind("display.highlight_unedited", QCheckBox("Highlight unedited language versions")))
+        gl.addSpacing(10)
         show_all = QPushButton("Show all dialogs")
         show_all.setObjectName("WideButton")
         show_all.setToolTip("Show again the messages you chose not to show.")
         show_all.clicked.connect(self._show_all_dialogs)
         gl.addWidget(show_all)
+        lay.addWidget(g)
+        g, gl = _group("Phrase languages")
+        gl.addWidget(QLabel("Languages for phrase versions (one per line):"))
+        self.phrase_langs = QPlainTextEdit()
+        self.phrase_langs.setFixedHeight(60)
+        gl.addWidget(self.phrase_langs)
+        self.bind_custom("phrase.languages",
+                         lambda: json.dumps([x.strip() for x in self.phrase_langs.toPlainText().splitlines()
+                                             if x.strip()], ensure_ascii=False),
+                         lambda v: self.phrase_langs.setPlainText("\n".join(_json_list(v))))
+        self.active_lang = QComboBox()
+        self.active_lang.setEditable(True)
+        self.active_lang.setFixedWidth(198)
+        self.bind_custom("phrase.active_language",
+                         lambda: "" if self.active_lang.currentText().strip() in ("", "Default")
+                         else self.active_lang.currentText().strip(),
+                         self._set_active_language)
+        gl.addWidget(_row("Version inserted by autotext and hotkeys:", self.active_lang))
         lay.addWidget(g)
         g, gl = _group("Color theme")
         self.theme = self.bind("ui.theme", DataCombo([("Adapt to system setting", "system"), ("Light", "light"),
@@ -1704,6 +1737,7 @@ class SettingsDialog(QDialog):
         gl.addWidget(order, 1, 3)
         r = 2
         for key, text in (("menu.show_preview", "Show phrase preview"),
+                          ("menu.language_buttons", "Show phrase language buttons"),
                           ("menu.hide_restricted", "Hide program-restricted phrases")):
             gl.addWidget(self.bind(key, QCheckBox(text)), r, 0, 1, 4)
             r += 1
@@ -1864,6 +1898,12 @@ class SettingsDialog(QDialog):
         gl.addWidget(_row(mod, keys))
         gl.addWidget(QLabel("Search in the phrase menu"))
         gl.addWidget(self.bind("menu.search_hotkey", KeyCombo()))
+        gl.addWidget(QLabel("Language selection"))
+        lm = self.bind("menu.language_modifier", DataCombo([("Ctrl + Left/Right", "ctrl"), ("Alt + Left/Right", "alt"),
+                                                           ("Shift + Left/Right", "shift"),
+                                                           ("Win + Left/Right", "win"), ("None", "none")]))
+        lm.setFixedWidth(200)
+        gl.addWidget(lm)
         lay.addWidget(g)
         lay.addStretch(1)
         return w
