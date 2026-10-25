@@ -1140,8 +1140,10 @@ class PhraseForgeApp(QObject):
         from phraseforge import filesearch
         s = self.store.setting
         roots = filesearch.parse_roots(s("filesearch.roots", "")) or None
+        rules = filesearch.parse_priority_rules(s("filesearch.priorities", filesearch.DEFAULT_PRIORITY_RULES))
         self.file_index = filesearch.FileIndex(roots, include_hidden=s("filesearch.include_hidden", "0") == "1",
-                                               history_file=paths.data_dir() / "filesearch_history.json")
+                                               history_file=paths.data_dir() / "filesearch_history.json",
+                                               priority_rules=rules)
         if s("filesearch.enabled", "1") != "1":
             return
         self.file_index.build_async()
@@ -1162,8 +1164,15 @@ class PhraseForgeApp(QObject):
             from phraseforge import filesearch
             kw = filesearch.parse_web_keywords(self.store.setting("filesearch.web_keywords", "")
                                                or filesearch.DEFAULT_WEB_KEYWORDS)
-            self.file_window = FileSearchWindow(self.file_index, web_keywords=kw)
+            self.file_window = FileSearchWindow(
+                self.file_index, web_keywords=kw,
+                filters=filesearch.parse_filters(self.store.setting("filesearch.filters", "")),
+                custom_actions=filesearch.parse_custom_actions(self.store.setting("filesearch.actions", "")))
             self.file_window.insert_path.connect(lambda path: self._jobs.put(("text", path, self._file_hwnd)))
+            self.file_window.open_settings.connect(self.show_settings)
+        elif self.file_window.isVisible() and self.store.setting("filesearch.press_again", "hide") == "hide":
+            self.file_window.hide()            # Listary: "When pressing again: Hide"
+            return
         self._file_hwnd = hwnd
         if not len(self.file_index) and not self.file_index.building:
             self.file_index.build_async()

@@ -119,3 +119,53 @@ def test_settings_page_has_double_ctrl_and_keywords(app):
     assert filesearch.parse_web_keywords(s.setting("filesearch.web_keywords")) == {
         "gh": "https://github.com/search?q={q}"}
     assert s.setting("filesearch.double_ctrl") == "1"
+
+
+def test_actions_menu_commands_and_navigation(app, index, monkeypatch):
+    from PySide6.QtGui import QGuiApplication
+    from phraseforge.ui.file_search import ROLE_CMD, FileSearchWindow
+    ran, cmds = [], []
+    monkeypatch.setattr(filesearch, "run_custom_action", lambda a, p: ran.append((a.title, p)))
+    monkeypatch.setattr(filesearch, "run_command", cmds.append)
+    acts = filesearch.parse_custom_actions('Edit = notepad.exe | "{path}"')
+    w = FileSearchWindow(index, custom_actions=acts)
+    w.show_centered()
+    w.search.setText("rep")
+    w.refresh()
+    _key(w, Qt.Key_N, Qt.ControlModifier)
+    assert w.list.currentRow() == 1
+    _key(w, Qt.Key_P, Qt.ControlModifier)
+    assert w.list.currentRow() == 0
+    titles = [a.text() for a in w.build_actions_menu().actions() if a.text()]
+    assert titles == ["Open", "Open Containing Folder", "Copy", "Cut", "Copy Path to Clipboard",
+                      "Copy File Name to Clipboard", "Edit"]
+    w.run_action("copy_name")
+    assert QGuiApplication.clipboard().text() == "report notes.txt"
+    w.show_centered(); w.search.setText("rep"); w.refresh()
+    w.run_action("cut")
+    md = QGuiApplication.clipboard().mimeData()
+    assert md.urls()[0].toLocalFile().endswith("report notes.txt")
+    w.show_centered(); w.search.setText("rep"); w.refresh()
+    w.run_action("custom:0")
+    assert ran and ran[0][0] == "Edit"
+    w.show_centered()
+    w.search.setText("psh")
+    w.refresh()
+    assert w.list.item(0).data(ROLE_CMD) == "psh"
+    _key(w, Qt.Key_Return)
+    assert cmds == ["psh"]
+    got = []
+    w.open_settings.connect(lambda: got.append(1))
+    w.show_centered(); w.search.setText("opt"); w.refresh()
+    _key(w, Qt.Key_Return)
+    assert got == [1]
+
+
+def test_filter_in_window(app, index):
+    from phraseforge.ui.file_search import FileSearchWindow
+    w = FileSearchWindow(index)
+    w.show_centered()
+    w.search.setText("doc: rep")
+    w.refresh()
+    assert [w.list.item(i).text().split("    ")[0] for i in range(w.list.count())] == ["report notes.txt", "Quarterly report.xlsx"]
+    assert w.status.text().startswith("Document: ")

@@ -1,4 +1,5 @@
 """File search (Listary-style launcher): matching, ranking, speed gate."""
+from phraseforge import filesearch
 import os
 import statistics
 import time
@@ -130,3 +131,58 @@ def test_double_ctrl_tap():
     d.feed(CTRL, True); d.feed(CTRL, True); d.feed(CTRL, True)   # auto-repeat while held
     d.feed(CTRL, False)
     assert tap(3.2)
+
+
+# ---- Listary Options features (docs/menus/listary.md)
+
+def _tree(tmp_path):
+    for rel in ("docs/report 2026.pdf", "docs/report draft.txt", "pics/report.png",
+                "node_modules/report.js", "cache/report.tmp", "important/report.xlsx"):
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("x")
+    (tmp_path / "reports").mkdir()
+    return tmp_path
+
+
+def test_filters_by_keyword(tmp_path):
+    root = _tree(tmp_path)
+    ix = filesearch.FileIndex([str(root)], excludes=())
+    ix.build()
+    filters = filesearch.parse_filters(f"mine = My filter; ext=txt; in={root / 'docs'}")
+    f, words = filesearch.split_filter("doc: report", filters)
+    assert f.name == "Document" and words == "report"
+    names = {h.name for h in ix.search(words, filt=f)}
+    assert names == {"report 2026.pdf", "report draft.txt", "report.xlsx"}
+    f, words = filesearch.split_filter("folder:report", filters)
+    assert [h.name for h in ix.search(words, filt=f)] == ["reports"]
+    f, words = filesearch.split_filter("mine: report", filters)
+    assert [h.name for h in ix.search(words, filt=f)] == ["report draft.txt"]
+    assert filesearch.split_filter("nofilter: x", filters) == (None, "nofilter: x")
+
+
+def test_priorities_order_and_skip(tmp_path):
+    root = _tree(tmp_path)
+    rules = filesearch.parse_priority_rules(
+        f"high: {root / 'important'}\nrare: re:^node_modules$\nskip: {root / 'cache'}\nbogus line\nrare: re:[")
+    assert len(rules) == 3
+    ix = filesearch.FileIndex([str(root)], excludes=(), priority_rules=rules)
+    ix.build()
+    hits = [h.name for h in ix.search("report")]
+    assert hits[0] == "report.xlsx"                 # high first
+    assert "report.tmp" not in hits                 # skipped folder is not indexed
+    assert hits[-1] == "report.js"                  # inside node_modules (rare): last
+    assert filesearch.priority_of(str(root / "x" / "a.txt"), "a.txt", rules) == filesearch.NORMAL
+
+
+def test_custom_actions_and_commands(tmp_path):
+    acts = filesearch.parse_custom_actions('Edit with VS Code = code | "{path}"\nList = cmd.exe | /k dir | {folder}\nbad')
+    assert [a.title for a in acts] == ["Edit with VS Code", "List"]
+    f = tmp_path / "a b.txt"
+    f.write_text("x")
+    prog, params, cwd = filesearch.expand_action(acts[0], str(f))
+    assert (prog, params, cwd) == ("code", f'"{f}"', str(tmp_path))
+    assert filesearch.expand_action(acts[1], str(f))[2] == str(tmp_path)
+    assert filesearch.match_commands("ps") == ["psh", "psha"]
+    assert filesearch.match_commands("cmd x") == []
+    assert "shutdown" not in filesearch.COMMANDS and "reboot" not in filesearch.COMMANDS

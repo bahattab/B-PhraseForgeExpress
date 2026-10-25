@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 
+from phraseforge.filesearch import DEFAULT_PRIORITY_RULES as FILESEARCH_PRIORITIES
 from phraseforge.db import DEFAULT_SETTINGS
 from phraseforge.onenote import DEFAULT_EXE as _ONENOTE_EXE
 
@@ -118,6 +119,11 @@ SCHEMA: dict[str, str] = {
     "filesearch.include_hidden": "0",
     "filesearch.double_ctrl": "1",          # press Ctrl twice to open Search files
     "filesearch.web_keywords": "",           # "g=https://...{q}" per line; empty = built-in list
+    # modelled on Listary's Options window (docs/menus/listary.md)
+    "filesearch.press_again": "hide",        # hotkey while open: hide | keep
+    "filesearch.filters": "",                # extra "keyword = Name; ext=pdf,docx; in=C:\\Docs"
+    "filesearch.priorities": FILESEARCH_PRIORITIES,
+    "filesearch.actions": 'Edit with Notepad = notepad.exe | "{path}"',
     "onenote.clip_tool": "phraseforge",    # phraseforge | onenote (onenotecapture.exe)
     "onenote.clip_action": "image",        # image | ocr | both
     "onenote.include_ocr": "0",            # include text OneNote recognised in images

@@ -5,16 +5,21 @@ Keys: type fragments of a name, Up/Down to choose,
   Ctrl+Enter   open the containing folder with the item selected
   Shift+Enter  type the full path into the program you were in
   Ctrl+C       copy the full path
+  Ctrl+O       actions menu (open folder, copy/cut the file, copy path or name, custom actions)
+  Ctrl+N/P     next / previous result
   Esc          close
+Type "doc: report" to search with a filter (folder, file, doc, pic, video, audio and your own),
+or a command keyword such as "cmd", "psh", "hosts", "rebuild", "opt".
+Keys, filters, actions and commands follow Listary's Options window (docs/menus/listary.md).
 """
 from __future__ import annotations
 
 import os
 
-from PySide6.QtCore import QEvent, QFileInfo, QPoint, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QByteArray, QEvent, QFileInfo, QMimeData, QPoint, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QFont, QGuiApplication
 from PySide6.QtWidgets import (
-    QFileIconProvider, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QFileIconProvider, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu,
     QVBoxLayout,
 )
 
@@ -25,14 +30,20 @@ from phraseforge.ui.popup import HEADER_H, ROW_H, SELECT, _Band
 
 ROLE_PATH = Qt.UserRole
 ROLE_URL = Qt.UserRole + 1
+ROLE_CMD = Qt.UserRole + 2
 
 
 class FileSearchWindow(QFrame):
     insert_path = Signal(str)      # Shift+Enter: type this path into the previous program
+    open_settings = Signal()       # "opt" command
 
-    def __init__(self, index: filesearch.FileIndex, parent=None, web_keywords: dict[str, str] | None = None):
+    def __init__(self, index: filesearch.FileIndex, parent=None, web_keywords: dict[str, str] | None = None,
+                 filters: dict | None = None, custom_actions: list | None = None):
         super().__init__(parent, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.index = index
+        self.filters = filters if filters is not None else dict(filesearch.DEFAULT_FILTERS)
+        self.custom_actions = custom_actions or []
+        self.actions_menu: QMenu | None = None
         self.web_keywords = (web_keywords if web_keywords is not None
                              else filesearch.parse_web_keywords(filesearch.DEFAULT_WEB_KEYWORDS))
         self._icons = QFileIconProvider()
@@ -86,6 +97,11 @@ class FileSearchWindow(QFrame):
         if not q:
             self._show_status()
             return
+        for key in filesearch.match_commands(q):
+            it = QListWidgetItem(f"{key}    —  {tr(filesearch.COMMANDS[key])}")
+            it.setSizeHint(QSize(10, ROW_H))
+            it.setData(ROLE_CMD, key)
+            self.list.addItem(it)
         web = filesearch.web_search(q, self.web_keywords)
         if web:
             key, url = web
@@ -94,7 +110,9 @@ class FileSearchWindow(QFrame):
             it.setData(ROLE_URL, url)
             it.setToolTip(url)
             self.list.addItem(it)
-        hits = self.index.search(q, limit=60)
+        filt, words = filesearch.split_filter(q, self.filters)
+        self._filter = filt
+        hits = self.index.search(words, limit=60, filt=filt) if words else []
         for h in hits:
             folder = os.path.dirname(h.path)
             it = QListWidgetItem(f"{h.name}    —  {folder}")
@@ -113,8 +131,10 @@ class FileSearchWindow(QFrame):
         elif n is None:
             self.status.setText(tr("{n} items indexed").replace("{n}", f"{len(self.index):,}"))
         else:
-            self.status.setText(tr("{n} results").replace("{n}", str(n)) +
-                                "   ·   Enter open · Ctrl+Enter folder · Shift+Enter type path · Ctrl+C copy")
+            filt = getattr(self, "_filter", None)
+            prefix = f"{tr(filt.name)}: " if filt else ""
+            self.status.setText(prefix + tr("{n} results").replace("{n}", str(n)) +
+                                "   ·   Enter open · Ctrl+Enter folder · Shift+Enter type path · Ctrl+O actions")
 
     def rebuild(self) -> None:
         self.status.setText(tr("Indexing files…"))
@@ -123,6 +143,16 @@ class FileSearchWindow(QFrame):
     # ------------------------------------------------------------ actions
     def _open(self, it: QListWidgetItem | None, folder: bool = False) -> None:
         if it is None:
+            return
+        cmd = it.data(ROLE_CMD)
+        if cmd:
+            self.hide()
+            if cmd == "opt":
+                self.open_settings.emit()
+            elif cmd == "rebuild":
+                self.index.build_async()
+            else:
+                filesearch.run_command(cmd)
             return
         url = it.data(ROLE_URL)
         if url:
@@ -140,6 +170,65 @@ class FileSearchWindow(QFrame):
             QGuiApplication.clipboard().setText(it.data(ROLE_PATH) or it.data(ROLE_URL))
             self.hide()
 
+    def _file_clip(self, cut: bool) -> None:
+        """Put the file itself on the clipboard so it can be pasted in Explorer."""
+        path = self._current_path()
+        if not path:
+            return
+        md = QMimeData()
+        md.setUrls([QUrl.fromLocalFile(path)])
+        md.setText(path)
+        # Explorer reads "Preferred DropEffect": 2 = move (cut), 5 = copy|link
+        md.setData("Preferred DropEffect", QByteArray(bytes([2 if cut else 5, 0, 0, 0])))
+        QGuiApplication.clipboard().setMimeData(md)
+        self.hide()
+
+    def _current_path(self) -> str:
+        it = self.list.currentItem()
+        return (it.data(ROLE_PATH) or "") if it else ""
+
+    def run_action(self, key: str) -> None:
+        """Built-in action key (filesearch.BUILTIN_ACTIONS) or 'custom:<n>'."""
+        path = self._current_path()
+        if not path:
+            return
+        if key == "open":
+            self._open(self.list.currentItem())
+        elif key == "folder":
+            self._open(self.list.currentItem(), folder=True)
+        elif key in ("copy", "cut"):
+            self._file_clip(cut=key == "cut")
+        elif key == "copy_path":
+            QGuiApplication.clipboard().setText(path)
+            self.hide()
+        elif key == "copy_name":
+            QGuiApplication.clipboard().setText(os.path.basename(path))
+            self.hide()
+        elif key.startswith("custom:"):
+            i = int(key[7:])
+            if 0 <= i < len(self.custom_actions):
+                self.hide()
+                self.index.record_open(path)
+                filesearch.run_custom_action(self.custom_actions[i], path)
+
+    def build_actions_menu(self) -> QMenu:
+        m = QMenu(self)
+        for key in filesearch.BUILTIN_ACTIONS:
+            m.addAction(tr(filesearch.ACTION_TITLES[key]), lambda k=key: self.run_action(k))
+        if self.custom_actions:
+            m.addSeparator()
+            for i, a in enumerate(self.custom_actions):
+                m.addAction(a.title, lambda k=f"custom:{i}": self.run_action(k))
+        return m
+
+    def show_actions(self) -> None:
+        it = self.list.currentItem()
+        if it is None or not it.data(ROLE_PATH):
+            return
+        self.actions_menu = self.build_actions_menu()
+        r = self.list.visualItemRect(it)
+        self.actions_menu.popup(self.list.viewport().mapToGlobal(r.bottomLeft()))
+
     def _insert(self) -> None:
         it = self.list.currentItem()
         if it:
@@ -156,6 +245,14 @@ class FileSearchWindow(QFrame):
                 self._insert()
             else:
                 self._open(self.list.currentItem(), folder=bool(mods & Qt.ControlModifier))
+            return True
+        if mods & Qt.ControlModifier and k in (Qt.Key_N, Qt.Key_P):
+            row = self.list.currentRow() + (1 if k == Qt.Key_N else -1)
+            if 0 <= row < self.list.count():
+                self.list.setCurrentRow(row)
+            return True
+        if k == Qt.Key_O and mods & Qt.ControlModifier:
+            self.show_actions()
             return True
         if k == Qt.Key_C and mods & Qt.ControlModifier and not self.search.hasSelectedText():
             self._copy()
@@ -175,7 +272,8 @@ class FileSearchWindow(QFrame):
             super().keyPressEvent(e)
 
     def changeEvent(self, e):  # noqa: N802
-        if e.type() == QEvent.ActivationChange and self.isVisible() and not self.isActiveWindow():
+        if (e.type() == QEvent.ActivationChange and self.isVisible() and not self.isActiveWindow()
+                and not (self.actions_menu and self.actions_menu.isVisible())):
             self.hide()
         super().changeEvent(e)
 

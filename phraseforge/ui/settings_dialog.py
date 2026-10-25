@@ -1260,6 +1260,35 @@ class SettingsDialog(QDialog):
         gl.addWidget(QLabel("Hotkey: open Search files"))
         gl.addWidget(self.bind("filesearch.hotkey", Hotkey()))
         gl.addWidget(self.bind("filesearch.double_ctrl", QCheckBox("Also open it by pressing Ctrl twice")))
+        self.filesearch_again = self.bind("filesearch.press_again", DataCombo(
+            [("Hide Search files", "hide"), ("Keep it open", "keep")]))
+        gl.addWidget(_row("When pressing again:", self.filesearch_again))
+        gl.addWidget(_wrap_label("In the window: Ctrl+N / Ctrl+P next and previous result, Ctrl+O actions. "
+                                 "Command keywords: opt, rebuild, cmd, cmda, psh, psha, uninstall, connections, hosts."))
+        lay.addWidget(g)
+        g, gl = _group("Filters")
+        gl.addWidget(_wrap_label("Type \"keyword:\" before your words, e.g. \"doc: report\". Built in: folder, file, "
+                                 "doc, pic, video, audio. Add your own, one per line: "
+                                 "keyword = Name; ext=pdf,docx; in=C:\\Folder; folders=0"))
+        self.filesearch_filters = self.bind("filesearch.filters", QPlainTextEdit())
+        self.filesearch_filters.setFixedHeight(60)
+        gl.addWidget(self.filesearch_filters)
+        lay.addWidget(g)
+        g, gl = _group("Priorities")
+        gl.addWidget(_wrap_label("One rule per line: high, normal, rare or skip, a colon, then a folder "
+                                 "(environment variables allowed) or re: and a regular expression for the "
+                                 "file name. High results come first, rare ones last, skip is not indexed."))
+        self.filesearch_prio = self.bind("filesearch.priorities", QPlainTextEdit())
+        self.filesearch_prio.setFixedHeight(110)
+        gl.addWidget(self.filesearch_prio)
+        lay.addWidget(g)
+        g, gl = _group("Actions (Ctrl+O)")
+        gl.addWidget(_wrap_label("Built in: Open Containing Folder, Copy, Cut, Copy Path, Copy File Name. "
+                                 "Custom actions, one per line: Title = program | parameters | working folder. "
+                                 "{path}, {folder} and {name} are filled in."))
+        self.filesearch_actions = self.bind("filesearch.actions", QPlainTextEdit())
+        self.filesearch_actions.setFixedHeight(60)
+        gl.addWidget(self.filesearch_actions)
         lay.addWidget(g)
         g, gl = _group("Web search keywords")
         gl.addWidget(_wrap_label("Type a keyword, a space and your words, e.g. \"g weather\", then Enter. "

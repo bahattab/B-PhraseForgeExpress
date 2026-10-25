@@ -39,7 +39,7 @@ original), **pending** (not captured yet).
 | OneNote screen clipping (onenotecapture.exe) | pending (no window) | `docs/menus/onenotecapture.md` |
 | Send to OneNote (ONENOTEM.EXE) | pending (tray only) | `docs/menus/onenotem.md` |
 | TextExpander | pending (tray only) | `docs/menus/textexpander.md` |
-| Listary | pending (tray only) | `docs/menus/listary.md` |
+| Listary | **observed**: Options window (General, Appearance, Hotkey, File Search, Actions, Commands) from 16 screenshots; tray menu pending | `docs/menus/listary.md` |
 
 ## Feature ledger
 
@@ -60,9 +60,14 @@ original), **pending** (not captured yet).
 | Three quick-access OCR languages, each with a hotkey | Capture2Text Settings > OCR 1 and Hotkeys | observed | implemented (default languages Arabic, English; no default keys) | same tests |
 | OCR language menu in the tray icon | Capture2Text tray menu "OCR Language ▸" | observed | implemented (current plus quick-access languages) | `test_tray_language_menu` |
 | Find (regex) → Replace rules per OCR language | Capture2Text Settings > Replace | observed | implemented as text rules `find => replace` with `[Language]` sections (Capture2Text uses a table) | `test_replace_rules_global_and_per_language` |
-| Search files: type name fragments, Enter opens, Ctrl+Enter opens folder, Shift+Enter types path | Listary | published, unconfirmed; exact keys and ranking **pending capture** | implemented | `tests/test_filesearch.py`, `tests/test_filesearch_ui.py` |
-| Open Search files by pressing Ctrl twice | Listary | published, unconfirmed | implemented (on by default, Settings > Search files) | `test_double_ctrl_tap`, `test_double_ctrl_opens_file_search` |
+| Search files: type name fragments, Enter opens, Ctrl+Enter opens folder, Shift+Enter types path | Listary | published, unconfirmed (Enter/Shift+Enter keys not in the screenshots) | implemented | `tests/test_filesearch.py`, `tests/test_filesearch_ui.py` |
+| Open Search files by pressing Ctrl twice; "When pressing again: Hide" | Listary Options > Hotkey | observed | implemented (Settings > Search files) | implemented (on by default, Settings > Search files) | `test_double_ctrl_tap`, `test_double_ctrl_opens_file_search` |
 | Web search keywords (`g`, `yt`, `wiki`, `maps`, user-defined) | Listary | published, unconfirmed | implemented | `test_web_keywords`, `test_web_keyword_row_opens_url` |
+| Next / previous result Ctrl+N / Ctrl+P, actions menu Ctrl+O | Listary Options > Hotkey | observed | implemented | `test_actions_menu_commands_and_navigation` |
+| Search filters "keyword:" (Folder, File, Document, Picture, Video, Audio) plus user filters with extensions, folder/file choice and "search in" | Listary Options > File Search > Filters | observed (names); the built-in keywords folder/file/doc/pic/video/audio and the extension lists are **inferred** | implemented | `test_filters_by_keyword`, `test_filter_in_window` |
+| Priorities: High / Normal / Rarely used / Do not index, by folder or file-name regex, with Listary's default rules | Listary Options > File Search > Priorities | observed | implemented; a folder's priority passes to its contents. The `^[^.]+$` rule is left out because it would push every folder down | `test_priorities_order_and_skip` |
+| Actions: Open Containing Folder, Copy, Cut, Copy Path, Copy File Name, custom actions (program, parameter, working folder) | Listary Options > Actions | observed | implemented; hotkey, keyword, scope, silent and run-as-admin per action are not | `test_custom_actions_and_commands`, `test_actions_menu_commands_and_navigation` |
+| Command keywords: opt, rebuild, cmd, cmda, psh, psha, uninstall, connections, hosts | Listary Options > Commands | observed | implemented | same tests |
 | File index | Listary | inferred: folder walk with `os.scandir`, rebuilt every N minutes. Listary's own indexing method is **unknown** (not observed; no binary analysis). An NTFS MFT/USN index (as documented for the Everything search engine) is a possible later upgrade and needs admin rights | implemented (folder walk) | speed gate below |
 | Ribbon "Tools" tab: OneNote group (Send clipboard to OneNote, Screen clipping, New quick note), Capture group (Screen OCR, Sticky Notes), Find group (Search files) | OneNote Insert tab, ONENOTEM and onenotecapture tray tools | the tab row (File, Home, Insert, Draw, History, Review, View, Help, plus a Sticky Notes button) is **observed**; the commands inside OneNote's tabs are not captured yet, so the grouping is still an approximation | implemented (approximated) | `tests/test_ui.py::test_tools_tab_runs_app_commands` |
 
@@ -88,7 +93,10 @@ features of each program. It is based on vendor product information, not on scre
 | TextExpander | Snippets, abbreviations, fill-ins, CSV and `.textexpander` import | replicated | See the feature ledger |
 | TextExpander | Cloud team sharing, account sign-in, snippet suggestions service | not implemented | Needs TextExpander's online service; PhraseForge has its own optional Google Drive sync |
 | Listary | Search files by name, double Ctrl, open folder, web keywords | approximated | See the feature ledger. Ranking and keys may differ from Listary's |
-| Listary | Integration into Open/Save dialogs and Explorer ("folder jump"), app launcher actions menu | not implemented | Hooks into other programs' file dialogs. Planned only after the capture shows the exact behavior |
+| Listary | Integration into Open/Save dialogs and Explorer (Quick Switch Ctrl+G, "folder jump") | not implemented | Hooks into other programs' file dialogs; the Integration page is not in the screenshots |
+| Listary | Commands `..`, mkdir, touch | not implemented | They act on the folder open in Explorer, which Search files does not track |
+| Listary | Commands shutdown, reboot | not implemented on purpose | One mistyped Enter would turn off the PC |
+| Listary | Preview (Alt+P), Dark theme, network drives in the index, per-action hotkeys and scope | not implemented | Not needed for the work packages; PhraseForge has its own light/dark theme |
 | Capture2Text | OCR of a screen region, Arabic and other languages | replicated by calling it | PhraseForge runs `Capture2Text_CLI.exe`; no GPL code copied |
 | Capture2Text | Output (clipboard, popup, line breaks, log file), Re-capture last, quick-access languages, tray language menu, Replace rules | replicated | See the feature ledger (observed from screenshots) |
 | Capture2Text | Text Line / Forward Text Line / Bubble capture (OCR around the mouse without drawing a box) | not implemented | Needs Capture2Text's own line-finding code; its CLI only takes a box or an image |
