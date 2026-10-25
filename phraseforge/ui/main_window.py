@@ -1447,9 +1447,11 @@ class MainWindow(QMainWindow):
         if kind in ("folder", "root"):
             fid = id_ if kind == "folder" else None
             bulk = m.addMenu("Bulk edit")
-            bulk.addAction("Enable all phrases", lambda: self.bulk_enable(fid, True))
-            bulk.addAction("Disable all phrases", lambda: self.bulk_enable(fid, False))
-            bulk.addAction("Sort phrases alphabetically", lambda: self.bulk_sort(fid))
+            self._fill_bulk_menu(bulk, fid)
+            srt = m.addMenu("Sort")
+            from phraseforge.bulk_edit import SORT_KEYS
+            for key, (title, _fn) in SORT_KEYS.items():
+                srt.addAction(title, lambda k=key: self.bulk_sort_by(fid, k))
         if kind == "folder":
             f = self.store.get_folder(id_)
             m.addSeparator()
@@ -1468,6 +1470,61 @@ class MainWindow(QMainWindow):
         a.setShortcut("Alt+Return")
         a.setEnabled(item)
         return m
+
+    def _fill_bulk_menu(self, bulk: QMenu, fid: int | None) -> None:
+        """PhraseExpress folder menu > Bulk edit (observed in PhraseExpress 18)."""
+        from phraseforge.bulk_edit import TEXT_OP_TITLES
+        bulk.addAction("Remove duplicates", lambda: self.bulk_remove_duplicates(fid))
+        for target, title in (("description", "Descriptions"), ("content", "Phrase contents"),
+                              ("autotext", "Autotexts")):
+            sub = bulk.addMenu(title)
+            if target == "description":
+                sub.addAction("Generate", lambda: self.bulk_run(fid, "generate_descriptions"))
+            if target == "content":
+                sub.addAction("Convert to plain text", lambda: self.bulk_run(fid, "plain_text"))
+            for i, (op, op_title) in enumerate(TEXT_OP_TITLES.items()):
+                if i in (0, 2, 4):
+                    sub.addSeparator()
+                sub.addAction(op_title, lambda t=target, o=op: self.bulk_text(fid, t, o))
+        bulk.addSeparator()
+        bulk.addAction("Enable all phrases", lambda: self.bulk_enable(fid, True))
+        bulk.addAction("Disable all phrases", lambda: self.bulk_enable(fid, False))
+        bulk.addAction("Sort phrases alphabetically", lambda: self.bulk_sort(fid))
+
+    def bulk_text(self, folder_id: int | None, target: str, op: str, arg: str | None = None) -> int:
+        from phraseforge import bulk_edit
+        if op in ("prefix", "append") and arg is None:
+            arg, ok = QInputDialog.getText(self, "Bulk edit", "Prefix text:" if op == "prefix" else "Append text:")
+            if not ok or not arg:
+                return 0
+        n = bulk_edit.apply_text_op(self.store, folder_id, target, op, arg or "")
+        self.refresh_tree()
+        return n
+
+    def bulk_run(self, folder_id: int | None, what: str) -> int:
+        from phraseforge import bulk_edit
+        fn = {"generate_descriptions": bulk_edit.generate_descriptions,
+              "plain_text": bulk_edit.convert_to_plain_text}[what]
+        n = fn(self.store, folder_id)
+        self.refresh_tree()
+        return n
+
+    def bulk_remove_duplicates(self, folder_id: int | None, confirm: bool = True) -> int:
+        from phraseforge import bulk_edit
+        if confirm and QMessageBox.question(
+                self, "Remove duplicates",
+                "Delete phrases in this folder whose description and text repeat an earlier phrase?") \
+                != QMessageBox.Yes:
+            return 0
+        n = bulk_edit.remove_duplicates(self.store, folder_id)
+        self.refresh_tree()
+        return n
+
+    def bulk_sort_by(self, folder_id: int | None, key: str) -> int:
+        from phraseforge import bulk_edit
+        n = bulk_edit.sort_phrases(self.store, folder_id, key, descending=key in ("times_used", "last_used"))
+        self.refresh_tree()
+        return n
 
     def bulk_enable(self, folder_id: int | None, on: bool) -> None:
         for p in self.store.phrases(folder_id):

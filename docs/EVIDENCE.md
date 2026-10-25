@@ -35,7 +35,7 @@ original), **pending** (not captured yet).
 
 | Program | Capture status | Inventory |
 |---|---|---|
-| PhraseExpress (phraseexpress.exe), the main model | pending: added to the goal 2026-10-25; menus and Settings not captured yet. Current PhraseExpress-style features follow its public manual (*documented*) | `docs/menus/phraseexpress.md` |
+| PhraseExpress Free 18.0.84f (phraseexpress.exe), the main model | **observed** by screen control (view only): ribbon tabs File/Phrases/View/Help, File menu, folder context menu 3 levels deep, all 20 Settings pages. Tray and popup menus pending | `docs/menus/phraseexpress.md` |
 | Capture2Text v4.6.3 Arabic | **observed**: tray menu and 7 of 9 Settings pages, from the user's screenshots | `docs/menus/capture2text.md` |
 | OneNote (ONENOTE.EXE) | **observed**: title bar, Quick Access Toolbar, ribbon tab row, notebook/page panes (88 items, depth 10). The commands inside each tab are not captured yet | `docs/menus/onenote.md` |
 | OneNote screen clipping (onenotecapture.exe) | pending (no window) | `docs/menus/onenotecapture.md` |
@@ -47,6 +47,10 @@ original), **pending** (not captured yet).
 
 | PhraseForge feature | Modelled on | Evidence | Status | Verification |
 |---|---|---|---|---|
+| Settings tree: Features, Hotkeys, Display, Sounds, Phrase File/Database, AI text processing (Custom presets, Custom instructions), Language Translation (Ignored words, Glossaries), Network, Phrase Menu (Appearance, Hotkeys, Quick Search), AutoComplete, Expert Options (Text Insertion, Delays, Phrase Formatting) | PhraseExpress 18 Settings | observed (2026-10-25); before that, documented from the manual | already implemented with the same pages and options; PhraseForge adds Backup & Sync, Screen OCR, OneNote, Search files, Program exclusions | `tests/test_settings_dialog.py` |
+| Folder menu > Bulk edit: Remove duplicates; Descriptions / Phrase contents / Autotexts: Prefix, Append, Strip trailing/leading spaces, Upper/lower case first letter, UPPERCASE, lowercase; Generate descriptions; Convert to plain text | PhraseExpress 18 folder context menu | observed | implemented (Generate for contents and autotexts, Change font and Convert to RTF are not) | `tests/test_bulk_edit.py` |
+| Folder menu > Sort: Description, Description length, Date created, Date modified, Last used, Times used | PhraseExpress 18 folder context menu | observed (list cut off at the screen edge) | implemented | `tests/test_bulk_edit.py` |
+| Ribbon File / Phrases / View / Help with Migration Assistant, Import/Export, Two/Three columns, Flat list, Statistics | PhraseExpress 18 main window | observed | already implemented (PhraseForge ribbon: File, Phrases, View, Tools, Help) | `tests/test_ui.py` |
 | Abbreviation expands to text (autotext triggers, delimiters, case handling) | TextExpander, PhraseExpress | documented (TextExpander public snippet docs; SPEC.md) | implemented | `tests/test_triggers.py`, `tests/test_triggers_advanced.py` |
 | Fill-ins (`%filltext%`, `%fillpopup%` … → `{#ask*}` macros) | TextExpander | documented (export format) | implemented | `tests/test_textexpander_import.py` |
 | Import TextExpander CSV / `.textexpander` groups | TextExpander | documented (export formats) | implemented | `tests/test_textexpander_import.py` |
@@ -107,6 +111,9 @@ features of each program. It is based on vendor product information, not on scre
 | TextExpander | Cloud team sharing, account sign-in, Public groups, web dashboard (Members, Teams, Snippet Requests, Statistics) | not implemented | Needs TextExpander's online service; PhraseForge has its own optional Google Drive sync and local statistics |
 | TextExpander | Quick actions (Ctrl+Shift+/) | not implemented | The screenshots show only the hotkey, not what the panel offers |
 | TextExpander | Import ShortHand `.txt`, Instant Text `.glo`, Google Sheets `.html` | not implemented | Their file layouts are not published; guessing them could import wrong text |
+| PhraseExpress | SQL server database, User Manager, Access rights, phrase file synchronization, Manage languages, Translate, Pin to desktop (Demo items in the Free edition) | not implemented / shown disabled | Multi-user server features; PhraseForge uses one local SQLite file plus optional Google Drive sync |
+| PhraseExpress | Import from MS Word AutoCorrect / Autotext / Outlook emails, Export as e-mail attachment | not implemented | Need Office automation; PhraseForge imports TextExpander, macOS, OneNote and its own JSON |
+| PhraseExpress | Phrase contents caching options, SQL network options, update checker, beta channel | not implemented | PhraseForge reads phrases from SQLite on demand and has no auto-updater |
 | TextExpander | Snippet Activity log per person, Snippet Requests, Members, Teams | not implemented | Team features of TextExpander's online service |
 | TextExpander | Web account pages: organization settings (idle timeout, staff access, TextExpander AI, publish snippets to the web, sharing controls), Billing, Single sign-on, Profile, e-mail notifications, password | not implemented | Account and billing pages of the online service; PhraseForge has no account. Its AI features use the user's own provider key |
 | TextExpander | One global expansion mode; "Scan typing for suggestions" per program; Appearance fonts for snippet display; update check frequency and beta channel | approximated / not implemented | PhraseForge sets the mode per phrase and uses one editor font setting; it has no update checker |
