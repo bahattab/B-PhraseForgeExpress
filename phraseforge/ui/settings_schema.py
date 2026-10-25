@@ -98,6 +98,12 @@ SCHEMA: dict[str, str] = {
     "onenote.default_target": "",          # page/section path; "" = Quick Notes
     "onenote.send_hotkey": "",
     "onenote.clip_hotkey": "",
+    # Search files (Listary-style launcher)
+    "filesearch.enabled": "1",
+    "filesearch.hotkey": "ctrl+alt+f",
+    "filesearch.roots": "",
+    "filesearch.refresh_minutes": "30",
+    "filesearch.include_hidden": "0",
     "onenote.clip_tool": "phraseforge",    # phraseforge | onenote (onenotecapture.exe)
     "onenote.clip_action": "image",        # image | ocr | both
     "onenote.include_ocr": "0",            # include text OneNote recognised in images

@@ -1,13 +1,15 @@
 ; Inno Setup 6 script for PhraseForge.
-; Build the PyInstaller folder first (dist\PhraseForge), then:
+; Build the PyInstaller folder first (dist\B-PhraseForgeExpress), then:
 ;   iscc /DAppVersion=0.3.0 packaging\installer.iss
-; Output: dist\PhraseForge-Setup-<version>.exe
+; Output: dist\B-PhraseForgeExpress-Setup-<version>.exe
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
 #endif
-#define AppName "PhraseForge"
-#define AppExe "PhraseForge.exe"
+#define AppName "B-PhraseForgeExpress"
+#define AppExe "B-PhraseForgeExpress.exe"
+; Run-key value name used by phraseforge/autostart.py (NAME); keep them equal.
+#define RunName "PhraseForge"
 #define Root ".."
 
 [Setup]
@@ -36,7 +38,7 @@ OutputBaseFilename={#AppName}-Setup-{#AppVersion}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
-; Close a running PhraseForge before files are replaced.
+; Close a running copy before files are replaced.
 CloseApplications=yes
 RestartApplications=no
 
@@ -46,10 +48,10 @@ Name: "arabic"; MessagesFile: "compiler:Languages\Arabic.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
-Name: "autostart"; Description: "Start PhraseForge when Windows starts"; GroupDescription: "Startup:"
+Name: "autostart"; Description: "Start B-PhraseForgeExpress when Windows starts"; GroupDescription: "Startup:"
 
 [Files]
-Source: "{#Root}\dist\PhraseForge\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#Root}\dist\B-PhraseForgeExpress\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"
@@ -58,7 +60,7 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopico
 
 [Registry]
 ; Same per-user Run value the app's own "Start with Windows" setting uses (phraseforge/autostart.py).
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#AppName}"; \
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#RunName}"; \
   ValueData: """{app}\{#AppExe}"" --minimized"; Tasks: autostart; Flags: uninsdeletevalue
 
 [Run]
@@ -74,6 +76,6 @@ Type: files; Name: "{app}\*.log"
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usPostUninstall then
-    RegDeleteValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Run', '{#AppName}');
+    RegDeleteValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Run', '{#RunName}');
   // Phrases in %APPDATA%\PhraseForge are kept on purpose so a reinstall keeps the user's data.
 end;

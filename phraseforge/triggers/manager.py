@@ -58,6 +58,7 @@ COMMAND_HOTKEY_SETTINGS = {
     "onenote.send_hotkey": "onenote_send_clipboard",
     "onenote.clip_hotkey": "onenote_clip",
     "stickynotes.hotkey": "open_sticky_notes",
+    "filesearch.hotkey": "file_search",
 }
 
 NAV_KEYS = {0x21: "pgup", 0x22: "pgdn", 0x23: "end", 0x24: "home", 0x25: "left", 0x26: "up",

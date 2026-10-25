@@ -1,4 +1,4 @@
-# PhraseForge
+# B-PhraseForgeExpress (PhraseForge)
 
 An original text expander for Windows with the feature set of PhraseExpress,
 screen OCR through Capture2Text, and import of TextExpander snippet exports.
@@ -9,11 +9,11 @@ See [SPEC.md](SPEC.md) for the design and [macro reference](phraseforge/macros/R
 Download from the repository's **Releases** page (or the latest *Windows build* run under
 **Actions > Artifacts**):
 
-- `PhraseForge-Setup-<version>.exe`: installer. No admin rights needed; adds Start menu and
+- `B-PhraseForgeExpress-Setup-<version>.exe`: installer. No admin rights needed; adds Start menu and
   optional desktop shortcut and "start with Windows". Uninstall from Windows Settings > Apps.
   Your phrases in `%APPDATA%\PhraseForge` are kept when you uninstall.
-- `PhraseForge-portable.exe`: single file, no install. Starts a little slower.
-- `PhraseForge-<version>-win64.zip`: the same program as a folder.
+- `B-PhraseForgeExpress-portable.exe`: single file, no install. Starts a little slower.
+- `B-PhraseForgeExpress-<version>-win64.zip`: the same program as a folder.
 
 Windows SmartScreen may warn because the files are not code-signed: click
 **More info > Run anyway**.
@@ -27,10 +27,10 @@ pushing a tag such as `v0.3.0` also publishes a GitHub Release. To build locally
 ```
 python -m pip install -r requirements-build.txt
 python packaging\make_icon.py
-pyinstaller --noconfirm packaging\phraseforge.spec          # dist\PhraseForge\PhraseForge.exe
-set PF_ONEFILE=1 && pyinstaller --noconfirm packaging\phraseforge.spec   # dist\PhraseForge-portable.exe
+pyinstaller --noconfirm packaging\phraseforge.spec          # dist\B-PhraseForgeExpress\B-PhraseForgeExpress.exe
+set PF_ONEFILE=1 && pyinstaller --noconfirm packaging\phraseforge.spec   # dist\B-PhraseForgeExpress-portable.exe
 "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" /DAppVersion=0.3.0 packaging\installer.iss
-dist\PhraseForge\PhraseForge.exe --self-test               # writes selftest.txt in the data folder
+dist\B-PhraseForgeExpress\B-PhraseForgeExpress.exe --self-test               # writes selftest.txt in the data folder
 ```
 
 ## Run from source
@@ -59,8 +59,17 @@ C:\venvs\phraseforge\Scripts\python -m pytest -p no:cacheprovider  # full test s
 | Ctrl+Alt+Space | Phrase popup / search |
 | Ctrl+Alt+V | Clipboard history |
 | Ctrl+Alt+O | OCR a screen region to the clipboard (Capture2Text) |
+| Ctrl+Alt+F | Search files: find and open files, folders and programs by name |
 
 Data lives in `%APPDATA%\PhraseForge` (override with `PHRASEFORGE_HOME`).
+
+## Search files
+
+Ctrl+Alt+F (or tray > Search files) opens a launcher: type parts of a file, folder or
+program name in any order (`rep 2026 pdf`). Enter opens it, Ctrl+Enter opens its folder,
+Shift+Enter types the full path into the program you were in, Ctrl+C copies the path.
+Programs and items you open often come first. Settings > Search files chooses the folders
+(default: Start menu, Desktop, Documents, Downloads) and how often the index is rebuilt.
 
 ## Google Drive backup & sync
 

@@ -51,6 +51,7 @@ PAGES: list[tuple[str, str, str | None]] = [
     ("network", "Network", None),
     ("ocr", "Screen OCR", None),
     ("onenote", "OneNote", None),
+    ("file_search", "Search files", None),
     ("phrase_menu", "Phrase Menu", None),
     ("phrase_menu_appearance", "Appearance", "phrase_menu"),
     ("phrase_menu_hotkeys", "Hotkeys", "phrase_menu"),
@@ -1207,6 +1208,38 @@ class SettingsDialog(QDialog):
         lay.addWidget(g)
         lay.addStretch(1)
         return w
+
+    # ---- Search files (Listary-style launcher)
+    def _page_file_search(self) -> QWidget:
+        w, lay = self._page()
+        g, gl = _group("Search files")
+        gl.addWidget(_wrap_label("Find and open files, folders and programs by typing part of their name. "
+                                 "All words must match, in any order. Enter opens, Ctrl+Enter opens the "
+                                 "folder, Shift+Enter types the path into the program you were in."))
+        gl.addWidget(self.bind("filesearch.enabled", QCheckBox("Index files when PhraseForge starts")))
+        gl.addWidget(QLabel("Hotkey: open Search files"))
+        gl.addWidget(self.bind("filesearch.hotkey", Hotkey()))
+        lay.addWidget(g)
+        g, gl = _group("Folders to index")
+        gl.addWidget(_wrap_label("One folder per line. Empty = Start menu, Desktop, Documents and Downloads."))
+        self.filesearch_roots = self.bind("filesearch.roots", QPlainTextEdit())
+        self.filesearch_roots.setFixedHeight(90)
+        gl.addWidget(self.filesearch_roots)
+        add = QPushButton("Add folder...")
+        add.clicked.connect(self._add_filesearch_root)
+        gl.addWidget(_row(add))
+        gl.addWidget(self.bind("filesearch.include_hidden", QCheckBox("Include hidden and system files")))
+        self.filesearch_refresh = self.bind("filesearch.refresh_minutes", _spin(5, 1440))
+        gl.addWidget(_row("Rebuild the index every", self.filesearch_refresh, "minutes"))
+        lay.addWidget(g)
+        lay.addStretch(1)
+        return w
+
+    def _add_filesearch_root(self) -> None:
+        d = QFileDialog.getExistingDirectory(self, "Folder to index")
+        if d:
+            text = self.filesearch_roots.toPlainText().rstrip()
+            self.filesearch_roots.setPlainText((text + "\n" if text else "") + d)
 
     def _browse_onenote_exe(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "ONENOTE.EXE", self.onenote_exe.text(), "Programs (*.exe)")

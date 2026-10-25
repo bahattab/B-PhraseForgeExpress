@@ -1,6 +1,6 @@
 # PyInstaller spec for PhraseForge.
-#   pyinstaller packaging/phraseforge.spec                  -> dist/PhraseForge/PhraseForge.exe (folder build, used by the installer)
-#   set PF_ONEFILE=1 & pyinstaller packaging/phraseforge.spec -> dist/PhraseForge-portable.exe (single file)
+#   pyinstaller packaging/phraseforge.spec                  -> dist/B-PhraseForgeExpress/B-PhraseForgeExpress.exe (folder build, used by the installer)
+#   set PF_ONEFILE=1 & pyinstaller packaging/phraseforge.spec -> dist/B-PhraseForgeExpress-portable.exe (single file)
 # Run packaging/make_icon.py first so packaging/build/phraseforge.ico exists.
 import os
 import re
@@ -24,12 +24,12 @@ version_file.write_text(f"""VSVersionInfo(
   kids=[
     StringFileInfo([StringTable('040904B0', [
       StringStruct('CompanyName', 'PhraseForge'),
-      StringStruct('FileDescription', 'PhraseForge text expander'),
+      StringStruct('FileDescription', 'B-PhraseForgeExpress text expander and file launcher'),
       StringStruct('FileVersion', '{VERSION}'),
       StringStruct('InternalName', 'PhraseForge'),
       StringStruct('LegalCopyright', 'MIT License'),
-      StringStruct('OriginalFilename', 'PhraseForge.exe'),
-      StringStruct('ProductName', 'PhraseForge'),
+      StringStruct('OriginalFilename', 'B-PhraseForgeExpress.exe'),
+      StringStruct('ProductName', 'B-PhraseForgeExpress'),
       StringStruct('ProductVersion', '{VERSION}')])]),
     VarFileInfo([VarStruct('Translation', [1033, 1200])])
   ]
@@ -79,8 +79,8 @@ common = dict(
 )
 
 if ONEFILE:
-    exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], name="PhraseForge-portable",
+    exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], name="B-PhraseForgeExpress-portable",
               runtime_tmpdir=None, **common)
 else:
-    exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="PhraseForge", **common)
-    coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="PhraseForge")
+    exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="B-PhraseForgeExpress", **common)
+    coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="B-PhraseForgeExpress")

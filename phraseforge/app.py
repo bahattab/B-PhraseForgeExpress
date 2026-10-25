@@ -386,6 +386,8 @@ class PhraseForgeApp(QObject):
         self.main_window = None
         self.popup = None
         self.clip_window = None
+        self.file_window = None
+        self.file_index = None
 
         from phraseforge.macros import MacroEngine
         from phraseforge.platform.output import OutputExecutor
@@ -404,6 +406,7 @@ class PhraseForgeApp(QObject):
         self._build_triggers()
         self._build_cloud()
         self._build_local_backups()
+        self._build_file_index()
         # the executor tells the trigger layer while it types, so our own output is ignored
         self.output = OutputExecutor(store.setting, busy_callback=self.triggers.set_busy)
         threading.Thread(target=self._worker, name="expansion", daemon=True).start()
@@ -442,6 +445,8 @@ class PhraseForgeApp(QObject):
         reg("onenote_clip", lambda arg, hwnd: self._jobs.put(("call", self._onenote_clip, hwnd)))
         # Microsoft Sticky Notes
         reg("open_sticky_notes", lambda arg, hwnd: self._open_sticky_notes())
+        # Search files (Listary-style launcher, phraseforge/filesearch.py)
+        reg("file_search", lambda arg, hwnd: post(lambda: self._show_file_search(hwnd)))
 
     def register_command(self, name: str, fn: Callable[[str, int], None]) -> None:
         self._commands[name] = fn
@@ -613,7 +618,7 @@ class PhraseForgeApp(QObject):
         self.tray.settings.connect(self.show_settings)
         if hasattr(self.tray, "show_statistics"):
             self.tray.show_statistics.connect(self.show_statistics)
-        for sig in ("onenote_send_clipboard", "onenote_clip", "open_sticky_notes"):   # OneNote / Sticky Notes items
+        for sig in ("onenote_send_clipboard", "onenote_clip", "open_sticky_notes", "file_search"):   # OneNote / Sticky Notes items
             if hasattr(self.tray, sig):
                 getattr(self.tray, sig).connect(lambda _=None, c=sig: self.on_command(c))
         self.tray.quit.connect(self.quit)
@@ -1060,6 +1065,37 @@ class PhraseForgeApp(QObject):
     def show_statistics(self):
         from phraseforge.ui.stats_window import StatsWindow
         StatsWindow(self.store).exec()
+
+    # ---- Search files (Listary-style launcher)
+    def _build_file_index(self):
+        from phraseforge import filesearch
+        s = self.store.setting
+        roots = filesearch.parse_roots(s("filesearch.roots", "")) or None
+        self.file_index = filesearch.FileIndex(roots, include_hidden=s("filesearch.include_hidden", "0") == "1",
+                                               history_file=paths.data_dir() / "filesearch_history.json")
+        if s("filesearch.enabled", "1") != "1":
+            return
+        self.file_index.build_async()
+        from PySide6.QtCore import QTimer
+        try:
+            minutes = max(5, int(s("filesearch.refresh_minutes", "30") or 30))
+        except ValueError:
+            minutes = 30
+        self._file_index_timer = QTimer(interval=minutes * 60_000)
+        self._file_index_timer.timeout.connect(lambda: self.file_index.building or self.file_index.build_async())
+        self._file_index_timer.start()
+
+    def _show_file_search(self, hwnd):
+        from phraseforge.ui.file_search import FileSearchWindow
+        if self.file_index is None:
+            self._build_file_index()
+        if self.file_window is None:
+            self.file_window = FileSearchWindow(self.file_index)
+            self.file_window.insert_path.connect(lambda path: self._jobs.put(("text", path, self._file_hwnd)))
+        self._file_hwnd = hwnd
+        if not len(self.file_index) and not self.file_index.building:
+            self.file_index.build_async()
+        self.file_window.show_centered()
 
     def _show_clipboard(self, hwnd):
         from phraseforge.ui.clipboard_window import ClipboardWindow

@@ -78,6 +78,10 @@ DEFAULT_SETTINGS = {
     "popup.hotkey": "ctrl+alt+space",
     "ocr.hotkey": "ctrl+alt+o",
     "clipboard_history.hotkey": "ctrl+alt+v",
+    "filesearch.hotkey": "ctrl+alt+f",     # Search files (Listary-style launcher)
+    "filesearch.enabled": "1",
+    "filesearch.roots": "",               # one folder per line; empty = Start menu, Desktop, Documents, Downloads
+    "filesearch.refresh_minutes": "30",
     "ocr.cli_path": r"C:\Program Files\00 - Capture2Text v4.6.3 - Arabic\Capture2Text_CLI.exe",
     "ocr.language": "English",
     "output.paste_threshold": "40",       # AUTO mode pastes text longer than this

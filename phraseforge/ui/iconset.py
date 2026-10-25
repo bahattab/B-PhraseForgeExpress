@@ -18,6 +18,8 @@ ICONS: dict[str, tuple[str, str]] = {
     "new_folder": ("mdi6.folder-plus", YELLOW),
     "new_phrase": ("mdi6.file-document-plus-outline", BLUE),
     "folder": ("mdi6.folder", YELLOW),
+    "file_search": ("mdi6.file-search-outline", TEAL),
+    "refresh": ("mdi6.refresh", GREY),
     "folder_open": ("mdi6.folder-open", YELLOW),
     "phrase": ("mdi6.file-document-outline", BLUE),
     "phrase_rich": ("mdi6.file-document-edit-outline", BLUE),

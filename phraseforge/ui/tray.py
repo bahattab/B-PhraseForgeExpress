@@ -21,6 +21,7 @@ class Tray(QSystemTrayIcon):
     show_statistics = Signal()      # shown in the menu only when something is connected
     onenote_send_clipboard = Signal()   # "Send clipboard to OneNote"
     onenote_clip = Signal()             # "Screen clip to OneNote"
+    file_search = Signal()              # "Search files"
 
     def __init__(self, icon_: QIcon | None = None, parent=None):
         super().__init__(icon_ or app_icon(), parent)
@@ -36,6 +37,7 @@ class Tray(QSystemTrayIcon):
         m.addAction(icon("search"), tr("Phrase menu"), self.show_popup.emit)
         m.addAction(icon("clipboard_cache"), tr("Clipboard history"), self.clipboard_history.emit)
         m.addAction(icon("m_ocr"), tr("OCR to clipboard"), self.ocr_to_clipboard.emit)
+        m.addAction(icon("file_search"), tr("Search files"), self.file_search.emit)
         m.addSeparator()
         self.onenote_send_action = m.addAction(icon("on_send"), tr("Send clipboard to OneNote"),
                                                self.onenote_send_clipboard.emit)
