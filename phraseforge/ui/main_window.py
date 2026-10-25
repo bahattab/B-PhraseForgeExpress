@@ -1,7 +1,7 @@
 """PhraseForge main window, laid out like the PhraseExpress reference
 (reference/phraseexpress/01_main_phrase_selected.png):
 
-  ribbon (File | Phrases | View | Help | [Phrase content]) + search box + user
+  ribbon (File | Phrases | View | Tools | Help | [Phrase content]) + search box + user
   quick toolbar
   tree panel | (phrase list in three-column mode) | editor
   status bar: breadcrumb links ................................ editor info
@@ -347,10 +347,12 @@ class MainWindow(QMainWindow):
     SEARCH_SCOPES = (("all", "Search everywhere"), ("description", "Search in Description"),
                      ("content", "Search in Phrase content"), ("autotext", "Search in Autotext"))
 
-    def __init__(self, store: Store, on_test_phrase: Callable[[int], None] | None = None):
+    def __init__(self, store: Store, on_test_phrase: Callable[[int], None] | None = None,
+                 on_command: Callable[[str], None] | None = None):
         super().__init__()
         self.store = store
         self.on_test_phrase = on_test_phrase
+        self.on_command = on_command        # app-level commands (OneNote, OCR, Search files)
         from phraseforge import __version__
         self.setWindowTitle(f"PhraseForge v{__version__}")
         try:
@@ -413,6 +415,7 @@ class MainWindow(QMainWindow):
         self._build_file_menu()
         self._build_phrases_tab()
         self._build_view_tab()
+        self._build_tools_tab()
         self._build_help_tab()
         self._build_content_tab()
         self._build_shortcuts()
@@ -623,6 +626,31 @@ class MainWindow(QMainWindow):
         grid.addLayout(right)
         g.add_widget(box)
         g.caption.setText("")
+
+    # (label, icon, command) per group. Grouped like OneNote's Insert tab and the
+    # ONENOTEM / onenotecapture tray tools; layout not yet checked against screenshots.
+    TOOLS_TAB = (
+        ("OneNote", (("Send clipboard\nto OneNote", "on_send", "onenote_send_clipboard"),
+                     ("Screen\nclipping", "on_clip", "onenote_clip"),
+                     ("New quick\nnote", "sticky_notes", "quick_note"))),
+        ("Capture", (("Screen\nOCR", "m_ocr", "ocr"),
+                     ("Sticky\nNotes", "sticky_notes", "open_sticky_notes"))),
+        ("Find", (("Search\nfiles", "file_search", "file_search"),)),
+    )
+
+    def _build_tools_tab(self) -> None:
+        t = self.ribbon.add_tab("tools", "Tools")
+        self.tool_buttons: dict[str, QToolButton] = {}
+        for group, items in self.TOOLS_TAB:
+            g = t.add_group(group)
+            for label, icon_name, cmd in items:
+                b = g.add_large(label, icon_name, lambda c=cmd: self.run_tool(c))
+                b.setEnabled(self.on_command is not None)
+                self.tool_buttons[cmd] = b
+
+    def run_tool(self, cmd: str) -> None:
+        if self.on_command is not None:
+            self.on_command(cmd)
 
     def _build_help_tab(self) -> None:
         t = self.ribbon.add_tab("help", "Help")

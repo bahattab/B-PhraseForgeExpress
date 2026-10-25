@@ -1144,7 +1144,8 @@ class PhraseForgeApp(QObject):
     def show_main(self):
         from phraseforge.ui.main_window import MainWindow
         if self.main_window is None:
-            self.main_window = MainWindow(self.store, on_test_phrase=self.test_phrase)
+            self.main_window = MainWindow(self.store, on_test_phrase=self.test_phrase,
+                                          on_command=self.on_command)
         self.main_window.show()
         self.main_window.raise_()
         self.main_window.activateWindow()

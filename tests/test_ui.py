@@ -405,3 +405,21 @@ def test_arabic_translation():
         assert i18n.tr("unknown text") == "unknown text"
     finally:
         i18n.set_language("en")
+
+
+def test_tools_tab_runs_app_commands(app, store):
+    from phraseforge.ui.main_window import MainWindow
+    sent = []
+    w = MainWindow(store, on_command=sent.append)
+    assert "tools" in w.ribbon.tabs
+    assert set(w.tool_buttons) == {"onenote_send_clipboard", "onenote_clip", "quick_note",
+                                   "ocr", "open_sticky_notes", "file_search"}
+    for cmd, b in w.tool_buttons.items():
+        assert b.isEnabled()
+        b.click()
+    assert sent == list(w.tool_buttons)
+    w.close()
+    # without an app to run them (e.g. opened alone) the buttons are disabled
+    w2 = MainWindow(store)
+    assert not any(b.isEnabled() for b in w2.tool_buttons.values())
+    w2.close()
