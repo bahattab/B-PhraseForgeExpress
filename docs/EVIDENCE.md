@@ -4,7 +4,8 @@ Status: **2026-10-25, partial capture.**
 - The user ran `tools/capture_menus.ps1 -All` on their PC. OneNote: 88 items, 10 levels deep.
   The other five programs gave 0 items because they have no window (tray programs, or
   onenotecapture, which opens and closes at once).
-- The user also sent 9 screenshots of Capture2Text's tray menu and Settings pages.
+- The user also sent 9 screenshots of Capture2Text's tray menu and Settings pages, 26 of Listary's
+  Options window and 27 of TextExpander (tray, menus, Preferences).
 - The raw OneNote capture contained the user's own notebook, section and page names. Those were
   replaced with `<user content>` before committing, and the script now does this by itself.
 - Programs whose inventory says *pending* still need tray-menu screenshots.
@@ -38,7 +39,7 @@ original), **pending** (not captured yet).
 | OneNote (ONENOTE.EXE) | **observed**: title bar, Quick Access Toolbar, ribbon tab row, notebook/page panes (88 items, depth 10). The commands inside each tab are not captured yet | `docs/menus/onenote.md` |
 | OneNote screen clipping (onenotecapture.exe) | pending (no window) | `docs/menus/onenotecapture.md` |
 | Send to OneNote (ONENOTEM.EXE) | pending (tray only) | `docs/menus/onenotem.md` |
-| TextExpander | pending (tray only) | `docs/menus/textexpander.md` |
+| TextExpander 8.4.8 | **observed**: tray menu, menu bar, group and snippet editors, all six Preferences pages, from 27 screenshots | `docs/menus/textexpander.md` |
 | Listary | **observed**: all Options pages except About, from 26 screenshots; tray menu pending | `docs/menus/listary.md` |
 
 ## Feature ledger
@@ -52,7 +53,14 @@ original), **pending** (not captured yet).
 | New quick note window (tray, hotkey): Ctrl+Enter sends to OneNote Quick Notes or the default page, Ctrl+S saves as a phrase | Send to OneNote (ONENOTEM) | published, unconfirmed (ONENOTEM's tray menu not captured yet); sending uses the documented OneNote COM API | implemented | `tests/test_quick_note.py` |
 | Screen clip to OneNote, or OCR the clip | onenotecapture.exe | documented (starts `onenotecapture.exe`; Capture2Text CLI) | implemented | `tests/test_onenote*.py` |
 | Import OneNote pages as phrases | OneNote | documented (OneNote COM `GetHierarchy`/`GetPageContent`) | implemented | `tests/test_onenote.py` |
-| Adapt output case to the typed abbreviation (ALL CAPS / Capitalised) | TextExpander, PhraseExpress | published, unconfirmed | already implemented | `tests/test_triggers*.py` |
+| Adapt output case to the typed abbreviation (ALL CAPS / Capitalised) | TextExpander snippet editor "Case: Adapt to Case of Abbreviation" | observed | already implemented | `tests/test_triggers*.py` |
+| Expansion modes: immediately / at delimiter keep / at delimiter abandon; delimiter set; restore clipboard; play sound; expand only in / except some programs | TextExpander Preferences > Expansion | observed | already implemented, set per phrase (trailing delimiter "None", "Default", "Remove trailing delimiter") and in Settings (delimiters, sounds, program restrictions); TextExpander sets the mode once for all snippets | `tests/test_triggers*.py` |
+| Folder abbreviation prefix, inherited by subfolders | TextExpander Group Settings > Group prefix | observed | implemented (folder editor field "Abbreviation prefix") | `tests/test_textexpander_features.py` |
+| Reminder: "you have an autotext for this" when a phrase is typed out in full | TextExpander Preferences > Suggestions "Notify me of the abbreviation when I type a snippet that already exists" | observed | implemented (on by default, Settings > AutoComplete; at most once per 5 minutes per phrase; skipped in password fields, for phrases with macros and texts under 8 characters) | `tests/test_textexpander_features.py` |
+| Suggest phrases from typing habits | TextExpander Preferences > Suggestions | observed | already implemented ("Suggest entered sentences"); kept on this PC only | `tests/test_learning.py` |
+| Hotkeys: Open, Enable/Disable expansion, New phrase, New phrase from clipboard, Edit last used phrase, inline search | TextExpander Preferences > Hotkeys | observed | implemented (Settings > Hotkeys; no default keys except the existing popup search); "Edit last used" opens the last expanded phrase | `tests/test_textexpander_features.py` |
+| Tray items New phrase from clipboard, Edit last used phrase | TextExpander tray menu | observed | implemented | `test_tray_has_clipboard_and_edit_last_items` |
+| Duplicate, sort, preview, print groups, Find | TextExpander File / View / Edit menus | observed | already implemented in the main window (Duplicate, Sort, Preview, Print, search) | `tests/test_ui.py` |
 | Screen OCR to clipboard, any Capture2Text language incl. Arabic (Ctrl+Alt+O) | Capture2Text | documented (Capture2Text CLI options, open source) | already implemented | `tests/test_macros.py::test_ocr` |
 | OCR output options: Save to clipboard, show result popup, keep line breaks | Capture2Text tray menu and Settings > Output | observed | implemented (Settings > Screen OCR > Output) | `tests/test_ocr_options.py::test_ocr_modes_log_and_clipboard` |
 | Log captures to a file with a format (`${capture}${linebreak}`, plus `${tab}`, `${timestamp}`) | Capture2Text Settings > Output > Logging | observed | implemented | `test_log_format`, `test_ocr_modes_log_and_clipboard` |
@@ -93,7 +101,9 @@ features of each program. It is based on vendor product information, not on scre
 | onenotecapture.exe | Screen clipping to a chosen page | replicated by calling it | PhraseForge starts `onenotecapture.exe`; it can also OCR the clip with Capture2Text |
 | ONENOTEM.EXE | Tray icon: New quick note, screen clip, send to OneNote | approximated | Quick note window and tray actions. Its own tray menu and default actions are not captured |
 | TextExpander | Snippets, abbreviations, fill-ins, CSV and `.textexpander` import | replicated | See the feature ledger |
-| TextExpander | Cloud team sharing, account sign-in, snippet suggestions service | not implemented | Needs TextExpander's online service; PhraseForge has its own optional Google Drive sync |
+| TextExpander | Cloud team sharing, account sign-in, Public groups, web dashboard (Members, Teams, Snippet Requests, Statistics) | not implemented | Needs TextExpander's online service; PhraseForge has its own optional Google Drive sync and local statistics |
+| TextExpander | Quick actions (Ctrl+Shift+/) | not implemented | The screenshots show only the hotkey, not what the panel offers |
+| TextExpander | One global expansion mode; "Scan typing for suggestions" per program; Appearance fonts for snippet display; update check frequency and beta channel | approximated / not implemented | PhraseForge sets the mode per phrase and uses one editor font setting; it has no update checker |
 | Listary | Search files by name, double Ctrl, open folder, web keywords | approximated | See the feature ledger. Ranking and keys may differ from Listary's |
 | Listary | Integration into File Explorer, Open/Save dialogs and 14 file managers (Quick Switch Ctrl+G) | not implemented | Needs hooks inside other programs' windows; out of scope for this version |
 | Listary | Web search suggestion providers and per-site icons | not implemented | Would send what you type to a suggestion server while typing |

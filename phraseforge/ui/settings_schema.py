@@ -42,6 +42,9 @@ SCHEMA: dict[str, str] = {
     # Hotkeys
     "hotkey.new_phrase": "ctrl+alt+c",
     "hotkey.edit_last_phrase": "",
+    "hotkey.new_phrase_from_clipboard": "",
+    "hotkey.toggle_expansion": "",
+    "hotkey.open_main": "",
     "hotkey.open_settings": "",
     "popup.hotkey": DEFAULT_SETTINGS["popup.hotkey"],
     "hotkey.clear_clipboard_cache": "",
@@ -155,6 +158,7 @@ SCHEMA: dict[str, str] = {
     # AutoComplete
     "autocomplete.learn_corrections": "0",
     "learning.enabled": DEFAULT_SETTINGS["learning.enabled"],   # "Suggest entered sentences"
+    "learning.remind_abbreviation": "1",   # tip when a phrase with an autotext is typed in full
     "autocomplete.suggest_words": "0",
     "autocomplete.filter_letter": "1",
     "autocomplete.filter_upper": "1",

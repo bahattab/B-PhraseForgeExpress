@@ -3,16 +3,24 @@ them as suggestions (store.suggestions) the UI can offer to turn into phrases.
 
 Settings: learning.enabled ("1"), learning.min_length (chars, default 12),
 learning.min_count (repetitions before suggesting, default 3).
+
+Abbreviation reminder (TextExpander "Notify me of the abbreviation when I type a
+snippet that already exists"): learning.remind_abbreviation ("1"). When the user types
+out in full the text of a phrase that has an autotext, on_reminder(abbreviation,
+description) is called once (at most every REMIND_EVERY_S seconds per phrase).
 """
 from __future__ import annotations
 
 import logging
 import re
+import time
 from typing import Callable
 
 log = logging.getLogger(__name__)
 
 SENTENCE_END = set(".!?\n")
+REMIND_MIN_CHARS = 8          # shorter phrase texts are not worth a reminder
+REMIND_EVERY_S = 300.0
 MAX_BUFFER = 500
 RESET_KEYS = {"left", "right", "up", "down", "home", "end", "pgup", "pgdn", "click", "focus",
               "delete", "ctrl", "escape", "insert"}
@@ -23,11 +31,63 @@ def normalize_candidate(text: str) -> str:
 
 
 class Learner:
-    def __init__(self, store, password_check: Callable[[], bool] | None = None):
+    def __init__(self, store, password_check: Callable[[], bool] | None = None,
+                 on_reminder: Callable[[str, str], None] | None = None, clock=time.monotonic):
         self.store = store
         self._password_check = password_check
         self._buf: list[str] = []
         self._tainted = False   # current sentence started in a password field
+        self.on_reminder = on_reminder
+        self._clock = clock
+        self._recent = ""       # last typed characters, for the abbreviation reminder
+        self._known: list[tuple[str, str, str, int]] | None = None   # (text, abbrev, description, id)
+        self._reminded: dict[int, float] = {}
+
+    # ------------------------------------------------------------ abbreviation reminder
+    def invalidate_phrases(self) -> None:
+        """Call when phrases change; the list of reminder texts is rebuilt on demand."""
+        self._known = None
+
+    def _known_texts(self) -> list[tuple[str, str, str, int]]:
+        if self._known is None:
+            known = []
+            try:
+                for p in self.store.phrases():
+                    abbrs = [t.value for t in p.autotexts() if t.value]
+                    text = (p.content or "").strip()
+                    if (not p.enabled or not abbrs or p.content_format != "text"
+                            or len(text) < REMIND_MIN_CHARS or "{#" in text):
+                        continue
+                    known.append((text.casefold(), min(abbrs, key=len), p.description, p.id))
+            except Exception:
+                log.exception("could not list phrases for the abbreviation reminder")
+            known.sort(key=lambda k: -len(k[0]))
+            self._known = known
+        return self._known
+
+    def _remind(self, ch: str) -> None:
+        if self.on_reminder is None or self.store.setting("learning.remind_abbreviation", "1") != "1":
+            self._recent = ""
+            return
+        known = self._known_texts()
+        if not known:
+            return
+        self._recent = (self._recent + ch)[-max(len(k[0]) for k in known):]
+        low = self._recent.casefold()
+        for text, abbr, desc, pid in known:
+            if low.endswith(text):
+                self._recent = ""
+                now = self._clock()
+                if now - self._reminded.get(pid, -REMIND_EVERY_S - 1) < REMIND_EVERY_S:
+                    return
+                if self._is_password():
+                    return
+                self._reminded[pid] = now
+                try:
+                    self.on_reminder(abbr, desc)
+                except Exception:
+                    log.exception("abbreviation reminder failed")
+                return
 
     # ------------------------------------------------------------ settings
     def _enabled(self) -> bool:
@@ -60,11 +120,14 @@ class Learner:
         if key == "backspace":
             if self._buf:
                 self._buf.pop()
+            self._recent = self._recent[:-1]
         elif key in RESET_KEYS:
             self.reset()
+            self._recent = ""
 
     def feed_char(self, ch: str) -> str | None:
         """Returns the committed candidate text when a sentence ends (for tests/UI)."""
+        self._remind(ch)
         if not self._enabled():
             self.reset()
             return None

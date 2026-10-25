@@ -117,6 +117,9 @@ class Folder:
     # "Output target for all phrases in this folder"; "current" = not set
     output_target: str = "current"
     output_target_arg: str = ""
+    # TextExpander "Group prefix": typed before every abbreviation in this folder
+    # (and its subfolders, unless one sets its own prefix)
+    abbrev_prefix: str = ""
 
 
 @dataclass

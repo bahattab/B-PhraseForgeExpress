@@ -21,10 +21,10 @@ from __future__ import annotations
 
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable
 
-from phraseforge.models import Trigger, TriggerKind
+from phraseforge.models import Folder, Trigger, TriggerKind
 
 MAX_BUFFER = 256
 PUNCTUATION = set(".,;:!?)]}'\"([{/\\-_<>")
@@ -206,3 +206,39 @@ def apply_case(expansion: str, typed: str, abbreviation: str) -> str:
     if letters[0].isupper() and not abbreviation[:1].isupper():
         return expansion[:1].upper() + expansion[1:]
     return expansion
+
+
+def folder_prefixes(folders: list[Folder]) -> dict[int, str]:
+    """Effective abbreviation prefix of every folder: its own, else the nearest parent's."""
+    by_id = {f.id: f for f in folders}
+    out: dict[int, str] = {}
+
+    def eff(fid, seen=()):
+        if fid in out:
+            return out[fid]
+        f = by_id.get(fid)
+        if f is None or fid in seen:
+            return ""
+        val = f.abbrev_prefix or eff(f.parent_id, seen + (fid,))
+        out[fid] = val
+        return val
+
+    for fid in by_id:
+        eff(fid)
+    return out
+
+
+def apply_group_prefixes(triggers: list[Trigger], phrase_folder: dict[int, int | None],
+                         prefixes: dict[int, str]) -> list[Trigger]:
+    """TextExpander "Group prefix": autotext abbreviations of phrases in a folder with a
+    prefix are matched as prefix + abbreviation. Returns copies; other triggers unchanged."""
+    if not any(prefixes.values()):
+        return triggers
+    out = []
+    for t in triggers:
+        pre = ""
+        if TriggerKind(t.kind) == TriggerKind.AUTOTEXT and t.phrase_id is not None:
+            fid = phrase_folder.get(t.phrase_id)
+            pre = prefixes.get(fid, "") if fid is not None else ""
+        out.append(replace(t, value=pre + t.value) if pre and t.value and not t.value.startswith(pre) else t)
+    return out

@@ -438,6 +438,9 @@ class PhraseForgeApp(QObject):
         reg("ocr", lambda arg, hwnd: self._jobs.put(("ocr", arg, hwnd)))
         reg("new_phrase", lambda arg, hwnd: post(self._new_phrase_with_selection))
         reg("edit_last_phrase", lambda arg, hwnd: post(self._edit_last_phrase))
+        reg("new_phrase_from_clipboard", lambda arg, hwnd: post(self._new_phrase_from_clipboard))
+        reg("toggle_expansion", lambda arg, hwnd: post(self._toggle_expansion))
+        reg("open_main", lambda arg, hwnd: post(self.show_main))
         reg("open_settings", lambda arg, hwnd: post(self.show_settings))
         reg("clear_clipboard_cache", lambda arg, hwnd: self.store.clear_clipboard(keep_pinned=True))
         reg("pause", lambda arg, hwnd: post(self._pause_cmd))
@@ -650,7 +653,8 @@ class PhraseForgeApp(QObject):
         self.tray.settings.connect(self.show_settings)
         if hasattr(self.tray, "show_statistics"):
             self.tray.show_statistics.connect(self.show_statistics)
-        for sig in ("onenote_send_clipboard", "onenote_clip", "open_sticky_notes", "file_search", "quick_note"):   # OneNote / Sticky Notes items
+        for sig in ("onenote_send_clipboard", "onenote_clip", "open_sticky_notes", "file_search", "quick_note",
+                    "new_phrase_from_clipboard", "edit_last_phrase"):   # OneNote / Sticky Notes items
             if hasattr(self.tray, sig):
                 getattr(self.tray, sig).connect(lambda _=None, c=sig: self.on_command(c))
         self.tray.quit.connect(self.quit)
@@ -661,7 +665,8 @@ class PhraseForgeApp(QObject):
         from phraseforge.learning import Learner
         from phraseforge.platform.windows import focused_is_password
         from phraseforge.triggers.manager import TriggerManager
-        self.learner = Learner(self.store, password_check=focused_is_password)
+        self.learner = Learner(self.store, password_check=focused_is_password,
+                               on_reminder=self._abbreviation_reminder)
         self.tip = None                     # SmartComplete / autocomplete suggestion, created on demand
         try:
             from phraseforge.learning import WordLearner
@@ -758,7 +763,14 @@ class PhraseForgeApp(QObject):
         except Exception as e:
             log.warning("sync on exit failed: %s", e)
 
+    def _abbreviation_reminder(self, abbreviation: str, description: str):
+        """Hook thread: the user typed out a phrase that has an autotext (TextExpander-style tip)."""
+        self.poster.posted.emit(lambda: self.tray.notify(
+            "You have an autotext for this", f'Next time type "{abbreviation}" for "{description}".'))
+
     def _on_store_change(self, kind, _id):
+        if kind in ("phrase", "folder") and getattr(self, "learner", None) is not None:
+            self.learner.invalidate_phrases()
         if kind in ("phrase", "folder", "setting"):
             self.poster.posted.emit(self.triggers.reload)
 
@@ -796,6 +808,28 @@ class PhraseForgeApp(QObject):
         p = self.store.add_phrase(Phrase(desc, text))
         self.show_main()
         self.main_window.select_phrase(p.id)
+
+    def _new_phrase_from_clipboard(self):
+        """TextExpander "New Snippet from Clipboard": a new phrase holding the clipboard text."""
+        from PySide6.QtWidgets import QApplication
+
+        from phraseforge.models import Phrase
+        text = QApplication.clipboard().text() or ""
+        desc = (text.strip().splitlines() or ["New phrase"])[0][:60]
+        p = self.store.add_phrase(Phrase(desc, text))
+        self.show_main()
+        self.main_window.select_phrase(p.id)
+        return p
+
+    def _toggle_expansion(self):
+        """TextExpander "Enable/Disable TextExpander" hotkey: flips the tray's Pause item."""
+        act = getattr(self.tray, "pause_action", None)
+        paused = not self.triggers.paused
+        if act is not None:
+            act.setChecked(paused)          # emits toggle_pause -> set_paused
+        else:
+            self.set_paused(paused)
+        self.tray.notify("PhraseForge", "Text expansion paused." if paused else "Text expansion resumed.")
 
     def _edit_last_phrase(self):
         rows = self.store.conn.execute("SELECT phrase_id FROM usage_log ORDER BY id DESC LIMIT 1").fetchall()

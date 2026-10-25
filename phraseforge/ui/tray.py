@@ -24,6 +24,8 @@ class Tray(QSystemTrayIcon):
     file_search = Signal()              # "Search files"
     ocr_language = Signal(str)          # picked in "OCR language" (like Capture2Text's tray menu)
     quick_note = Signal()               # "New quick note" (like ONENOTEM)
+    new_phrase_from_clipboard = Signal()   # TextExpander "New Snippet from Clipboard"
+    edit_last_phrase = Signal()            # TextExpander "Edit Last Expanded Snippet"
 
     def __init__(self, icon_: QIcon | None = None, parent=None):
         super().__init__(icon_ or app_icon(), parent)
@@ -35,6 +37,8 @@ class Tray(QSystemTrayIcon):
         f = QFont(a.font())
         f.setBold(True)
         a.setFont(f)
+        m.addAction(icon("new_phrase"), tr("New phrase from clipboard"), self.new_phrase_from_clipboard.emit)
+        m.addAction(icon("pencil"), tr("Edit last used phrase"), self.edit_last_phrase.emit)
         m.addSeparator()
         m.addAction(icon("search"), tr("Phrase menu"), self.show_popup.emit)
         m.addAction(icon("clipboard_cache"), tr("Clipboard history"), self.clipboard_history.emit)

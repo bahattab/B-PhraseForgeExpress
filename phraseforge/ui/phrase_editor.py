@@ -852,6 +852,10 @@ class FolderEditor(QWidget):
         lay.addWidget(self.description)
         self.triggers = TriggerList("Trigger")
         lay.addWidget(self.triggers)
+        lay.addWidget(caption("Abbreviation prefix (typed before every autotext in this folder):"))
+        self.prefix = QLineEdit()
+        self.prefix.setPlaceholderText("e.g. ;  (empty = none, or the parent folder's prefix)")
+        lay.addWidget(self.prefix)
         lay.addWidget(caption("Output target for all phrases in this folder:"))
         self.output_target = OutputTargetRow()
         lay.addWidget(self.output_target)
@@ -859,11 +863,12 @@ class FolderEditor(QWidget):
         self.notes = QPlainTextEdit()
         lay.addWidget(self.notes, 1)
         self.description.textEdited.connect(self._mark_dirty)
+        self.prefix.textEdited.connect(self._mark_dirty)
         self.triggers.changed.connect(self._mark_dirty)
         self.output_target.changed.connect(self._mark_dirty)
         self.notes.textChanged.connect(self._mark_dirty)
         self._saver = _FocusOutSaver(self._autosave)
-        for w in (self.description, self.notes):
+        for w in (self.description, self.prefix, self.notes):
             w.installEventFilter(self._saver)
         self.setEnabled(False)
 
@@ -878,6 +883,7 @@ class FolderEditor(QWidget):
             self.description.setText(f.name if f else "")
             self.triggers.set_rows((rows_for_triggers(f.triggers) if f else []) or [default_row("autotext")])
             self.output_target.set(f.output_target if f else "current", f.output_target_arg if f else "")
+            self.prefix.setText(f.abbrev_prefix if f else "")
             self.notes.setPlainText(f.notes if f else "")
         finally:
             self._loading = False
@@ -891,6 +897,7 @@ class FolderEditor(QWidget):
         if name:
             f.name = name
         f.notes = self.notes.toPlainText()
+        f.abbrev_prefix = self.prefix.text().strip()
         f.output_target = self.output_target.target()
         f.output_target_arg = self.output_target.target_arg()
         self.store.update_folder(f)

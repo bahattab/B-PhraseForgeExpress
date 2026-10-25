@@ -651,7 +651,10 @@ class SettingsDialog(QDialog):
         w, lay = self._page()
         g, gl = _group("Hotkeys")
         gl.setSpacing(3)
-        rows = [("hotkey.new_phrase", "Create a new phrase"),
+        rows = [("hotkey.open_main", f"Open {APP}"),
+                ("hotkey.toggle_expansion", "Enable/disable text expansion"),
+                ("hotkey.new_phrase", "Create a new phrase"),
+                ("hotkey.new_phrase_from_clipboard", "Create a new phrase from the clipboard"),
                 ("hotkey.edit_last_phrase", "Edit the last used phrase"),
                 ("hotkey.open_settings", f"Open the {APP} settings window"),
                 ("popup.hotkey", "Open tray popup menu"),
@@ -1755,6 +1758,8 @@ class SettingsDialog(QDialog):
         self.learning = self.bind("learning.enabled", QCheckBox("Suggest entered sentences"))
         gl.addWidget(self.learning)
         gl.addWidget(self.bind("autocomplete.suggest_words", QCheckBox("Suggest entered words")))
+        gl.addWidget(self.bind("learning.remind_abbreviation", QCheckBox(
+            "Remind me of the autotext when I type a phrase that already exists")))
         lay.addWidget(g)
         g, gl = _group("AutoComplete Filter")
         for key, text in (("autocomplete.filter_letter", "Suggestions must begin with a letter"),

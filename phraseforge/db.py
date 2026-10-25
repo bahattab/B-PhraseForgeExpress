@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS folders (
   name TEXT NOT NULL, sort INTEGER DEFAULT 0, enabled INTEGER DEFAULT 1,
   apps_include TEXT DEFAULT '', apps_exclude TEXT DEFAULT '',
   password_hash TEXT DEFAULT '', show_in_popup INTEGER DEFAULT 1, notes TEXT DEFAULT '',
-  output_target TEXT DEFAULT 'current', output_target_arg TEXT DEFAULT '');
+  output_target TEXT DEFAULT 'current', output_target_arg TEXT DEFAULT '',
+  abbrev_prefix TEXT DEFAULT '');
 CREATE TABLE IF NOT EXISTS phrases (
   id INTEGER PRIMARY KEY, folder_id INTEGER REFERENCES folders(id) ON DELETE CASCADE,
   description TEXT NOT NULL, content TEXT DEFAULT '', content_format TEXT DEFAULT 'text',
@@ -176,6 +177,8 @@ class Store:
             c.execute("ALTER TABLE folders ADD COLUMN output_target TEXT DEFAULT 'current'")
         if "output_target_arg" not in fcols:
             c.execute("ALTER TABLE folders ADD COLUMN output_target_arg TEXT DEFAULT ''")
+        if "abbrev_prefix" not in fcols:
+            c.execute("ALTER TABLE folders ADD COLUMN abbrev_prefix TEXT DEFAULT ''")
         cols = self._columns("phrases")
         if "output_target" not in cols:
             c.execute("ALTER TABLE phrases ADD COLUMN output_target TEXT DEFAULT 'current'")
@@ -263,10 +266,10 @@ class Store:
         with self.lock, self.conn:
             cur = self.conn.execute(
                 "INSERT INTO folders (parent_id,name,sort,enabled,apps_include,apps_exclude,password_hash,"
-                "show_in_popup,notes,output_target,output_target_arg) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "show_in_popup,notes,output_target,output_target_arg,abbrev_prefix) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (f.parent_id, f.name, f.sort, int(f.enabled), f.apps_include, f.apps_exclude,
                  f.password_hash, int(f.show_in_popup), f.notes, f.output_target or "current",
-                 f.output_target_arg or ""))
+                 f.output_target_arg or "", f.abbrev_prefix or ""))
             f.id = cur.lastrowid
             if f.triggers:
                 self._write_owner_triggers("folder_id", f.id, f.triggers)
@@ -277,10 +280,11 @@ class Store:
         with self.lock, self.conn:
             self.conn.execute(
                 "UPDATE folders SET parent_id=?,name=?,sort=?,enabled=?,apps_include=?,apps_exclude=?,"
-                "password_hash=?,show_in_popup=?,notes=?,output_target=?,output_target_arg=? WHERE id=?",
+                "password_hash=?,show_in_popup=?,notes=?,output_target=?,output_target_arg=?,abbrev_prefix=? "
+                "WHERE id=?",
                 (f.parent_id, f.name, f.sort, int(f.enabled), f.apps_include, f.apps_exclude,
                  f.password_hash, int(f.show_in_popup), f.notes, f.output_target or "current",
-                 f.output_target_arg or "", f.id))
+                 f.output_target_arg or "", f.abbrev_prefix or "", f.id))
         self._changed("folder", f.id)
 
     # folder / special-folder triggers (a folder trigger opens that folder's popup menu)
@@ -317,7 +321,8 @@ class Store:
                       show_in_popup=bool(r["show_in_popup"]),
                       notes=(r["notes"] or "") if "notes" in keys else "",
                       output_target=(r["output_target"] or "current") if "output_target" in keys else "current",
-                      output_target_arg=(r["output_target_arg"] or "") if "output_target_arg" in keys else "")
+                      output_target_arg=(r["output_target_arg"] or "") if "output_target_arg" in keys else "",
+                      abbrev_prefix=(r["abbrev_prefix"] or "") if "abbrev_prefix" in keys else "")
 
     def get_folder(self, folder_id: int) -> Folder | None:
         with self.lock:
@@ -455,6 +460,11 @@ class Store:
             r = self.conn.execute("SELECT * FROM phrases WHERE description=? COLLATE NOCASE LIMIT 1",
                                   (description,)).fetchone()
             return self._row_phrase(r) if r else None
+
+    def phrase_folder_map(self) -> dict[int, int | None]:
+        """phrase id -> folder id, without loading the phrases."""
+        with self.lock:
+            return {r[0]: r[1] for r in self.conn.execute("SELECT id, folder_id FROM phrases")}
 
     def phrases(self, folder_id: int | None = ...) -> list[Phrase]:  # type: ignore[assignment]
         with self.lock:

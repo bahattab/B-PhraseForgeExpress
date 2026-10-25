@@ -148,12 +148,13 @@ def test_folder_and_special_editors(app, store):
     from phraseforge.ui.trigger_editor import default_row
     f = store.add_folder(Folder("Work"))
     fe = FolderEditor(store); fe.load(f.id)
-    fe.description.setText("Office"); fe.notes.setPlainText("note!")
+    fe.description.setText("Office"); fe.notes.setPlainText("note!"); fe.prefix.setText(" ; ")
     fe.triggers.set_rows([dict(default_row("hotkey"), value="ctrl+shift+w")]); fe._mark_dirty()
     assert fe.save()
     assert store.get_folder(f.id).name == "Office"
     fe2 = FolderEditor(store); fe2.load(f.id)
     assert fe2.notes.toPlainText() == "note!"
+    assert fe2.prefix.text() == ";" and store.get_folder(f.id).abbrev_prefix == ";"
     assert set(fe2.triggers.get_rows()[0]["value"].split("+")) == {"ctrl", "shift", "w"}
 
     cc = SpecialFolderEditor(store, "clipboard_cache")

@@ -39,7 +39,8 @@ from typing import Callable
 from phraseforge.host import ExpansionContext, ExpansionRequest
 from phraseforge.models import Trigger, TriggerKind
 from phraseforge.platform import keys as K
-from phraseforge.triggers.autotext import AutotextMatcher, Match, typed_len
+from phraseforge.triggers.autotext import (AutotextMatcher, Match, apply_group_prefixes, folder_prefixes,
+                                           typed_len)
 from phraseforge.triggers.hotkeys import HotkeyMatcher
 
 log = logging.getLogger(__name__)
@@ -55,6 +56,9 @@ COMMAND_HOTKEY_SETTINGS = {
     # Settings > Hotkeys page
     "hotkey.new_phrase": "new_phrase",
     "hotkey.edit_last_phrase": "edit_last_phrase",
+    "hotkey.new_phrase_from_clipboard": "new_phrase_from_clipboard",
+    "hotkey.toggle_expansion": "toggle_expansion",
+    "hotkey.open_main": "open_main",
     "hotkey.open_settings": "open_settings",
     "hotkey.clear_clipboard_cache": "clear_clipboard_cache",
     "hotkey.pause": "pause",
@@ -274,7 +278,12 @@ class TriggerManager:
         lead = s("autotext.leading_delimiters", "")
         self.matcher.set_leading(lead or None)
         self.matcher.set_delimiters(s("autotext.delimiters", " \t\n.,;:!?)]}'\""))
-        self.matcher.load(st.triggers(TriggerKind.AUTOTEXT, owners="all") + st.triggers(TriggerKind.REGEX))
+        autotexts = st.triggers(TriggerKind.AUTOTEXT, owners="all")
+        try:
+            autotexts = apply_group_prefixes(autotexts, st.phrase_folder_map(), folder_prefixes(st.folders()))
+        except Exception:
+            log.exception("group prefixes not applied")
+        self.matcher.load(autotexts + st.triggers(TriggerKind.REGEX))
         self.hotkeys.clear()
         for key, cmd in COMMAND_HOTKEY_SETTINGS.items():
             self.hotkeys.register(s(key, ""), ("cmd", cmd))
