@@ -1198,6 +1198,8 @@ class SettingsDialog(QDialog):
         gl.addWidget(_row(self.onenote_target, browse, stretch=False))
         gl.addWidget(QLabel("Hotkey: send the clipboard to OneNote"))
         gl.addWidget(self.bind("onenote.send_hotkey", Hotkey()))
+        gl.addWidget(QLabel("Hotkey: new quick note (Ctrl+Enter sends it here)"))
+        gl.addWidget(self.bind("onenote.quick_note_hotkey", Hotkey()))
         lay.addWidget(g)
 
         g, gl = _group("Screen clipping")

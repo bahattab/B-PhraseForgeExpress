@@ -22,6 +22,7 @@ class Tray(QSystemTrayIcon):
     onenote_send_clipboard = Signal()   # "Send clipboard to OneNote"
     onenote_clip = Signal()             # "Screen clip to OneNote"
     file_search = Signal()              # "Search files"
+    quick_note = Signal()               # "New quick note" (like ONENOTEM)
 
     def __init__(self, icon_: QIcon | None = None, parent=None):
         super().__init__(icon_ or app_icon(), parent)
@@ -43,6 +44,7 @@ class Tray(QSystemTrayIcon):
                                                self.onenote_send_clipboard.emit)
         self.onenote_clip_action = m.addAction(icon("on_clip"), tr("Screen clip to OneNote"),
                                                self.onenote_clip.emit)
+        self.quick_note_action = m.addAction(icon("sticky_notes"), tr("New quick note"), self.quick_note.emit)
         m.addSeparator()
         self.stats_action = m.addAction(icon("statistics"), tr("Statistics"), self.show_statistics.emit)
         m.addAction(icon("settings"), tr("Settings"), self.settings.emit)

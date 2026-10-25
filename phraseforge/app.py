@@ -387,6 +387,7 @@ class PhraseForgeApp(QObject):
         self.popup = None
         self.clip_window = None
         self.file_window = None
+        self.quick_note = None
         self.file_index = None
 
         from phraseforge.macros import MacroEngine
@@ -443,6 +444,7 @@ class PhraseForgeApp(QObject):
         # Microsoft OneNote (Settings > OneNote hotkeys, tray menu)
         reg("onenote_send_clipboard", lambda arg, hwnd: self._jobs.put(("call", self._onenote_send_clipboard, hwnd)))
         reg("onenote_clip", lambda arg, hwnd: self._jobs.put(("call", self._onenote_clip, hwnd)))
+        reg("quick_note", lambda arg, hwnd: post(self._show_quick_note))   # like ONENOTEM "New Quick Note"
         # Microsoft Sticky Notes
         reg("open_sticky_notes", lambda arg, hwnd: self._open_sticky_notes())
         # Search files (Listary-style launcher, phraseforge/filesearch.py)
@@ -476,6 +478,25 @@ class PhraseForgeApp(QObject):
         self._onenote().send(text=text, image_png=image, target=ref,
                              title=text.strip().splitlines()[0][:60] if text.strip() else "Clipboard image")
         self.poster.posted.emit(lambda: self.tray.notify("Sent to OneNote", ref or "Quick Notes"))
+
+    def _show_quick_note(self):
+        from phraseforge.ui.quick_note import QuickNoteWindow
+        if self.quick_note is None:
+            self.quick_note = QuickNoteWindow()
+            self.quick_note.send_to_onenote.connect(
+                lambda text: self._jobs.put(("call", lambda: self._onenote_send_note(text), 0)))
+            self.quick_note.save_as_phrase.connect(self._quick_note_phrase)
+        self.quick_note.show_note()
+
+    def _onenote_send_note(self, text: str):
+        ref = self.store.setting("onenote.default_target", "")
+        self._onenote().send(text=text, target=ref, title=text.strip().splitlines()[0][:60])
+        self.poster.posted.emit(lambda: self.tray.notify("Sent to OneNote", ref or "Quick Notes"))
+
+    def _quick_note_phrase(self, text: str):
+        from phraseforge.models import Phrase
+        self.store.add_phrase(Phrase(text.strip().splitlines()[0][:60], text))
+        self.tray.notify("PhraseForge", "Quick note saved as a phrase")
 
     def _onenote_clip(self):
         """Screen clipping: PhraseForge's region selector (or OneNote's own clipping tool),
@@ -618,7 +639,7 @@ class PhraseForgeApp(QObject):
         self.tray.settings.connect(self.show_settings)
         if hasattr(self.tray, "show_statistics"):
             self.tray.show_statistics.connect(self.show_statistics)
-        for sig in ("onenote_send_clipboard", "onenote_clip", "open_sticky_notes", "file_search"):   # OneNote / Sticky Notes items
+        for sig in ("onenote_send_clipboard", "onenote_clip", "open_sticky_notes", "file_search", "quick_note"):   # OneNote / Sticky Notes items
             if hasattr(self.tray, sig):
                 getattr(self.tray, sig).connect(lambda _=None, c=sig: self.on_command(c))
         self.tray.quit.connect(self.quit)

@@ -98,6 +98,7 @@ SCHEMA: dict[str, str] = {
     "onenote.default_target": "",          # page/section path; "" = Quick Notes
     "onenote.send_hotkey": "",
     "onenote.clip_hotkey": "",
+    "onenote.quick_note_hotkey": "",       # "New quick note" window
     # Search files (Listary-style launcher)
     "filesearch.enabled": "1",
     "filesearch.hotkey": "ctrl+alt+f",
