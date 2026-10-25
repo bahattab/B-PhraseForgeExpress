@@ -45,6 +45,7 @@ SCHEMA: dict[str, str] = {
     "hotkey.new_phrase_from_clipboard": "",
     "hotkey.toggle_expansion": "",
     "hotkey.open_main": "",
+    "tray.left_click_popup": "0",   # PhraseExpress: left click on the tray icon opens the phrase menu
     "hotkey.open_settings": "",
     "popup.hotkey": DEFAULT_SETTINGS["popup.hotkey"],
     "hotkey.clear_clipboard_cache": "",

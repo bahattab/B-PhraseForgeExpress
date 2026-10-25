@@ -658,6 +658,7 @@ class PhraseForgeApp(QObject):
             if hasattr(self.tray, sig):
                 getattr(self.tray, sig).connect(lambda _=None, c=sig: self.on_command(c))
         self.tray.quit.connect(self.quit)
+        self._apply_tray_click()
         self.tray.show()
 
     def _build_triggers(self):
@@ -773,6 +774,12 @@ class PhraseForgeApp(QObject):
             self.learner.invalidate_phrases()
         if kind in ("phrase", "folder", "setting"):
             self.poster.posted.emit(self.triggers.reload)
+        if kind == "setting" and getattr(self, "tray", None) is not None:
+            self.poster.posted.emit(self._apply_tray_click)
+
+    def _apply_tray_click(self) -> None:
+        on = self.store.setting("tray.left_click_popup", "0") == "1"
+        self.tray.left_click = "popup" if on else "main"
 
     # ---------------------------------------------------------- trigger callbacks (any thread)
     def on_expand_request(self, req: ExpansionRequest):

@@ -610,6 +610,7 @@ class SettingsDialog(QDialog):
         gl.addWidget(self.bind("features.detect_unwanted_replacements", QCheckBox("Detect unwanted text replacements")))
         gl.addSpacing(6)
         gl.addWidget(self.bind("features.disable_capslock", QCheckBox("Disable CAPSLOCK key to prevent unintended activation")))
+        gl.addWidget(self.bind("tray.left_click_popup", QCheckBox("Left click on the tray icon opens the phrase menu (Ctrl+click pauses, Alt+click opens settings)")))
         gl.addWidget(self.bind("autocorrect.capitalize_sentences", QCheckBox("Capitalize first letter of sentences")))
         gl.addWidget(self.bind("autocorrect.two_initial_capitals", QCheckBox("COrrect TWo INitial CApitals")))
         lay.addWidget(g)

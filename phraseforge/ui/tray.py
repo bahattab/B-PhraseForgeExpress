@@ -1,9 +1,9 @@
 """System tray icon and its menu."""
 from __future__ import annotations
 
-from PySide6.QtCore import QMetaMethod, Signal
+from PySide6.QtCore import QMetaMethod, Qt, Signal
 from PySide6.QtGui import QAction, QFont, QIcon
-from PySide6.QtWidgets import QMenu, QSystemTrayIcon
+from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from phraseforge.ui.i18n import tr
 from phraseforge.ui.iconset import icon
@@ -97,9 +97,38 @@ class Tray(QSystemTrayIcon):
         self.setToolTip("PhraseForge (paused)" if paused else "PhraseForge")
         self.toggle_pause.emit(paused)
 
-    def _on_activated(self, reason) -> None:
-        if reason in (QSystemTrayIcon.DoubleClick, QSystemTrayIcon.Trigger):
+    # What a plain left click does: "main" (open the main window) or "popup"
+    # (open the phrase menu, as PhraseExpress does). Set from tray.left_click.
+    left_click = "main"
+
+    def handle_click(self, reason, modifiers=None) -> str:
+        """Act on a tray click and return what was done (for tests).
+
+        PhraseExpress (published docs): Ctrl+click disables it for a while,
+        Alt+click opens the settings, double-click opens the main window and a
+        left click opens the phrase menu.
+        """
+        if modifiers is None:
+            modifiers = QApplication.keyboardModifiers()
+        if reason == QSystemTrayIcon.DoubleClick:
             self.open_main.emit()
+            return "main"
+        if reason != QSystemTrayIcon.Trigger:
+            return ""
+        if modifiers & Qt.ControlModifier:
+            self.pause_action.toggle()
+            return "pause"
+        if modifiers & Qt.AltModifier:
+            self.settings.emit()
+            return "settings"
+        if self.left_click == "popup":
+            self.show_popup.emit()
+            return "popup"
+        self.open_main.emit()
+        return "main"
+
+    def _on_activated(self, reason) -> None:
+        self.handle_click(reason)
 
     def notify(self, title: str, text: str, ms: int = 4000) -> None:
         self.showMessage(title, text, QSystemTrayIcon.Information, ms)
