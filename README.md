@@ -4,7 +4,36 @@ An original text expander for Windows with the feature set of PhraseExpress,
 screen OCR through Capture2Text, and import of TextExpander snippet exports.
 See [SPEC.md](SPEC.md) for the design and [macro reference](phraseforge/macros/README.md).
 
-## Run
+## Install (Windows)
+
+Download from the repository's **Releases** page (or the latest *Windows build* run under
+**Actions > Artifacts**):
+
+- `PhraseForge-Setup-<version>.exe`: installer. No admin rights needed; adds Start menu and
+  optional desktop shortcut and "start with Windows". Uninstall from Windows Settings > Apps.
+  Your phrases in `%APPDATA%\PhraseForge` are kept when you uninstall.
+- `PhraseForge-portable.exe`: single file, no install. Starts a little slower.
+- `PhraseForge-<version>-win64.zip`: the same program as a folder.
+
+Windows SmartScreen may warn because the files are not code-signed: click
+**More info > Run anyway**.
+
+## Build the EXE and installer yourself
+
+GitHub Actions builds everything on each push (`.github/workflows/windows-build.yml`);
+pushing a tag such as `v0.3.0` also publishes a GitHub Release. To build locally on Windows
+(needs Python 3.12 and [Inno Setup 6](https://jrsoftware.org/isinfo.php)):
+
+```
+python -m pip install -r requirements-build.txt
+python packaging\make_icon.py
+pyinstaller --noconfirm packaging\phraseforge.spec          # dist\PhraseForge\PhraseForge.exe
+set PF_ONEFILE=1 && pyinstaller --noconfirm packaging\phraseforge.spec   # dist\PhraseForge-portable.exe
+"%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" /DAppVersion=0.3.0 packaging\installer.iss
+dist\PhraseForge\PhraseForge.exe --self-test               # writes selftest.txt in the data folder
+```
+
+## Run from source
 
 The Python environment lives outside this Google Drive folder, at
 `C:\venvs\phraseforge`, so Drive doesn't sync thousands of package files and
@@ -12,7 +41,7 @@ Qt's DLLs stay under Windows' path-length limit. Recreate it with:
 
 ```
 python -m venv C:\venvs\phraseforge
-C:\venvs\phraseforge\Scripts\python -m pip install PySide6 pytest openpyxl httpx
+C:\venvs\phraseforge\Scripts\python -m pip install -r requirements-build.txt
 ```
 
 Easiest: double-click `PhraseForge.bat` (works from anywhere). Or run from this folder:

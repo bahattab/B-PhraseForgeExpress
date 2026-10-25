@@ -6,6 +6,7 @@ __pycache__/
 build/
 dist/
 *.spec
+!packaging/phraseforge.spec
 
 # Local data, logs, secrets (never commit)
 *.db

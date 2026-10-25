@@ -1116,6 +1116,9 @@ class PhraseForgeApp(QObject):
 
 
 def main(argv: list[str] | None = None) -> int:
+    if "--self-test" in (argv if argv is not None else sys.argv):
+        from phraseforge.selftest import run
+        return run()
     logging.basicConfig(filename=str(paths.data_dir() / "phraseforge.log"), level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     sys.excepthook = lambda *a: log.error("".join(traceback.format_exception(*a)))
