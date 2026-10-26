@@ -14,6 +14,13 @@ on:
 
 permissions:
   contents: write   # needed only to publish a GitHub Release
+  actions: read     # lets SignPath read this run's artifacts
+
+# Code signing through SignPath runs only after the repository variable
+# SIGNPATH_ORGANIZATION_ID and the secret SIGNPATH_API_TOKEN are set
+# (see docs/CODE_SIGNING.md). Without them the build stays unsigned.
+env:
+  SIGN: ${{ vars.SIGNPATH_ORGANIZATION_ID != '' && github.event_name != 'pull_request' }}
 
 jobs:
   build:
@@ -59,6 +66,41 @@ jobs:
           PF_ONEFILE: "1"
         run: pyinstaller --noconfirm packaging/phraseforge.spec
 
+      - name: Upload unsigned EXEs for signing
+        id: unsigned-exe
+        if: env.SIGN == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-exe
+          path: |
+            dist/B-PhraseForgeExpress/B-PhraseForgeExpress.exe
+            dist/B-PhraseForgeExpress-portable.exe
+          if-no-files-found: error
+
+      - name: Sign EXEs (SignPath)
+        if: env.SIGN == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'B-PhraseForgeExpress' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG || 'release-signing' }}
+          artifact-configuration-slug: exe
+          github-artifact-id: ${{ steps.unsigned-exe.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed-exe
+
+      - name: Put the signed EXEs in place
+        if: env.SIGN == 'true'
+        run: |
+          Copy-Item signed-exe\B-PhraseForgeExpress\B-PhraseForgeExpress.exe dist\B-PhraseForgeExpress\ -Force
+          Copy-Item signed-exe\B-PhraseForgeExpress-portable.exe dist\ -Force
+          foreach ($f in @("dist\B-PhraseForgeExpress\B-PhraseForgeExpress.exe", "dist\B-PhraseForgeExpress-portable.exe")) {
+            $sig = Get-AuthenticodeSignature $f
+            Write-Host "$f : $($sig.Status) $($sig.SignerCertificate.Subject)"
+            if ($sig.Status -ne "Valid") { throw "$f is not validly signed" }
+          }
+
       - name: Self-test the EXEs
         run: |
           foreach ($exe in @("dist\B-PhraseForgeExpress\B-PhraseForgeExpress.exe", "dist\B-PhraseForgeExpress-portable.exe")) {
@@ -79,6 +121,37 @@ jobs:
         run: |
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=${{ steps.ver.outputs.version }}" packaging\installer.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+
+      - name: Upload unsigned Setup for signing
+        id: unsigned-setup
+        if: env.SIGN == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-setup
+          path: dist/B-PhraseForgeExpress-Setup-${{ steps.ver.outputs.version }}.exe
+          if-no-files-found: error
+
+      - name: Sign Setup (SignPath)
+        if: env.SIGN == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'B-PhraseForgeExpress' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG || 'release-signing' }}
+          artifact-configuration-slug: setup
+          github-artifact-id: ${{ steps.unsigned-setup.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed-setup
+
+      - name: Put the signed Setup in place
+        if: env.SIGN == 'true'
+        run: |
+          $f = "dist\B-PhraseForgeExpress-Setup-${{ steps.ver.outputs.version }}.exe"
+          Copy-Item "signed-setup\$(Split-Path $f -Leaf)" $f -Force
+          $sig = Get-AuthenticodeSignature $f
+          Write-Host "$f : $($sig.Status) $($sig.SignerCertificate.Subject)"
+          if ($sig.Status -ne "Valid") { throw "$f is not validly signed" }
 
       - name: Test silent install, self-test and uninstall
         run: |

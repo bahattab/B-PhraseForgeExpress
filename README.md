@@ -15,8 +15,8 @@ Download from the repository's **Releases** page (or the latest *Windows build* 
 - `B-PhraseForgeExpress-portable.exe`: single file, no install. Starts a little slower.
 - `B-PhraseForgeExpress-<version>-win64.zip`: the same program as a folder.
 
-Windows SmartScreen may warn because the files are not code-signed: click
-**More info > Run anyway**.
+Windows SmartScreen may warn because the files are not code-signed yet: click
+**More info > Run anyway**. See the [code signing policy](docs/CODE_SIGNING.md).
 
 ## Build the EXE and installer yourself
 
