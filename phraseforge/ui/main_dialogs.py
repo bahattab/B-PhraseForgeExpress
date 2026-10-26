@@ -265,6 +265,92 @@ class MoveToDialog(QDialog):
         return it.data(0, Qt.UserRole) if it else None
 
 
+# ======================================================================= new phrase info
+class NewPhraseInfoDialog(QDialog):
+    """PhraseExpress "Enter additional information for the new phrase...": description,
+    triggers (same rows as the phrase editor), "Execute only in specific programs" and
+    "Save in folder" with a folder picker. Shown after the Create-new-phrase hotkey when
+    Settings > Display "Prompt for additional information..." is on."""
+
+    def __init__(self, store: Store, description: str = "", folder_id: int | None = None, parent=None):
+        super().__init__(parent)
+        from phraseforge.ui.trigger_editor import TriggerList
+        self.store = store
+        self.setWindowTitle("Enter additional information for the new phrase...")
+        self.resize(560, 240)
+        lay = QVBoxLayout(self)
+        cap = QLabel("<b><u>D</u>escription</b>")
+        lay.addWidget(cap)
+        self.description = QLineEdit(description)
+        cap.setBuddy(self.description)
+        lay.addWidget(self.description)
+        self.trigger_list = TriggerList("Trigger")
+        lay.addWidget(self.trigger_list)
+        self.trigger_list.set_rows([])
+        self.only_programs = QCheckBox("Execute only in specific programs")
+        lay.addWidget(self.only_programs)
+        self.programs = QLineEdit()
+        self.programs.setPlaceholderText("Program file names, e.g. winword.exe, outlook.exe")
+        self.programs.setVisible(False)
+        self.only_programs.toggled.connect(self.programs.setVisible)
+        lay.addWidget(self.programs)
+        row = QHBoxLayout()
+        row.addSpacing(30)
+        row.addWidget(QLabel("Save in folder"))
+        self.folder = QComboBox()
+        self.folder.setProperty("pf_user", True)        # the user's folder names
+        self.folder.setMinimumWidth(180)
+        self._fill_folders(folder_id)
+        row.addWidget(self.folder)
+        self.pick = QToolButton()
+        self.pick.setIcon(icon("folder"))
+        self.pick.setToolTip("Select target folder...")
+        self.pick.clicked.connect(self._pick_folder)
+        row.addWidget(self.pick)
+        row.addStretch(1)
+        lay.addLayout(row)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+        self.description.setFocus()
+        self.description.selectAll()
+
+    def _fill_folders(self, select_id) -> None:
+        self.folder.clear()
+        self.folder.addItem("Phrases", None)
+
+        def walk(parent_id, depth):
+            for f in self.store.folders(parent_id):
+                self.folder.addItem("    " * depth + f.name, f.id)
+                walk(f.id, depth + 1)
+        walk(None, 1)
+        self.set_folder(select_id)
+
+    def set_folder(self, folder_id) -> None:
+        i = self.folder.findData(folder_id)
+        self.folder.setCurrentIndex(max(0, i))
+
+    def _pick_folder(self) -> None:
+        dlg = MoveToDialog(self.store, "", parent=self)
+        dlg.setWindowTitle("Select target folder...")
+        dlg.copy.setVisible(False)
+        if dlg.exec():
+            self.set_folder(dlg.target())
+
+    def folder_id(self):
+        return self.folder.currentData()
+
+    def phrase(self, content: str = "") -> Phrase:
+        """The new phrase described by the dialog (not yet stored)."""
+        desc = self.description.text().strip() or (content.strip().splitlines() or ["New phrase"])[0][:60]
+        p = Phrase(desc, content, folder_id=self.folder_id())
+        if self.only_programs.isChecked():
+            p.apps_include = self.programs.text().strip()
+        p.triggers = self.trigger_list.triggers()
+        return p
+
+
 # ======================================================================= find & replace
 class FindReplaceDialog(QDialog):
     """Find (and replace) across phrases of a scope (folder subtree, or all)."""

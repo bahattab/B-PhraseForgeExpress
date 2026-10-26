@@ -122,7 +122,7 @@ def test_foreground_app_and_executor_with_fakes():
         def save_all(self): calls.append(("save",)); return ["snap"]
         def restore(self, s): calls.append(("restore", s))
         def set_text(self, t): calls.append(("clip", t))
-        def set_html(self, h, p): calls.append(("html", h, p))
+        def set_html(self, h, p, formats="html"): calls.append(("html", h, p))
         def set_image(self, p): calls.append(("img", p))
 
     busy = []

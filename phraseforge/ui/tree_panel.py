@@ -1,7 +1,8 @@
 """Left-hand phrase tree (and the middle phrase list used by the three-column layout).
 
-Item data: ROLE_KIND in {"last_used", "clipboard_cache", "clip", "root", "folder", "phrase", "up"},
-ROLE_ID the folder/phrase/clipboard-entry id (None for special nodes).
+Item data: ROLE_KIND in {"last_used", "clipboard_cache", "clip", "sticky_notes", "note", "root",
+"folder", "phrase", "up"}, ROLE_ID the folder/phrase/clipboard-entry id, the Sticky Notes note id
+for "note" (None for special nodes).
 """
 from __future__ import annotations
 
@@ -15,13 +16,50 @@ from PySide6.QtWidgets import (
 
 from phraseforge.db import Store
 from phraseforge.models import Phrase
+from phraseforge.ui.i18n import tr
 from phraseforge.ui.iconset import icon
 
 ROLE_KIND = Qt.UserRole
 ROLE_ID = Qt.UserRole + 1
 
-SPECIAL = ("last_used", "clipboard_cache", "root")
-LAST_USED_MAX = 20
+SPECIAL = ("last_used", "clipboard_cache", "sticky_notes", "root")
+LAST_USED_MAX = 20      # default; Settings > Features > Last used phrases (last_used.max)
+
+
+def sticky_available() -> bool:
+    """Microsoft Sticky Notes installed (tests monkeypatch this)."""
+    try:
+        from phraseforge import stickynotes
+        return stickynotes.installed()
+    except Exception:
+        return False
+
+
+def sticky_notes() -> list:
+    """The user's sticky notes, newest first, read-only (tests monkeypatch this)."""
+    try:
+        from phraseforge import stickynotes
+        return stickynotes.read_notes()
+    except Exception:
+        return []
+
+
+def show_sticky(store: Store) -> bool:
+    return _on(store, "stickynotes.show_folder") and sticky_available()
+
+
+def _on(store: Store, key: str, default: str = "1") -> bool:
+    try:
+        return (store.setting(key, default) or default) == "1"
+    except Exception:
+        return default == "1"
+
+
+def last_used_max(store: Store) -> int:
+    try:
+        return max(1, int(store.setting("last_used.max", str(LAST_USED_MAX)) or LAST_USED_MAX))
+    except ValueError:
+        return LAST_USED_MAX
 
 
 def item_colors(store: Store) -> dict[str, str]:
@@ -100,6 +138,7 @@ class TreePanel(QWidget):
         self.store = store
         self.unlocked: set[int] = set()
         self.folders_only = False
+        self.notes_by_id: dict = {}          # Sticky Notes shown in the tree, by note id
         self.flat = False
         self.search_text = ""
         self.search_scope = "all"
@@ -147,7 +186,7 @@ class TreePanel(QWidget):
         return it
 
     def _special(self, kind: str, text: str, icon_name: str) -> QTreeWidgetItem:
-        it = QTreeWidgetItem([text])
+        it = QTreeWidgetItem([tr(text)])
         it.setIcon(0, icon(icon_name))
         it.setData(0, ROLE_KIND, kind)
         it.setData(0, ROLE_ID, None)
@@ -159,7 +198,7 @@ class TreePanel(QWidget):
     def last_used_phrases(self) -> list[Phrase]:
         ps = [p for p in self.store.phrases() if p.last_used and not self.locked(p.folder_id)]
         ps.sort(key=lambda p: p.last_used or "", reverse=True)
-        return ps[:LAST_USED_MAX]
+        return ps[:last_used_max(self.store)]
 
     def matches(self, p: Phrase, q: str) -> bool:
         q = q.lower()
@@ -190,17 +229,30 @@ class TreePanel(QWidget):
                 if not self.locked(p.folder_id) and self.matches(p, q):
                     tree.addTopLevelItem(self.make_phrase_item(p, colors))
         else:
-            lu = self._special("last_used", "Last Used", "last_used")
-            tree.addTopLevelItem(lu)
-            if not self.folders_only:
-                for p in self.last_used_phrases():
-                    child = self.make_phrase_item(p, colors)
-                    child.setData(0, ROLE_KIND, "phrase")
-                    child.setFlags(child.flags() & ~Qt.ItemIsDragEnabled & ~Qt.ItemIsEditable)
-                    lu.addChild(child)
+            # Settings > Features: "Last used phrases folder" / "Clipboard Cache"
+            if _on(self.store, "features.last_used_folder"):
+                lu = self._special("last_used", "Last Used", "last_used")
+                tree.addTopLevelItem(lu)
+                if not _on(self.store, "features.usage_statistics"):
+                    # usage is not recorded while statistics are off, so the folder stays empty
+                    tip = "Last Used stays empty while Settings > Features > Usage statistics is off."
+                    lu.setToolTip(0, tip)
+                    hint = QTreeWidgetItem(["(turn on Usage statistics to fill this folder)"])
+                    hint.setData(0, ROLE_KIND, "hint")
+                    hint.setToolTip(0, tip)
+                    hint.setFlags(Qt.NoItemFlags)
+                    hint.setForeground(0, QBrush(QColor("#8a8a8a")))
+                    lu.addChild(hint)
+                if not self.folders_only:
+                    for p in self.last_used_phrases():
+                        child = self.make_phrase_item(p, colors)
+                        child.setData(0, ROLE_KIND, "phrase")
+                        child.setFlags(child.flags() & ~Qt.ItemIsDragEnabled & ~Qt.ItemIsEditable)
+                        lu.addChild(child)
             cc = self._special("clipboard_cache", "Clipboard Cache", "clipboard_cache")
-            tree.addTopLevelItem(cc)
-            if not self.folders_only:
+            if _on(self.store, "clipboard_history.enabled"):
+                tree.addTopLevelItem(cc)
+            if not self.folders_only and _on(self.store, "clipboard_history.enabled"):
                 for e in self.store.clipboard_entries(50):
                     text = " ".join(e.text.split())[:90] or "(empty)"
                     c = QTreeWidgetItem([text])
@@ -210,6 +262,21 @@ class TreePanel(QWidget):
                     c.setToolTip(0, e.text[:500])
                     c.setFlags(c.flags() & ~Qt.ItemIsDragEnabled & ~Qt.ItemIsDropEnabled)
                     cc.addChild(c)
+            # Microsoft Sticky Notes (read-only view of the user's notes)
+            self.notes_by_id = {}
+            if show_sticky(self.store):
+                sn = self._special("sticky_notes", "Sticky Notes", "sticky_notes")
+                tree.addTopLevelItem(sn)
+                if not self.folders_only:
+                    for n in sticky_notes():
+                        self.notes_by_id[n.id] = n
+                        c = QTreeWidgetItem([n.title])
+                        c.setIcon(0, icon("sticky_notes"))
+                        c.setData(0, ROLE_KIND, "note")
+                        c.setData(0, ROLE_ID, n.id)
+                        c.setToolTip(0, n.text[:500])
+                        c.setFlags(c.flags() & ~Qt.ItemIsDragEnabled & ~Qt.ItemIsDropEnabled & ~Qt.ItemIsEditable)
+                        sn.addChild(c)
             root = self._special("root", "Phrases", "phrases_root")
             tree.addTopLevelItem(root)
             if self.flat and not self.folders_only:
@@ -329,6 +396,16 @@ class PhraseList(QWidget):
                 it.setData(0, ROLE_KIND, "clip")
                 it.setData(0, ROLE_ID, e.id)
                 self.list.addTopLevelItem(it)
+        elif kind == "sticky_notes":
+            phrases, folders = [], []
+            for n in sticky_notes():
+                self.panel.notes_by_id[n.id] = n
+                it = QTreeWidgetItem([n.title])
+                it.setIcon(0, icon("sticky_notes"))
+                it.setData(0, ROLE_KIND, "note")
+                it.setData(0, ROLE_ID, n.id)
+                it.setToolTip(0, n.text[:500])
+                self.list.addTopLevelItem(it)
         elif kind in ("folder", "root"):
             fid = folder_id if kind == "folder" else None
             folders = [] if self.panel.locked(fid) else sorted_folders(self.store, fid)
@@ -359,7 +436,7 @@ class PhraseList(QWidget):
             self.list.resizeColumnToContents(c)
 
     def _sel(self, cur, _prev) -> None:
-        if cur is not None and cur.data(0, ROLE_KIND) in ("phrase", "clip"):
+        if cur is not None and cur.data(0, ROLE_KIND) in ("phrase", "clip", "note"):
             self.selected.emit(cur.data(0, ROLE_KIND), cur.data(0, ROLE_ID))
 
     def _open(self, it, _col) -> None:

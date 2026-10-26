@@ -20,9 +20,10 @@ from phraseforge.db import Store, json_dumps
 from phraseforge.models import AutotextMode, Folder, OutputMode, Phrase, Trigger, TriggerKind
 
 _FOLDER_FIELDS = ("name", "parent_id", "sort", "enabled", "apps_include", "apps_exclude", "password_hash",
-                  "show_in_popup")
+                  "show_in_popup", "notes", "output_target", "output_target_arg", "abbrev_prefix")
 _PHRASE_FIELDS = ("description", "content", "content_format", "output_mode", "apps_include", "apps_exclude",
-                  "enabled", "sort", "notes", "use_count", "last_used", "created")
+                  "enabled", "sort", "notes", "use_count", "last_used", "created",
+                  "output_target", "output_target_arg")
 
 
 # ------------------------------------------------------------------ JSON
@@ -49,6 +50,8 @@ def import_dict(store: Store, d: dict, into_folder_id: int | None = None) -> dic
             if parent in id_map:
                 kw = {k: f[k] for k in _FOLDER_FIELDS if k in f and k != "parent_id"}
                 nf = store.add_folder(Folder(**kw, parent_id=id_map[parent]))
+                if f.get("triggers"):
+                    store.set_folder_triggers(nf.id, [Trigger.from_dict(t) for t in f["triggers"]])
                 id_map[f["id"]] = nf.id
                 pending.remove(f)
                 progressed = True
@@ -61,12 +64,12 @@ def import_dict(store: Store, d: dict, into_folder_id: int | None = None) -> dic
         kw = {k: p[k] for k in _PHRASE_FIELDS if k in p}
         if "output_mode" in kw:
             kw["output_mode"] = OutputMode(kw["output_mode"])
-        triggers = [Trigger(kind=TriggerKind(t["kind"]), value=t["value"], mode=AutotextMode(t.get("mode", "delimiter")),
-                            case_sensitive=bool(t.get("case_sensitive", False)),
-                            word_start_only=bool(t.get("word_start_only", True)),
-                            enabled=bool(t.get("enabled", True))) for t in p.get("triggers", [])]
-        store.add_phrase(Phrase(**kw, folder_id=id_map.get(p.get("folder_id"), into_folder_id),
-                                tags=list(p.get("tags", [])), triggers=triggers))
+        triggers = [Trigger.from_dict(t) for t in p.get("triggers", [])]
+        np_ = store.add_phrase(Phrase(**kw, folder_id=id_map.get(p.get("folder_id"), into_folder_id),
+                                      tags=list(p.get("tags", [])), triggers=triggers))
+        for lang, v in (p.get("versions") or {}).items():
+            if isinstance(v, dict):
+                store.set_phrase_version(np_.id, lang, v.get("content", ""), v.get("content_format", "text"))
         n += 1
     for v in d.get("vars", []):
         store.set_var(v["name"], v["value"], v.get("scope", "global"))
@@ -201,6 +204,41 @@ def list_backups(directory: str | Path | None = None) -> list[Path]:
     return sorted(d.glob("phrases-*.db"), reverse=True)
 
 
+def prune_backups(directory: str | Path | None, keep: int) -> list[Path]:
+    """Delete all but the newest `keep` automatic backups; returns the deleted files."""
+    removed = []
+    for old in list_backups(directory)[max(1, keep):]:
+        try:
+            old.unlink()
+            removed.append(old)
+        except OSError:
+            pass
+    return removed
+
+
+def auto_backup(store: Store, force: bool = False, min_hours: float = 24) -> Path | None:
+    """Settings > Phrase File/Database > Backup: keep the last N versions.
+    Runs at start and then daily (or whenever force=True). Returns the new file or None."""
+    if store.setting("backup.keep_enabled", "1") != "1":
+        return None
+    directory = store.setting("backup.directory", "") or None
+    if not force:
+        last = store.setting("backup.local_last", "")
+        try:
+            if last and (datetime.now() - datetime.fromisoformat(last)).total_seconds() < min_hours * 3600:
+                return None
+        except ValueError:
+            pass
+    target = backup(store, directory)
+    store.set_setting("backup.local_last", datetime.now().isoformat(timespec="seconds"))
+    try:
+        keep = int(store.setting("backup.keep_count", "7") or 7)
+    except ValueError:
+        keep = 7
+    prune_backups(directory, keep)
+    return target
+
+
 # ---------------------------------------------------------------- dispatch by file type
 def import_file(store: Store, path: str | Path, into_folder_id: int | None = None):
     """Import .json, .csv, a .textexpander group file, or a folder of .txt files."""
@@ -208,6 +246,9 @@ def import_file(store: Store, path: str | Path, into_folder_id: int | None = Non
     ext = p.suffix.lower()
     if p.is_dir():
         return import_text_folder(store, p, into_folder_id)
+    if ext in (".pexdb", ".pexdbhub", ".pxp"):
+        from phraseforge.importers.phraseexpress import check_phraseexpress_file
+        check_phraseexpress_file(p)          # encrypted: explains how to export a CSV
     if ext == ".json":
         return import_json(store, p, into_folder_id)
     if ext == ".csv":

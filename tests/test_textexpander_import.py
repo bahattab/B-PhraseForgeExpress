@@ -60,3 +60,27 @@ def test_import_textexpander_plist(tmp_path):
     ph = s.phrases(rep.folder_id)[0]
     assert ph.triggers[0].value == "ty;"
     assert s.folders()[0].name == "Support"
+
+
+def test_import_macos_text_replacements_plist(tmp_path):
+    import plistlib
+
+    from phraseforge.db import Store
+    from phraseforge.importers.textexpander import import_any
+    path = tmp_path / "Text Substitutions.plist"
+    path.write_bytes(plistlib.dumps([
+        {"phrase": "On my way!", "shortcut": "omw"},
+        {"phrase": "Line one\nLine two", "shortcut": "ll"},
+        {"phrase": "", "shortcut": "empty"},
+        "not a dict",
+    ]))
+    store = Store(":memory:")
+    try:
+        rep = import_any(store, path)
+        assert (rep.imported, rep.skipped) == (2, 2)
+        ps = {p.description: p for p in store.phrases(rep.folder_id)}
+        assert ps["On my way!"].content == "On my way!" and ps["On my way!"].triggers[0].value == "omw"
+        assert ps["Line one"].content == "Line one\nLine two" and "macos" in ps["Line one"].tags
+        assert store.get_folder(rep.folder_id).name == "Text Substitutions"
+    finally:
+        store.close()

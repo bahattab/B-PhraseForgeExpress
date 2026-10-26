@@ -14,7 +14,8 @@ from typing import Callable
 from PySide6.QtCore import QLocale, Qt, QUrl
 from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtWidgets import (
-    QAbstractButton, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFontDialog,
+    QAbstractButton, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
+    QFontDialog,
     QFormLayout, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget,
     QMenu, QMessageBox, QPlainTextEdit, QPushButton, QRadioButton, QScrollArea, QSlider, QSpinBox,
     QStackedWidget, QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QColorDialog,
@@ -29,10 +30,32 @@ from phraseforge.ui.settings_schema import (
 )
 
 APP = "PhraseForge"
+# Engines as listed in PhraseExpress 18 (AI text processing / Language Translation)
 PROVIDERS = [("OpenAI", "openai", "https://platform.openai.com/api-keys"),
-             ("Anthropic", "anthropic", "https://console.anthropic.com/settings/keys"),
-             ("Ollama (local)", "ollama", "https://ollama.com/download"),
+             ("Anthropic (Claude)", "anthropic", "https://console.anthropic.com/settings/keys"),
+             ("GPT4All", "gpt4all", "https://www.nomic.ai/gpt4all"),
+             ("Ollama", "ollama", "https://ollama.com/download"),
              ("OpenRouter", "openrouter", "https://openrouter.ai/keys")]
+TRANSLATION_PROVIDERS = [("Deepl", "deepl", "https://www.deepl.com/your-account/keys")] + PROVIDERS
+LOCAL_ENGINES = {"ollama": "Ollama server URL:", "gpt4all": "GPT4All server URL (Settings > Enable local API server):"}
+# PhraseExpress 18 "Phrase menu contents" (order of the columns in a phrase row)
+MENU_CONTENTS = [("Description - QuickKey", "description_quickkey"),
+                 ("QuickKey - Description", "quickkey_description"),
+                 ("Autotext - Description - QuickKey", "autotext_description_quickkey"),
+                 ("Autotext - QuickKey - Description", "autotext_quickkey_description"),
+                 ("QuickKey - Description - Autotext", "quickkey_description_autotext"),
+                 ("Description - Autotext - QuickKey", "description_autotext_quickkey"),
+                 ("Description - Autotext - Hotkey - QuickKey", "description_autotext_hotkey_quickkey"),
+                 ("QuickKey - Autotext - Description - Hotkey", "quickkey_autotext_description_hotkey"),
+                 ("Autotext - QuickKey - Description - Hotkey", "autotext_quickkey_description_hotkey"),
+                 ("Autotext - Description - QuickKey - Hotkey", "autotext_description_quickkey_hotkey"),
+                 ("Description - Hotkey - QuickKey", "description_hotkey_quickkey"),
+                 ("QuickKey - Description - Hotkey", "quickkey_description_hotkey"),
+                 # older PhraseForge values (kept so existing settings still load)
+                 ("Description", "description"), ("Description - Autotext", "description_autotext"),
+                 ("Description - Autotext - Hotkey", "description_autotext_hotkey")]
+TRANSLATION_LANGUAGES = ["English", "Arabic", "Chinese", "Dutch", "French", "German", "Italian", "Japanese",
+                         "Korean", "Polish", "Portuguese", "Russian", "Spanish", "Swedish", "Turkish", "Ukrainian"]
 
 # (page key, tree text, parent key or None)
 PAGES: list[tuple[str, str, str | None]] = [
@@ -50,6 +73,8 @@ PAGES: list[tuple[str, str, str | None]] = [
     ("translation_glossaries", "Glossaries", "translation"),
     ("network", "Network", None),
     ("ocr", "Screen OCR", None),
+    ("onenote", "OneNote", None),
+    ("file_search", "Search files", None),
     ("phrase_menu", "Phrase Menu", None),
     ("phrase_menu_appearance", "Appearance", "phrase_menu"),
     ("phrase_menu_hotkeys", "Hotkeys", "phrase_menu"),
@@ -96,6 +121,11 @@ class DataCombo(QComboBox):
 
     def setCurrentText(self, text: str) -> None:  # noqa: N802 (Qt naming)
         self.set_value(text)
+
+
+def filesearch_defaults() -> str:
+    from phraseforge.filesearch import DEFAULT_WEB_KEYWORDS
+    return DEFAULT_WEB_KEYWORDS
 
 
 class Hotkey(HotkeyPicker):
@@ -210,12 +240,78 @@ class DelaySlider(QWidget):
         self._update(self.slider.value())
 
 
+class AppMethodTable(QWidget):
+    """Program -> paste method list for output.app_methods ({"winword.exe": "paste", ...})."""
+    METHODS = [("Type (key-by-key)", "type"), ("Paste (clipboard)", "paste")]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QHeaderView, QTableWidget
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(16, 0, 0, 0)
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels(["Program (exe)", "Method"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setFixedHeight(96)
+        lay.addWidget(self.table, 1)
+        col = QVBoxLayout()
+        add, rem = QPushButton("Add"), QPushButton("Remove")
+        for b in (add, rem):
+            b.setStyleSheet("min-width: 56px;")
+            col.addWidget(b)
+        col.addStretch(1)
+        lay.addLayout(col)
+        add.clicked.connect(lambda: self.add_row("", "paste", edit=True))
+        rem.clicked.connect(lambda: self.table.removeRow(self.table.currentRow())
+                            if self.table.currentRow() >= 0 else None)
+
+    def add_row(self, exe: str, method: str, edit: bool = False) -> None:
+        from PySide6.QtWidgets import QTableWidgetItem
+        r = self.table.rowCount()
+        self.table.insertRow(r)
+        self.table.setItem(r, 0, QTableWidgetItem(exe))
+        combo = DataCombo(self.METHODS)
+        combo.set_value(method if method in ("type", "paste") else "paste")
+        self.table.setCellWidget(r, 1, combo)
+        if edit:
+            self.table.setCurrentCell(r, 0)
+            self.table.editItem(self.table.item(r, 0))
+
+    def to_json(self) -> str:
+        out = {}
+        for r in range(self.table.rowCount()):
+            it = self.table.item(r, 0)
+            exe = (it.text() if it else "").strip().lower()
+            if exe:
+                out[exe] = self.table.cellWidget(r, 1).value()
+        return json.dumps(out, sort_keys=True)
+
+    def load_json(self, v: str) -> None:
+        self.table.setRowCount(0)
+        try:
+            data = json.loads(v or "{}")
+        except ValueError:
+            data = {}
+        for exe, method in sorted((data if isinstance(data, dict) else {}).items()):
+            self.add_row(str(exe), str(method))
+
+
 def _group(title: str) -> tuple[QGroupBox, QVBoxLayout]:
     g = QGroupBox(title)
     lay = QVBoxLayout(g)
     lay.setContentsMargins(12, 10, 12, 10)
     lay.setSpacing(7)
     return g, lay
+
+
+def _json_list(v: str) -> list[str]:
+    try:
+        data = json.loads(v or "[]")
+    except ValueError:
+        return []
+    return [str(x) for x in data if str(x).strip()] if isinstance(data, list) else []
 
 
 def _row(*widgets, stretch: bool = True) -> QWidget:
@@ -327,6 +423,7 @@ class SettingsDialog(QDialog):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
         self.tree = QTreeWidget()
+        self.tree.setProperty("pf_i18n", True)          # page names are UI text
         self.tree.setObjectName("SettingsTree")
         self.tree.setHeaderHidden(True)
         self.tree.setFixedWidth(183)
@@ -534,7 +631,7 @@ class SettingsDialog(QDialog):
     def _page_features(self) -> QWidget:
         w, lay = self._page()
         g, gl = _group("General Features")
-        self.f_clipboard = self.bind("features.clipboard_cache", QCheckBox("Clipboard Cache"))
+        self.f_clipboard = self.bind("clipboard_history.enabled", QCheckBox("Clipboard Cache"))
         gl.addWidget(_row(self.f_clipboard, _icon_button("properties", "Clipboard Cache options",
                                                          self._clipboard_options)))
         self.f_last_used = self.bind("features.last_used_folder", QCheckBox("Last used phrases folder"))
@@ -543,9 +640,9 @@ class SettingsDialog(QDialog):
         stats = self.bind("features.usage_statistics", QCheckBox("Usage statistics"))
         gl.addWidget(_row(stats, _icon_button("info", "Count phrase usage to show the time you saved.")))
         gl.addWidget(self.bind("features.detect_unwanted_replacements", QCheckBox("Detect unwanted text replacements")))
-        gl.addWidget(self.bind("features.suggest_gender", QCheckBox("Suggest gender-aware wording")))
         gl.addSpacing(6)
         gl.addWidget(self.bind("features.disable_capslock", QCheckBox("Disable CAPSLOCK key to prevent unintended activation")))
+        gl.addWidget(self.bind("tray.left_click_popup", QCheckBox("Left click on the tray icon opens the phrase menu (Ctrl+click pauses, Alt+click opens settings)")))
         gl.addWidget(self.bind("autocorrect.capitalize_sentences", QCheckBox("Capitalize first letter of sentences")))
         gl.addWidget(self.bind("autocorrect.two_initial_capitals", QCheckBox("COrrect TWo INitial CApitals")))
         lay.addWidget(g)
@@ -587,10 +684,14 @@ class SettingsDialog(QDialog):
         w, lay = self._page()
         g, gl = _group("Hotkeys")
         gl.setSpacing(3)
-        rows = [("hotkey.new_phrase", "Create a new phrase"),
+        rows = [("hotkey.open_main", f"Open {APP}"),
+                ("hotkey.toggle_expansion", "Enable/disable text expansion"),
+                ("hotkey.new_phrase", "Create a new phrase"),
+                ("hotkey.new_phrase_from_clipboard", "Create a new phrase from the clipboard"),
                 ("hotkey.edit_last_phrase", "Edit the last used phrase"),
                 ("hotkey.open_settings", f"Open the {APP} settings window"),
                 ("popup.hotkey", "Open tray popup menu"),
+                ("hotkey.popup_search", "Open popup menu in search mode"),
                 ("hotkey.clear_clipboard_cache", "Empty clipboard cache"),
                 ("clipboard_history.hotkey", "Show clipboard history")]
         for key, text in rows:
@@ -619,6 +720,11 @@ class SettingsDialog(QDialog):
         lay.addStretch(1)
         return w
 
+    def _set_active_language(self, v: str) -> None:
+        self.active_lang.clear()
+        self.active_lang.addItems(["Default"] + _json_list(self.store.setting("phrase.languages", "[]")))
+        self.active_lang.setCurrentText(v or "Default")
+
     # ---- Display
     def _page_display(self) -> QWidget:
         w, lay = self._page()
@@ -631,14 +737,43 @@ class SettingsDialog(QDialog):
         g, gl = _group("Display")
         gl.addWidget(self.bind("display.prompt_after_new_phrase",
                                QCheckBox("Prompt for additional information after creating a new phrase")))
-        gl.addWidget(self.bind("display.highlight_unedited_languages",
-                               QCheckBox("Highlight unedited language versions")))
-        gl.addSpacing(40)
+        gl.addWidget(self.bind("display.highlight_unedited", QCheckBox("Highlight unedited language versions")))
+        gl.addSpacing(10)
         show_all = QPushButton("Show all dialogs")
         show_all.setObjectName("WideButton")
         show_all.setToolTip("Show again the messages you chose not to show.")
         show_all.clicked.connect(self._show_all_dialogs)
         gl.addWidget(show_all)
+        lay.addWidget(g)
+        g, gl = _group("Phrase languages")
+        gl.addWidget(QLabel("Languages for phrase versions (one per line):"))
+        self.phrase_langs = QPlainTextEdit()
+        self.phrase_langs.setFixedHeight(60)
+        gl.addWidget(self.phrase_langs)
+        self.bind_custom("phrase.languages",
+                         lambda: json.dumps([x.strip() for x in self.phrase_langs.toPlainText().splitlines()
+                                             if x.strip()], ensure_ascii=False),
+                         lambda v: self.phrase_langs.setPlainText("\n".join(_json_list(v))))
+        self.active_lang = QComboBox()
+        self.active_lang.setEditable(True)
+        self.active_lang.setFixedWidth(198)
+        self.bind_custom("phrase.active_language",
+                         lambda: "" if self.active_lang.currentText().strip() in ("", "Default")
+                         else self.active_lang.currentText().strip(),
+                         self._set_active_language)
+        gl.addWidget(_row("Version inserted by autotext and hotkeys:", self.active_lang))
+        lay.addWidget(g)
+        g, gl = _group("Dates in phrases")
+        self.date_lang = self.bind("date.lang", DataCombo([("English", "en"), ("Arabic", "ar"), ("German", "de")]))
+        self.date_lang.setFixedWidth(198)
+        gl.addWidget(_row("Month and day names:", self.date_lang))
+        self.date_cal = self.bind("date.calendar", DataCombo([("Gregorian", "gregorian"),
+                                                              ("Hijri (tabular)", "hijri")]))
+        self.date_cal.setFixedWidth(198)
+        gl.addWidget(_row("Calendar:", self.date_cal))
+        self.date_digits = self.bind("date.digits", DataCombo([("0123456789", "latin"), ("٠١٢٣٤٥٦٧٨٩", "arabic")]))
+        self.date_digits.setFixedWidth(198)
+        gl.addWidget(_row("Digits:", self.date_digits))
         lay.addWidget(g)
         g, gl = _group("Color theme")
         self.theme = self.bind("ui.theme", DataCombo([("Adapt to system setting", "system"), ("Light", "light"),
@@ -711,11 +846,6 @@ class SettingsDialog(QDialog):
         gl.addWidget(_row(self.backup_dir, _icon_button("folder", "Choose folder", self._pick_backup_dir),
                           stretch=False))
         lay.addWidget(g)
-        g, gl = _group("Phrase contents caching")
-        gl.addWidget(self.bind("cache.mode", RadioGroup([
-            ("None", "none"), ("Preload all phrases on program launch (faster insertion)", "preload"),
-            ("Cache after first use (faster recurring insertion)", "first_use")])))
-        lay.addWidget(g)
         g, gl = _group("Phrase file")
         db = QLineEdit(str(paths.db_path()))
         db.setReadOnly(True)
@@ -734,7 +864,7 @@ class SettingsDialog(QDialog):
     # ---- AI
     @staticmethod
     def _key_setting(provider: str) -> str:
-        return "ai.ollama_url" if provider == "ollama" else f"ai.{provider}_key"
+        return f"ai.{provider}_url" if provider in LOCAL_ENGINES else f"ai.{provider}_key"
 
     def _page_ai(self) -> QWidget:
         w, lay = self._page()
@@ -777,10 +907,10 @@ class SettingsDialog(QDialog):
         self._ai_current = prov
         if prov not in self._ai_keys:
             self._ai_keys[prov] = self.store.setting(self._key_setting(prov), SCHEMA.get(self._key_setting(prov), ""))
-        ollama = prov == "ollama"
-        self.ai_key.setEchoMode(QLineEdit.Normal if ollama else QLineEdit.Password)
+        local = prov in LOCAL_ENGINES
+        self.ai_key.setEchoMode(QLineEdit.Normal if local else QLineEdit.Password)
         self.ai_key.setText(self._ai_keys[prov])
-        self.ai_key_label.setText("Ollama server URL:" if ollama else "Your API key:")
+        self.ai_key_label.setText(LOCAL_ENGINES.get(prov, "Your API key:"))
         name = next(t for t, v, _ in PROVIDERS if v == prov).split(" (")[0]
         self.ai_visit.setText(f"Visit {name}")
         self.ai_status.setText("")
@@ -837,16 +967,17 @@ class SettingsDialog(QDialog):
             data = []
         for p in data:
             if isinstance(p, dict) and p.get("name"):
-                it = self._preset_item(p["name"], p.get("prompt", ""))
+                it = self._preset_item(p["name"], p.get("prompt", ""), p.get("model", ""))
                 self.presets_list.addItem(it)
         if self.presets_list.count():
             self.presets_list.setCurrentRow(0)
 
     @staticmethod
-    def _preset_item(name: str, prompt: str):
+    def _preset_item(name: str, prompt: str, model: str = ""):
         from PySide6.QtWidgets import QListWidgetItem
         it = QListWidgetItem(name)
         it.setData(Qt.UserRole, prompt)
+        it.setData(Qt.UserRole + 1, "" if (model or "").lower() == "auto" else (model or ""))
         it.setToolTip(prompt)
         return it
 
@@ -854,25 +985,58 @@ class SettingsDialog(QDialog):
         out = []
         for i in range(self.presets_list.count()):
             it = self.presets_list.item(i)
-            out.append({"name": it.text(), "prompt": it.data(Qt.UserRole) or ""})
+            row = {"name": it.text(), "prompt": it.data(Qt.UserRole) or ""}
+            if it.data(Qt.UserRole + 1):
+                row["model"] = it.data(Qt.UserRole + 1)
+            out.append(row)
         return json.dumps(out, ensure_ascii=False)
 
-    def _preset_dialog(self, name: str = "", prompt: str = "") -> tuple[str, str] | None:
+    def _preset_dialog(self, name: str = "", prompt: str = "", model: str = "",
+                       run: bool = True):
+        """PhraseExpress "AI Presets": Preset label, Instruction ("Prompt") and, behind the
+        gear button, Model (Auto = the engine's model) with Reset to defaults.
+        Returns (label, prompt, model) or None; run=False returns the dialog (tests)."""
+        from phraseforge.ai import DEFAULT_MODELS
         d = QDialog(self)
-        d.setWindowTitle("AI preset")
-        d.resize(460, 260)
-        f = QFormLayout(d)
-        n = QLineEdit(name)
-        p = QPlainTextEdit(prompt)
-        f.addRow("Name:", n)
-        f.addRow("Instruction:", p)
+        d.setWindowTitle("AI Presets")
+        d.resize(480, 200)
+        v = QVBoxLayout(d)
+        v.addWidget(QLabel("Preset label:"))
+        d.label_edit = QLineEdit(name)
+        v.addWidget(d.label_edit)
+        v.addWidget(QLabel('Instruction ("Prompt"):'))
+        d.prompt_edit = QPlainTextEdit(prompt)
+        d.prompt_edit.setFixedHeight(60)
+        gear = _icon_button("settings", "Model options", lambda: d.model_box.setVisible(not d.model_box.isVisible()))
+        v.addWidget(_row(d.prompt_edit, gear, stretch=False))
+        d.model_box = QWidget()
+        mb = QVBoxLayout(d.model_box)
+        mb.setContentsMargins(0, 0, 0, 0)
+        mb.addWidget(QLabel("Model:"))
+        d.model_combo = QComboBox()
+        d.model_combo.setEditable(True)
+        d.model_combo.addItems(["Auto"] + sorted(set(DEFAULT_MODELS.values())))
+        d.model_combo.setCurrentText(model or "Auto")
+        reset = QPushButton("Reset to defaults")
+        reset.clicked.connect(lambda: d.model_combo.setCurrentText("Auto"))
+        mb.addWidget(_row(d.model_combo, reset))
+        d.model_box.setVisible(bool(model))
+        v.addWidget(d.model_box)
         ok, cancel = QPushButton("OK"), QPushButton("Cancel")
         ok.setDefault(True)
         ok.clicked.connect(d.accept)
         cancel.clicked.connect(d.reject)
-        f.addRow(_row(ok, cancel))
-        if d.exec() == QDialog.Accepted and n.text().strip():
-            return n.text().strip(), p.toPlainText().strip()
+        v.addWidget(_row(QWidget(), ok, cancel))
+
+        def result():
+            m = d.model_combo.currentText().strip()
+            return d.label_edit.text().strip(), d.prompt_edit.toPlainText().strip(), \
+                "" if m.lower() in ("", "auto") else m
+        d.result_tuple = result
+        if not run:
+            return d
+        if d.exec() == QDialog.Accepted and d.label_edit.text().strip():
+            return result()
         return None
 
     def _add_preset(self) -> None:
@@ -884,10 +1048,11 @@ class SettingsDialog(QDialog):
     def _edit_preset(self) -> None:
         it = self.presets_list.currentItem()
         if it:
-            r = self._preset_dialog(it.text(), it.data(Qt.UserRole) or "")
+            r = self._preset_dialog(it.text(), it.data(Qt.UserRole) or "", it.data(Qt.UserRole + 1) or "")
             if r:
                 it.setText(r[0])
                 it.setData(Qt.UserRole, r[1])
+                it.setData(Qt.UserRole + 1, r[2])
                 it.setToolTip(r[1])
 
     def _delete_preset(self) -> None:
@@ -910,16 +1075,25 @@ class SettingsDialog(QDialog):
         w, lay = self._page()
         lay.setSpacing(6)
         lay.addWidget(_wrap_label(f"{APP} can translate phrases and text into other languages using a 3rd party "
-                                  "AI service. The API key is shared with the AI text processing page."))
+                                  "AI service. If an API key is required, it can be obtained from the service "
+                                  "provider."))
         lay.addSpacing(8)
         lay.addWidget(QLabel("Translation Engine:"))
-        self.tr_provider = self.bind("translation.provider", DataCombo([(t, v) for t, v, _ in PROVIDERS]))
+        self.tr_provider = self.bind("translation.provider",
+                                     DataCombo([(t, v) for t, v, _ in TRANSLATION_PROVIDERS]))
         self.tr_provider.setFixedWidth(181)
-        visit = QPushButton("Visit provider")
-        visit.setObjectName("WideButton")
-        visit.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(next(
-            u for _, v, u in PROVIDERS if v == self.tr_provider.value()))))
-        lay.addWidget(_row(self.tr_provider, visit))
+        self.tr_visit = QPushButton("Visit provider")
+        self.tr_visit.setObjectName("WideButton")
+        self.tr_visit.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(next(
+            u for _, v, u in TRANSLATION_PROVIDERS if v == self.tr_provider.value()))))
+        lay.addWidget(_row(self.tr_provider, self.tr_visit))
+        self.tr_key_label = QLabel("API key:")
+        lay.addWidget(self.tr_key_label)
+        self.tr_key = QLineEdit()           # same key store as the AI page (one key per engine)
+        self.tr_key.setEchoMode(QLineEdit.Password)
+        self.tr_key.setMinimumWidth(518)
+        self.tr_key.textEdited.connect(self._translation_key_edited)
+        lay.addWidget(self.tr_key)
         self.tr_status = QLabel()
         self.tr_status.setWordWrap(True)
         lay.addWidget(self.tr_status)
@@ -927,14 +1101,32 @@ class SettingsDialog(QDialog):
         self.tr_provider.currentIndexChanged.connect(lambda _i: self._update_translation_status())
         return w
 
-    def _update_translation_status(self) -> None:
+    def _translation_key_edited(self, text: str) -> None:
         prov = self.tr_provider.value()
-        key = self._ai_keys.get(prov) if prov in self._ai_keys else self.store.setting(self._key_setting(prov), "")
-        if prov == "ollama":
-            self.tr_status.setText(f"Uses the local Ollama server at {key or SCHEMA['ai.ollama_url']}.")
+        if getattr(self, "_ai_current", "") == prov:
+            self.ai_key.setText(text.strip())
+        self._ai_keys[prov] = text.strip()
+        self._update_translation_status(reload_key=False)
+
+    def _update_translation_status(self, reload_key: bool = True) -> None:
+        prov = self.tr_provider.value()
+        if getattr(self, "_ai_current", "") == prov and hasattr(self, "ai_key"):
+            self._ai_keys[prov] = self.ai_key.text().strip()
+        key = self._ai_keys.get(prov) if prov in self._ai_keys else \
+            self.store.setting(self._key_setting(prov), SCHEMA.get(self._key_setting(prov), ""))
+        if not hasattr(self, "tr_key"):
+            return
+        name = next(t for t, v, _ in TRANSLATION_PROVIDERS if v == prov).split(" (")[0]
+        self.tr_visit.setText(f"Visit {name}")
+        local = prov in LOCAL_ENGINES
+        self.tr_key_label.setText(LOCAL_ENGINES.get(prov, "API key:"))
+        self.tr_key.setEchoMode(QLineEdit.Normal if local else QLineEdit.Password)
+        if reload_key:
+            self.tr_key.setText(key or "")
+        if local:
+            self.tr_status.setText(f"Uses the local server at {key or SCHEMA.get(self._key_setting(prov), '')}.")
         else:
-            self.tr_status.setText("API key is set." if key else
-                                   "No API key for this engine yet. Enter it on the AI text processing page.")
+            self.tr_status.setText("API key is set." if key else "No API key for this engine yet.")
 
     def _page_translation_ignored(self) -> QWidget:
         w, lay = self._page()
@@ -956,9 +1148,14 @@ class SettingsDialog(QDialog):
         self.gloss_text = QPlainTextEdit()
         lay.addWidget(self.gloss_text, 1)
         self._glossaries: dict[str, str] = {}
+        self._gloss_langs: dict[str, list[str]] = {}
         self._gloss_current = ""
         self.gloss_combo.currentTextChanged.connect(self._switch_glossary)
         self.bind_custom("translation.glossaries", self._glossaries_json, self._set_glossaries)
+        self.bind_custom("translation.glossary_langs",
+                         lambda: json.dumps({k: v for k, v in self._gloss_langs.items() if k in self._glossaries},
+                                            ensure_ascii=False),
+                         self._set_glossary_langs)
         return w
 
     def _stash_glossary(self) -> None:
@@ -984,19 +1181,57 @@ class SettingsDialog(QDialog):
         self.gloss_combo.blockSignals(False)
         self._switch_glossary(self.gloss_combo.currentText())
 
+    def _set_glossary_langs(self, v: str) -> None:
+        try:
+            data = json.loads(v or "{}")
+        except ValueError:
+            data = {}
+        self._gloss_langs = {str(k): list(p)[:2] for k, p in data.items()
+                             if isinstance(p, (list, tuple)) and len(p) == 2} if isinstance(data, dict) else {}
+
+    def _glossary_dialog(self, name: str = "", src: str = "English", dst: str = "English", run: bool = True):
+        """PhraseExpress "New Glossary": Name, Source language, Target language."""
+        d = QDialog(self)
+        d.setWindowTitle("New Glossary" if not name else "Edit Glossary")
+        g = QGridLayout(d)
+        g.addWidget(QLabel("Name:"), 0, 0, 1, 2)
+        d.name_edit = QLineEdit(name)
+        g.addWidget(d.name_edit, 1, 0, 1, 2)
+        g.addWidget(QLabel("Source language:"), 2, 0)
+        g.addWidget(QLabel("Target language:"), 2, 1)
+        d.src_combo, d.dst_combo = QComboBox(), QComboBox()
+        for c, val in ((d.src_combo, src), (d.dst_combo, dst)):
+            c.setEditable(True)
+            c.addItems(TRANSLATION_LANGUAGES)
+            c.setCurrentText(val)
+        g.addWidget(d.src_combo, 3, 0)
+        g.addWidget(d.dst_combo, 3, 1)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(d.accept)
+        bb.rejected.connect(d.reject)
+        g.addWidget(bb, 4, 0, 1, 2)
+        d.result_tuple = lambda: (d.name_edit.text().strip(), d.src_combo.currentText().strip(),
+                                  d.dst_combo.currentText().strip())
+        if not run:
+            return d
+        return d.result_tuple() if d.exec() == QDialog.Accepted else None
+
     def _glossaries_json(self) -> str:
         self._stash_glossary()
         return json.dumps(self._glossaries, ensure_ascii=False)
 
-    def _add_glossary(self, name: str | None = None) -> None:
+    def _add_glossary(self, name: str | None = None, src: str = "", dst: str = "") -> None:
         if name is None:
-            name, ok = QInputDialog.getText(self, "Glossaries", "Glossary name:")
-            if not ok:
+            r = self._glossary_dialog()
+            if not r:
                 return
+            name, src, dst = r
         name = (name or "").strip()
         if name and name not in self._glossaries:
             self._stash_glossary()
             self._glossaries[name] = ""
+            if src and dst:
+                self._gloss_langs[name] = [src, dst]
             self.gloss_combo.addItem(name)
             self.gloss_combo.setCurrentText(name)
 
@@ -1004,11 +1239,16 @@ class SettingsDialog(QDialog):
         old = self.gloss_combo.currentText()
         if not old:
             return
-        new, ok = QInputDialog.getText(self, "Glossaries", "Glossary name:", text=old)
-        new = new.strip()
-        if ok and new and new != old and new not in self._glossaries:
+        src, dst = self._gloss_langs.get(old, ["English", "English"])
+        r = self._glossary_dialog(old, src, dst)
+        if not r:
+            return
+        new, src, dst = r
+        if new and (new == old or new not in self._glossaries):
             self._stash_glossary()
             self._glossaries[new] = self._glossaries.pop(old)
+            self._gloss_langs.pop(old, None)
+            self._gloss_langs[new] = [src, dst]
             self._gloss_current = new
             self.gloss_combo.setItemText(self.gloss_combo.currentIndex(), new)
 
@@ -1016,6 +1256,7 @@ class SettingsDialog(QDialog):
         name = self.gloss_combo.currentText()
         if name:
             self._glossaries.pop(name, None)
+            self._gloss_langs.pop(name, None)
             self._gloss_current = ""
             self.gloss_combo.removeItem(self.gloss_combo.currentIndex())
 
@@ -1040,19 +1281,9 @@ class SettingsDialog(QDialog):
         grid.addWidget(QLabel("Password:"), 1, 2, Qt.AlignRight)
         grid.addWidget(pw, 1, 3)
         lay.addWidget(g)
-        g, gl = _group("Check for updates")
-        chan = self.bind("updates.channel", DataCombo([("Important updates (recommended)", "important"),
-                                                       ("All updates", "all"), ("Never check", "never")]))
-        chan.setFixedWidth(240)
-        check = QPushButton("Check now")
-        check.setFixedWidth(214)
-        check.clicked.connect(lambda: QMessageBox.information(
-            self, "Check for updates", f"{APP} has no update server yet. You are running the installed version."))
-        gl.addWidget(_row(chan, QWidget(), check, stretch=False))
-        gl.addWidget(self.bind("updates.beta", QCheckBox("Include beta versions")))
-        auto = self.bind("updates.auto", QCheckBox("Stay up-to-date automatically"))
-        gl.addWidget(_row(auto, _icon_button("info", "Install important updates without asking.")))
-        lay.addWidget(g)
+        gl_note = _wrap_label("Used for AI, translation, HTTP macros and Google Drive sync. "
+                              "Leave Server empty to connect directly.")
+        lay.addWidget(gl_note)
         lay.addStretch(1)
         return w
 
@@ -1076,13 +1307,46 @@ class SettingsDialog(QDialog):
         gl.addWidget(_row(self.ocr_language, test))
         gl.addWidget(self.bind("ocr.keep_line_breaks", QCheckBox("Keep line breaks")))
         lay.addWidget(g)
-        g, gl = _group("Hotkey: recognize a screen area and copy the text")
+        g, gl = _group("Output")
+        gl.addWidget(self.bind("ocr.save_to_clipboard", QCheckBox("Save to clipboard")))
+        gl.addWidget(self.bind("ocr.show_popup", QCheckBox("Show the result in a notification")))
+        gl.addWidget(QLabel("Log captures to file (empty = off):"))
+        self.ocr_log_file = self.bind("ocr.log_file", QLineEdit())
+        gl.addWidget(_row(self.ocr_log_file, _icon_button("folder", "Browse", self._browse_ocr_log), stretch=False))
+        gl.addWidget(QLabel("Log format (${capture}, ${linebreak}, ${tab}, ${timestamp}):"))
+        self.ocr_log_format = self.bind("ocr.log_format", QLineEdit())
+        gl.addWidget(self.ocr_log_format)
+        lay.addWidget(g)
+        g, gl = _group("Hotkeys")
+        gl.addWidget(QLabel("Recognize a screen area and copy the text:"))
         self.ocr_hotkey = self.bind("ocr.hotkey", Hotkey())
         gl.addWidget(self.ocr_hotkey)
+        gl.addWidget(QLabel("Re-capture the last area:"))
+        gl.addWidget(self.bind("ocr.recapture_hotkey", Hotkey()))
+        gl.addWidget(QLabel("Quick-access languages (up to 3, comma separated):"))
+        self.ocr_quick = self.bind("ocr.quick_languages", QLineEdit())
+        gl.addWidget(self.ocr_quick)
+        for i in (1, 2, 3):
+            gl.addWidget(QLabel(f"Capture with quick-access language {i}:"))
+            gl.addWidget(self.bind(f"ocr.quick{i}_hotkey", Hotkey()))
+        lay.addWidget(g)
+        g, gl = _group("Replace")
+        gl.addWidget(_wrap_label("Fix recognised text with regular expressions, one rule per line: "
+                                 "find => replace. Start a section with [Arabic] to apply the rules "
+                                 "below it to that OCR language only."))
+        self.ocr_replace = self.bind("ocr.replace_rules", QPlainTextEdit())
+        self.ocr_replace.setPlaceholderText("\\s+([.,;:!?]) => \\1\n[Arabic]\nي => ی")
+        self.ocr_replace.setFixedHeight(90)
+        gl.addWidget(self.ocr_replace)
         lay.addWidget(g)
         lay.addStretch(1)
         self.ocr_path.editingFinished.connect(lambda: self._fill_ocr_languages(self.ocr_language.currentText()))
         return w
+
+    def _browse_ocr_log(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "OCR log file", self.ocr_log_file.text(), "Text files (*.txt);;All files (*)")
+        if path:
+            self.ocr_log_file.setText(path)
 
     def _browse_ocr(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Capture2Text_CLI.exe", self.ocr_path.text(), "Programs (*.exe)")
@@ -1124,6 +1388,160 @@ class SettingsDialog(QDialog):
         except Exception as e:  # show any OCR problem to the user
             self.show()
             QMessageBox.warning(self, "Screen OCR", str(e))
+
+    # ---- OneNote (desktop app through its official COM API)
+    def _page_onenote(self) -> QWidget:
+        w, lay = self._page()
+        g, gl = _group("Microsoft OneNote")
+        gl.addWidget(_wrap_label("PhraseForge talks to the OneNote desktop app through OneNote's own "
+                                 "programming interface. OneNote must be installed and opened once."))
+        gl.addWidget(QLabel("ONENOTE.EXE location:"))
+        self.onenote_exe = self.bind("onenote.exe", QLineEdit())
+        test = QPushButton("Test connection")
+        test.clicked.connect(self._test_onenote)
+        gl.addWidget(_row(self.onenote_exe, _icon_button("folder", "Browse", self._browse_onenote_exe), test,
+                          stretch=False))
+        gl.addWidget(self.bind("onenote.include_ocr",
+                               QCheckBox("When reading pages, include text OneNote recognised in pictures")))
+        lay.addWidget(g)
+
+        g, gl = _group("Send to OneNote")
+        gl.addWidget(QLabel("Default page or section (empty = a new page in Quick Notes):"))
+        self.onenote_target = self.bind("onenote.default_target", QLineEdit())
+        self.onenote_target.setPlaceholderText("Quick Notes")
+        browse = QPushButton("Browse...")
+        browse.clicked.connect(self._browse_onenote_target)
+        gl.addWidget(_row(self.onenote_target, browse, stretch=False))
+        gl.addWidget(QLabel("Hotkey: send the clipboard to OneNote"))
+        gl.addWidget(self.bind("onenote.send_hotkey", Hotkey()))
+        gl.addWidget(QLabel("Hotkey: new quick note (Ctrl+Enter sends it here)"))
+        gl.addWidget(self.bind("onenote.quick_note_hotkey", Hotkey()))
+        lay.addWidget(g)
+
+        g, gl = _group("Screen clipping")
+        gl.addWidget(QLabel("Hotkey: clip a screen area"))
+        gl.addWidget(self.bind("onenote.clip_hotkey", Hotkey()))
+        self.onenote_clip_tool = self.bind("onenote.clip_tool", DataCombo(
+            [("PhraseForge area selection", "phraseforge"), ("OneNote's own clipping tool", "onenote")]))
+        self.onenote_clip_action = self.bind("onenote.clip_action", DataCombo(
+            [("Add the picture to OneNote", "image"), ("Copy the recognised text (Capture2Text OCR)", "ocr"),
+             ("Both", "both")]))
+        gl.addWidget(_row("Tool:", self.onenote_clip_tool))
+        gl.addWidget(_row("Then:", self.onenote_clip_action))
+        lay.addWidget(g)
+        lay.addStretch(1)
+        return w
+
+    # ---- Search files (Listary-style launcher)
+    def _page_file_search(self) -> QWidget:
+        w, lay = self._page()
+        g, gl = _group("Search files")
+        gl.addWidget(_wrap_label("Find and open files, folders and programs by typing part of their name. "
+                                 "All words must match, in any order. Enter opens, Ctrl+Enter opens the "
+                                 "folder, Shift+Enter types the path into the program you were in."))
+        gl.addWidget(self.bind("filesearch.enabled", QCheckBox("Index files when PhraseForge starts")))
+        gl.addWidget(QLabel("Hotkey: open Search files"))
+        gl.addWidget(self.bind("filesearch.hotkey", Hotkey()))
+        gl.addWidget(self.bind("filesearch.double_ctrl", QCheckBox("Also open it by pressing Ctrl twice")))
+        self.filesearch_again = self.bind("filesearch.press_again", DataCombo(
+            [("Hide Search files", "hide"), ("Keep it open", "keep")]))
+        gl.addWidget(_row("When pressing again:", self.filesearch_again))
+        gl.addWidget(_wrap_label("In the window: Ctrl+N / Ctrl+P next and previous result, Ctrl+O actions. "
+                                 "Command keywords: opt, rebuild, cmd, cmda, psh, psha, uninstall, connections, hosts."))
+        lay.addWidget(g)
+        g, gl = _group("Filters")
+        gl.addWidget(_wrap_label("Type \"keyword:\" before your words, e.g. \"doc: report\". Built in: folder, file, "
+                                 "doc, pic, video, audio. Add your own, one per line: "
+                                 "keyword = Name; ext=pdf,docx; in=C:\\Folder; folders=0"))
+        self.filesearch_filters = self.bind("filesearch.filters", QPlainTextEdit())
+        self.filesearch_filters.setFixedHeight(60)
+        gl.addWidget(self.filesearch_filters)
+        lay.addWidget(g)
+        g, gl = _group("Priorities")
+        gl.addWidget(_wrap_label("One rule per line: high, normal, rare or skip, a colon, then a folder "
+                                 "(environment variables allowed) or re: and a regular expression for the "
+                                 "file name. High results come first, rare ones last, skip is not indexed."))
+        self.filesearch_prio = self.bind("filesearch.priorities", QPlainTextEdit())
+        self.filesearch_prio.setFixedHeight(110)
+        gl.addWidget(self.filesearch_prio)
+        lay.addWidget(g)
+        g, gl = _group("Custom commands")
+        gl.addWidget(_wrap_label("Type a keyword, a space and your text, then Enter. One per line: "
+                                 "keyword = Title | program | parameters | working folder. "
+                                 "{query} is the text you typed."))
+        self.filesearch_commands = self.bind("filesearch.commands", QPlainTextEdit())
+        self.filesearch_commands.setFixedHeight(60)
+        gl.addWidget(self.filesearch_commands)
+        lay.addWidget(g)
+        g, gl = _group("Favorite folders")
+        gl.addWidget(_wrap_label("Shown in Search files before you type anything. One folder per line."))
+        self.filesearch_favorites = self.bind("filesearch.favorites", QPlainTextEdit())
+        self.filesearch_favorites.setFixedHeight(60)
+        gl.addWidget(self.filesearch_favorites)
+        lay.addWidget(g)
+        g, gl = _group("Actions (Ctrl+O)")
+        gl.addWidget(_wrap_label("Built in: Open Containing Folder, Copy, Cut, Copy Path, Copy File Name. "
+                                 "Custom actions, one per line: Title = program | parameters | working folder. "
+                                 "{path}, {folder} and {name} are filled in."))
+        self.filesearch_actions = self.bind("filesearch.actions", QPlainTextEdit())
+        self.filesearch_actions.setFixedHeight(60)
+        gl.addWidget(self.filesearch_actions)
+        lay.addWidget(g)
+        g, gl = _group("Web search keywords")
+        gl.addWidget(_wrap_label("Type a keyword, a space and your words, e.g. \"g weather\", then Enter. "
+                                 "One keyword per line: keyword=address with {q} where the words go. "
+                                 "Empty = the built-in list: g, wiki, so, bing, b, gmail, twitter, youtube (yt), maps, amazon, ebay, imdb, facebook."))
+        self.filesearch_web = self.bind("filesearch.web_keywords", QPlainTextEdit())
+        self.filesearch_web.setFixedHeight(80)
+        self.filesearch_web.setPlaceholderText(filesearch_defaults())
+        gl.addWidget(self.filesearch_web)
+        lay.addWidget(g)
+        g, gl = _group("Folders to index")
+        gl.addWidget(_wrap_label("One folder per line. Empty = Start menu, Desktop, Documents and Downloads."))
+        self.filesearch_roots = self.bind("filesearch.roots", QPlainTextEdit())
+        self.filesearch_roots.setFixedHeight(90)
+        gl.addWidget(self.filesearch_roots)
+        add = QPushButton("Add folder...")
+        add.clicked.connect(self._add_filesearch_root)
+        gl.addWidget(_row(add))
+        gl.addWidget(self.bind("filesearch.include_hidden", QCheckBox("Include hidden and system files")))
+        self.filesearch_refresh = self.bind("filesearch.refresh_minutes", _spin(5, 1440))
+        gl.addWidget(_row("Rebuild the index every", self.filesearch_refresh, "minutes"))
+        lay.addWidget(g)
+        lay.addStretch(1)
+        return w
+
+    def _add_filesearch_root(self) -> None:
+        d = QFileDialog.getExistingDirectory(self, "Folder to index")
+        if d:
+            text = self.filesearch_roots.toPlainText().rstrip()
+            self.filesearch_roots.setPlainText((text + "\n" if text else "") + d)
+
+    def _browse_onenote_exe(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "ONENOTE.EXE", self.onenote_exe.text(), "Programs (*.exe)")
+        if path:
+            self.onenote_exe.setText(path)
+
+    def _browse_onenote_target(self) -> None:
+        from phraseforge.ui.onenote_picker import OneNotePicker, default_client_factory
+        dlg = OneNotePicker(self, mode="target", current=self.onenote_target.text(),
+                            client_factory=default_client_factory(self.onenote_exe.text().strip()))
+        if dlg.exec() and dlg.selected_ref() is not None:
+            self.onenote_target.setText(dlg.selected_ref())
+
+    def _test_onenote(self) -> None:
+        exe = self.onenote_exe.text().strip()
+
+        def count():
+            from phraseforge.onenote import OneNote, flatten
+            nodes = OneNote(exe).notebooks()
+            return (len(nodes), len(flatten(nodes, "section")), len(flatten(nodes, "page")))
+
+        ok, res = _run_with_wait(self, "Connecting to OneNote...", count)
+        if ok:
+            QMessageBox.information(self, "OneNote", "Connected: {} notebook(s), {} section(s), {} page(s).".format(*res))
+        else:
+            QMessageBox.warning(self, "OneNote", f"Could not connect to OneNote.\n\n{res}")
 
     # ---- Backup & Sync (Google Drive / folder)
     def _page_cloud(self) -> QWidget:
@@ -1315,17 +1733,15 @@ class SettingsDialog(QDialog):
         gl = QGridLayout(g)
         gl.setContentsMargins(12, 10, 12, 10)
         gl.setVerticalSpacing(6)
-        contents = self.bind("menu.contents", DataCombo([
-            ("Description - QuickKey", "description_quickkey"), ("Description", "description"),
-            ("Description - Autotext", "description_autotext"),
-            ("Description - Autotext - Hotkey", "description_autotext_hotkey")]))
+        contents = self.bind("menu.contents", DataCombo(MENU_CONTENTS))
         gl.addWidget(QLabel("Phrase menu contents:"), 0, 0)
         gl.addWidget(contents, 0, 1, 1, 3)
         sort = self.bind("menu.sort_enabled", QCheckBox("Sort by..."))
         by = self.bind("menu.sort_by", DataCombo([("Description", "description"), ("Autotext", "autotext"),
-                                                  ("Usage count", "usage"), ("Last used", "last_used"),
+                                                  ("Usage count", "usage"), ("Last use", "last_used"),
                                                   ("Creation date", "created")]))
-        method = self.bind("menu.sort_method", DataCombo([("Alphabetically", "alpha"), ("Numerically", "numeric")]))
+        method = self.bind("menu.sort_method", DataCombo([("Alphabetically", "alpha"), ("Length", "length"),
+                                                          ("Numerically", "numeric")]))
         order = self.bind("menu.sort_order", DataCombo([("Ascending", "asc"), ("Descending", "desc")]))
         gl.addWidget(sort, 1, 0)
         gl.addWidget(by, 1, 1)
@@ -1333,7 +1749,7 @@ class SettingsDialog(QDialog):
         gl.addWidget(order, 1, 3)
         r = 2
         for key, text in (("menu.show_preview", "Show phrase preview"),
-                          ("menu.show_language_buttons", "Show phrase language buttons"),
+                          ("menu.language_buttons", "Show phrase language buttons"),
                           ("menu.hide_restricted", "Hide program-restricted phrases")):
             gl.addWidget(self.bind(key, QCheckBox(text)), r, 0, 1, 4)
             r += 1
@@ -1346,11 +1762,19 @@ class SettingsDialog(QDialog):
         g = QGroupBox("Phrase Menu Position")
         gl2 = QGridLayout(g)
         gl2.setContentsMargins(12, 10, 12, 10)
-        pos = self.bind("menu.position", DataCombo([("next to the caret", "caret"),
-                                                    ("next to the mouse cursor", "mouse"),
+        pos = self.bind("menu.position", DataCombo([("next to the caret", "caret"), ("below the caret", "below"),
+                                                    ("above the caret", "above"),
+                                                    ("next to the mouse pointer", "mouse"),
+                                                    ("near task tray icon", "tray"),
+                                                    ("at a fixed position", "fixed"),
                                                     ("in the screen center", "center")]))
         pos.setFixedWidth(172)
-        fb = self.bind("menu.position_fallback", DataCombo([("Next to the mouse cursor", "mouse"),
+        fb = self.bind("menu.position_fallback", DataCombo([("Near the task tray", "tray"),
+                                                            ("Centered in current window", "window"),
+                                                            ("Centered in primary monitor", "primary"),
+                                                            ("Centered in current monitor", "monitor"),
+                                                            ("Next to the mouse cursor", "mouse"),
+                                                            ("Fixed", "fixed"),
                                                             ("In the screen center", "center")]))
         fb.setFixedWidth(196)
         gl2.addWidget(_row("Show phrase menus", pos), 0, 0)
@@ -1475,19 +1899,23 @@ class SettingsDialog(QDialog):
         gl.addWidget(QLabel("Phrase confirmation hotkey"))
         gl.addWidget(self.bind("menu.confirm_hotkey", KeyCombo()))
         gl.addWidget(QLabel('Phrase selection hotkey in the phrase menu ("QuickKey")'))
-        mod = self.bind("menu.quickkey_modifier", DataCombo([("None", "none"), ("Ctrl", "ctrl"), ("Alt", "alt"),
-                                                             ("Shift", "shift")]))
+        mod = self.bind("menu.quickkey_modifier", DataCombo([("None", "none"), ("Shift", "shift"), ("Alt", "alt"),
+                                                             ("Ctrl", "ctrl"), ("Win", "win")]))
         mod.setFixedWidth(84)
-        keys = self.bind("menu.quickkey_keys", DataCombo([("Numpad [Num1-Num9]", "numpad"),
-                                                          ("Number keys [1-9]", "digits"),
-                                                          ("Function keys [F1-F12]", "fkeys"),
-                                                          ("Letters [A-Z]", "letters")]))
+        keys = self.bind("menu.quickkey_keys", DataCombo([("None", "none"), ("Numbers [1-9]", "digits"),
+                                                          ("Numpad [Num1-Num9]", "numpad"),
+                                                          ("Letters [a-z]", "letters"),
+                                                          ("Function keys [F1-F12]", "fkeys")]))
         keys.setFixedWidth(260)
         gl.addWidget(_row(mod, keys))
         gl.addWidget(QLabel("Search in the phrase menu"))
         gl.addWidget(self.bind("menu.search_hotkey", KeyCombo()))
         gl.addWidget(QLabel("Language selection"))
-        gl.addWidget(self.bind("menu.language_hotkey", Hotkey()))
+        lm = self.bind("menu.language_modifier", DataCombo([("Ctrl + Left/Right", "ctrl"), ("Alt + Left/Right", "alt"),
+                                                           ("Shift + Left/Right", "shift"),
+                                                           ("Win + Left/Right", "win"), ("None", "none")]))
+        lm.setFixedWidth(200)
+        gl.addWidget(lm)
         lay.addWidget(g)
         lay.addStretch(1)
         return w
@@ -1495,11 +1923,16 @@ class SettingsDialog(QDialog):
     def _page_phrase_menu_quicksearch(self) -> QWidget:
         w, lay = self._page()
         g, gl = _group("Popup QuickSearch")
-        for key, text in (("quicksearch.descriptions", "Search within descriptions"),
-                          ("quicksearch.match_case", "Match case"),
-                          ("quicksearch.subfolders", "Include sub-folders"),
-                          ("quicksearch.quick_jump", "Quick Jump")):
-            gl.addWidget(self.bind(key, QCheckBox(text)))
+        for key, text, tip in (
+                ("quicksearch.descriptions", "Search within descriptions",
+                 "Checked: search descriptions and abbreviations. Unchecked: also search the phrase text."),
+                ("quicksearch.match_case", "Match case", ""),
+                ("quicksearch.subfolders", "Include sub-folders", "Unchecked: only phrases at the top level."),
+                ("quicksearch.quick_jump", "Quick Jump",
+                 "Checked: typing a letter jumps to the matching menu item. Unchecked: typing starts a search.")):
+            cb = self.bind(key, QCheckBox(text))
+            cb.setToolTip(tip)
+            gl.addWidget(cb)
         lay.addWidget(g)
         lay.addStretch(1)
         return w
@@ -1518,6 +1951,8 @@ class SettingsDialog(QDialog):
         self.learning = self.bind("learning.enabled", QCheckBox("Suggest entered sentences"))
         gl.addWidget(self.learning)
         gl.addWidget(self.bind("autocomplete.suggest_words", QCheckBox("Suggest entered words")))
+        gl.addWidget(self.bind("learning.remind_abbreviation", QCheckBox(
+            "Remind me of the autotext when I type a phrase that already exists")))
         lay.addWidget(g)
         g, gl = _group("AutoComplete Filter")
         for key, text in (("autocomplete.filter_letter", "Suggestions must begin with a letter"),
@@ -1601,14 +2036,23 @@ class SettingsDialog(QDialog):
                                                     ("Rich text", "rich"), ("HTML", "html")]))
         fmt.setFixedWidth(142)
         gl.addWidget(_row("Phrase output format:", fmt))
+        rich = self.bind("output.rich_formats", DataCombo([("HTML only", "html"), ("RTF & HTML", "rtf_html"),
+                                                           ("RTF only", "rtf")]))
+        rich.setFixedWidth(142)
+        gl.addWidget(_row("Formatted text as:", rich))
         gl.addSpacing(4)
         gl.addWidget(self.bind("output.restore_clipboard", QCheckBox("Restore clipboard contents after phrase insertion")))
         more = QLabel('<a href="more">(more)</a>')
         more.linkActivated.connect(lambda _l: QMessageBox.information(
             self, "Paste method", "Some programs accept text only by pasting or only by typing. "
             f"{APP} remembers the method that works for those programs."))
-        gl.addWidget(_row(self.bind("output.per_app_method",
-                                    QCheckBox("Specific paste method for several target applications")), more))
+        per_app = self.bind("output.per_app_method",
+                            QCheckBox("Specific paste method for several target applications"))
+        gl.addWidget(_row(per_app, more))
+        self.app_methods = AppMethodTable()
+        self.bind_custom("output.app_methods", self.app_methods.to_json, self.app_methods.load_json)
+        gl.addWidget(self.app_methods)
+        self.enable_with(per_app, self.app_methods)
         gl.addWidget(self.bind("output.force_focus", QCheckBox("Force focus change")))
         gl.addWidget(self.bind("output.minimize_main",
                                QCheckBox(f"Auto-minimize {APP} program window before phrase insertion")))
@@ -1617,6 +2061,13 @@ class SettingsDialog(QDialog):
         n.setRange(1, 20)
         n.setFixedWidth(50)
         gl.addWidget(_row(up, n, "chars of Autotext is entered in uppercase"))
+        lay.addWidget(g)
+        g, gl = _group("Autotext timing")
+        pause = self.bind("autotext.pause_ms", _spin(100, 5000))
+        pause.setSingleStep(50)
+        pause.setToolTip('Used by the Autotext options "When pausing after autotext input" '
+                         'and "When continue typing quickly after autotext".')
+        gl.addWidget(_row("Pause/fast-typing time:", pause, "ms"))
         lay.addWidget(g)
         lay.addStretch(1)
         return w

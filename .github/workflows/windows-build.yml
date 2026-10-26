@@ -1,0 +1,120 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed only to publish a GitHub Release on a v* tag
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-build.txt
+
+      - name: Version
+        id: ver
+        run: |
+          $v = python -c "import phraseforge; print(phraseforge.__version__)"
+          "version=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "PhraseForge $v"
+
+      - name: Run tests
+        env:
+          PHRASEFORGE_HOME: ${{ runner.temp }}\pf-tests
+        run: python -m pytest -q -p no:cacheprovider
+
+      - name: Build icon
+        run: python packaging/make_icon.py
+
+      - name: Build EXE (folder, for the installer)
+        run: pyinstaller --noconfirm packaging/phraseforge.spec
+
+      - name: Build portable single-file EXE
+        env:
+          PF_ONEFILE: "1"
+        run: pyinstaller --noconfirm packaging/phraseforge.spec
+
+      - name: Self-test the EXEs
+        run: |
+          foreach ($exe in @("dist\B-PhraseForgeExpress\B-PhraseForgeExpress.exe", "dist\B-PhraseForgeExpress-portable.exe")) {
+            $home_dir = Join-Path $env:RUNNER_TEMP ("st-" + [IO.Path]::GetFileNameWithoutExtension($exe))
+            $env:PHRASEFORGE_HOME = $home_dir
+            $p = Start-Process -FilePath $exe -ArgumentList "--self-test" -Wait -PassThru
+            Get-Content (Join-Path $home_dir "selftest.txt")
+            if ($p.ExitCode -ne 0) { throw "$exe self-test failed (exit $($p.ExitCode))" }
+          }
+
+      - name: Install Inno Setup
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y --no-progress
+          }
+
+      - name: Build Setup.exe
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=${{ steps.ver.outputs.version }}" packaging\installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+
+      - name: Test silent install, self-test and uninstall
+        run: |
+          $setup = "dist\B-PhraseForgeExpress-Setup-${{ steps.ver.outputs.version }}.exe"
+          $dir = Join-Path $env:RUNNER_TEMP "PhraseForgeInstall"
+          $p = Start-Process $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=`"$dir`"", "/TASKS=autostart" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Setup failed (exit $($p.ExitCode))" }
+          $run = (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run").PhraseForge
+          Write-Host "Run key: $run"
+          if (-not $run) { throw "autostart value missing" }
+          $env:PHRASEFORGE_HOME = Join-Path $env:RUNNER_TEMP "st-installed"
+          $p = Start-Process "$dir\B-PhraseForgeExpress.exe" -ArgumentList "--self-test" -Wait -PassThru
+          Get-Content "$env:PHRASEFORGE_HOME\selftest.txt"
+          if ($p.ExitCode -ne 0) { throw "installed self-test failed" }
+          $p = Start-Process "$dir\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "uninstall failed (exit $($p.ExitCode))" }
+          Start-Sleep -Seconds 3
+          if (Test-Path "$dir\B-PhraseForgeExpress.exe") { throw "uninstall left B-PhraseForgeExpress.exe behind" }
+          $run = (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -ErrorAction SilentlyContinue).PhraseForge
+          if ($run) { throw "uninstall left the autostart value" }
+
+      - name: Package portable zip
+        run: |
+          Compress-Archive -Path dist\B-PhraseForgeExpress\* -DestinationPath "dist\B-PhraseForgeExpress-${{ steps.ver.outputs.version }}-win64.zip"
+          Get-ChildItem dist -File | Select-Object Name, @{n="MB";e={[math]::Round($_.Length/1MB,1)}}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: B-PhraseForgeExpress-${{ steps.ver.outputs.version }}-windows
+          path: |
+            dist/B-PhraseForgeExpress-Setup-*.exe
+            dist/B-PhraseForgeExpress-portable.exe
+            dist/B-PhraseForgeExpress-*-win64.zip
+          if-no-files-found: error
+
+      - name: Publish GitHub Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/B-PhraseForgeExpress-Setup-*.exe
+            dist/B-PhraseForgeExpress-portable.exe
+            dist/B-PhraseForgeExpress-*-win64.zip
+          generate_release_notes: true

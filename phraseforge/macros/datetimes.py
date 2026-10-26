@@ -4,6 +4,7 @@ Format tokens (case matters, like .NET):
   yyyy yy  MMMM MMM MM M  dddd ddd dd d  HH H hh h  mm m  ss s  tt
   DDD (day of year, 001-366)  zzz (UTC offset, +03:00)
   'quoted text' is literal. A format containing '%' is passed to strftime.
+  calendar "hijri" (tabular Islamic calendar) and digits "arabic" (٠-٩) are optional.
 Offset units: y, M/m/mo (month), w, d, wd (workday), h, min/n (minute), s.
   Example: "+3d", "-2h", "+1m", "+10wd +30min".
 """
@@ -40,11 +41,51 @@ def _tz(dt: datetime) -> str:
 _OFF = re.compile(r"([+-]?)\s*(\d+)\s*(wd|min|mo|y|m|w|d|h|n|s)", re.I)
 
 
-def format_dt(dt: datetime, fmt: str, lang: str = "en") -> str:
+HIJRI_MONTHS = {
+    "ar": ["محرم", "صفر", "ربيع الأول", "ربيع الآخر", "جمادى الأولى", "جمادى الآخرة",
+           "رجب", "شعبان", "رمضان", "شوال", "ذو القعدة", "ذو الحجة"],
+    "en": ["Muharram", "Safar", "Rabi al-Awwal", "Rabi al-Thani", "Jumada al-Ula", "Jumada al-Akhirah",
+           "Rajab", "Shaban", "Ramadan", "Shawwal", "Dhu al-Qadah", "Dhu al-Hijjah"],
+}
+ARABIC_DIGITS = str.maketrans("0123456789", "٠١٢٣٤٥٦٧٨٩")
+_HIJRI_EPOCH = 1948439.5          # Julian day of 1 Muharram 1 AH (tabular calendar)
+
+
+def _hijri_to_jd(y: int, m: int, d: int) -> float:
+    import math
+    return d + math.ceil(29.5 * (m - 1)) + (y - 1) * 354 + (3 + 11 * y) // 30 + _HIJRI_EPOCH - 1
+
+
+def to_hijri(d: date) -> tuple[int, int, int]:
+    """Tabular (arithmetic, civil) Hijri date. It can differ by a day or two from the
+    Umm al-Qura calendar or from a sighted new moon."""
+    import math
+    jd = d.toordinal() + 1721424.5
+    y = (30 * (jd - _HIJRI_EPOCH) + 10646) // 10631
+    y = int(y)
+    m = min(12, math.ceil((jd - (29 + _hijri_to_jd(y, 1, 1))) / 29.5) + 1)
+    m = max(1, int(m))
+    day = int(jd - _hijri_to_jd(y, m, 1) + 1)
+    return y, m, day
+
+
+def format_dt(dt: datetime, fmt: str, lang: str = "en", calendar_name: str = "gregorian",
+              digits: str = "latin") -> str:
+    """calendar_name "hijri" makes yyyy/MM/dd/MMMM the Hijri date; digits "arabic"
+    writes ٠١٢٣٤٥٦٧٨٩."""
+    out = _format_dt(dt, fmt, lang, calendar_name)
+    return out.translate(ARABIC_DIGITS) if digits in ("arabic", "ar", "eastern") else out
+
+
+def _format_dt(dt: datetime, fmt: str, lang: str, calendar_name: str) -> str:
     if "%" in fmt:
         return dt.strftime(fmt)
     months = MONTHS.get(lang, MONTHS["en"])
     days = DAYS.get(lang, DAYS["en"])
+    year, month, day = dt.year, dt.month, dt.day
+    if (calendar_name or "").lower() in ("hijri", "islamic", "h"):
+        year, month, day = to_hijri(dt.date() if isinstance(dt, datetime) else dt)
+        months = HIJRI_MONTHS["ar" if lang == "ar" else "en"]
 
     def rep(m: re.Match) -> str:
         t = m.group(0)
@@ -56,14 +97,15 @@ def format_dt(dt: datetime, fmt: str, lang: str = "en") -> str:
         if t == "DDD":
             return f"{dt.timetuple().tm_yday:03d}"
         return {
-            "yyyy": f"{dt.year:04d}", "yy": f"{dt.year % 100:02d}",
-            "MMMM": months[dt.month - 1], "MMM": months[dt.month - 1][:3] if lang == "en" or lang == "de" else months[dt.month - 1],
-            "MM": f"{dt.month:02d}", "M": str(dt.month),
+            "yyyy": f"{year:04d}", "yy": f"{year % 100:02d}",
+            "MMMM": months[month - 1],
+            "MMM": months[month - 1][:3] if lang in ("en", "de") and months is not HIJRI_MONTHS["en"] else months[month - 1],
+            "MM": f"{month:02d}", "M": str(month),
             "dddd": days[dt.weekday()], "ddd": days[dt.weekday()][:3] if lang != "ar" else days[dt.weekday()],
-            "dd": f"{dt.day:02d}", "d": str(dt.day),
+            "dd": f"{day:02d}", "d": str(day),
             "HH": f"{dt.hour:02d}", "H": str(dt.hour), "hh": f"{h12:02d}", "h": str(h12),
             "mm": f"{dt.minute:02d}", "m": str(dt.minute), "ss": f"{dt.second:02d}", "s": str(dt.second),
-            "tt": "AM" if dt.hour < 12 else "PM",
+            "tt": ("ص" if dt.hour < 12 else "م") if lang == "ar" else ("AM" if dt.hour < 12 else "PM"),
         }[t]
 
     return _FMT.sub(rep, fmt)

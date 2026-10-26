@@ -253,6 +253,47 @@ def test_clipboard_cache_and_last_used_nodes(app, store):
     w.close()
 
 
+def test_feature_switches_hide_special_nodes_and_cap_last_used(app, store):
+    from phraseforge.ui.main_window import MainWindow
+    from phraseforge.ui.tree_panel import ROLE_KIND
+    for i in range(4):
+        p = store.add_phrase(Phrase(f"u{i}", "x"))
+        store.record_use(p.id)
+    store.set_setting("last_used.max", "2")
+    w = MainWindow(store)
+    assert _item(w, "last_used").childCount() == 2
+    store.set_setting("features.usage_statistics", "0")
+    w._refresh_timer.stop()
+    w.refresh_tree()
+    hint = _item(w, "last_used").child(0)
+    assert hint.data(0, ROLE_KIND) == "hint" and "Usage statistics" in hint.text(0)
+    store.set_setting("features.last_used_folder", "0")
+    store.set_setting("clipboard_history.enabled", "0")
+    w._refresh_timer.stop()
+    w.refresh_tree()
+    tops = [w.tree.topLevelItem(i).data(0, ROLE_KIND) for i in range(w.tree.topLevelItemCount())]
+    assert tops == ["root"]
+    w.close()
+
+
+def test_new_phrase_focus_follows_prompt_setting(app, store):
+    from phraseforge.ui.main_window import MainWindow
+    w = MainWindow(store)
+    w.show()
+    w.new_phrase()
+    app.processEvents()
+    desc = getattr(w.editor, "description", None)
+    if desc is not None:
+        assert desc.hasFocus() and desc.selectedText() == "New phrase"
+    store.set_setting("display.prompt_after_new_phrase", "0")
+    w.new_phrase()
+    app.processEvents()
+    ce = getattr(w.editor, "content_edit", None)
+    if ce is not None:
+        assert ce.hasFocus()
+    w.close()
+
+
 def test_popup_filtering_and_app_rules(app, store):
     from phraseforge.ui.popup import PhrasePopup
     f = store.add_folder(Folder("Word", apps_include="winword.exe"))
@@ -364,3 +405,21 @@ def test_arabic_translation():
         assert i18n.tr("unknown text") == "unknown text"
     finally:
         i18n.set_language("en")
+
+
+def test_tools_tab_runs_app_commands(app, store):
+    from phraseforge.ui.main_window import MainWindow
+    sent = []
+    w = MainWindow(store, on_command=sent.append)
+    assert "tools" in w.ribbon.tabs
+    assert set(w.tool_buttons) == {"onenote_send_clipboard", "onenote_clip", "quick_note",
+                                   "ocr", "open_sticky_notes", "file_search"}
+    for cmd, b in w.tool_buttons.items():
+        assert b.isEnabled()
+        b.click()
+    assert sent == list(w.tool_buttons)
+    w.close()
+    # without an app to run them (e.g. opened alone) the buttons are disabled
+    w2 = MainWindow(store)
+    assert not any(b.isEnabled() for b in w2.tool_buttons.values())
+    w2.close()

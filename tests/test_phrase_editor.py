@@ -91,11 +91,13 @@ def test_all_trigger_types_roundtrip(app, store):
     assert ed.save()
     got = store.get_phrase(p.id)
     kinds = [TriggerKind(t.kind) for t in got.triggers]
-    assert kinds == [TriggerKind.AUTOTEXT, TriggerKind.REGEX, TriggerKind.HOTKEY, TriggerKind.APP_FOCUS,
-                     TriggerKind.TIME, TriggerKind.CLIPBOARD, TriggerKind.CLIPBOARD_REGEX]
+    assert kinds == [TriggerKind.AUTOTEXT, TriggerKind.SMARTCOMPLETE, TriggerKind.REGEX, TriggerKind.HOTKEY,
+                     TriggerKind.APP_FOCUS, TriggerKind.TIME, TriggerKind.CLIPBOARD, TriggerKind.CLIPBOARD_REGEX]
     at = got.triggers[0]
     assert at.mode == AutotextMode.CONFIRM and at.case_sensitive and not at.word_start_only
-    # reload: UI rows (incl. SmartComplete + extras) come back in order
+    assert (at.exec_mode, at.word_pos) == ("confirm", "end")
+    assert got.triggers[4].window_scope == "program"
+    # reload: every row, incl. SmartComplete, comes back from the trigger columns in order
     ed2 = PhraseEditor(store)
     ed2.load(p.id)
     back = ed2.triggers.get_rows()
@@ -146,12 +148,13 @@ def test_folder_and_special_editors(app, store):
     from phraseforge.ui.trigger_editor import default_row
     f = store.add_folder(Folder("Work"))
     fe = FolderEditor(store); fe.load(f.id)
-    fe.description.setText("Office"); fe.notes.setPlainText("note!")
+    fe.description.setText("Office"); fe.notes.setPlainText("note!"); fe.prefix.setText(" ; ")
     fe.triggers.set_rows([dict(default_row("hotkey"), value="ctrl+shift+w")]); fe._mark_dirty()
     assert fe.save()
     assert store.get_folder(f.id).name == "Office"
     fe2 = FolderEditor(store); fe2.load(f.id)
     assert fe2.notes.toPlainText() == "note!"
+    assert fe2.prefix.text() == ";" and store.get_folder(f.id).abbrev_prefix == ";"
     assert set(fe2.triggers.get_rows()[0]["value"].split("+")) == {"ctrl", "shift", "w"}
 
     cc = SpecialFolderEditor(store, "clipboard_cache")

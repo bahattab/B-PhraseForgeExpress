@@ -29,5 +29,4 @@ def is_dark(mode: str) -> bool:
 def apply_theme(app: QApplication, mode: str = "system", language: str | None = None) -> None:
     pe_style.apply(app)
     if language is not None:
-        i18n.set_language(language)
-        app.setLayoutDirection(Qt.RightToLeft if language == "ar" else Qt.LeftToRight)
+        i18n.install(app, language)     # translator + right-to-left layout for Arabic

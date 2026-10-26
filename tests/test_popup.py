@@ -30,7 +30,7 @@ def _rows(panel):
 
 
 def test_root_order_folders_specials_then_phrases(app, store):
-    from phraseforge.ui.popup import CLIPBOARD, LAST_USED, PhrasePopup
+    from phraseforge.ui.popup import CLIPBOARD, LAST_USED, ROLE_QK, ROLE_RIGHT, PhrasePopup
     store.add_folder(Folder("Zeta"))
     store.add_folder(Folder("Alpha"))
     p2 = store.add_phrase(Phrase("b phrase", "x"))
@@ -41,8 +41,151 @@ def test_root_order_folders_specials_then_phrases(app, store):
     assert [r[2] for r in rows] == ["Alpha", "Clipboard Cache", "Last Used", "Zeta", "a phrase", "b phrase"]
     assert rows[1][1] == CLIPBOARD and rows[2][1] == LAST_USED
     assert pop.visible_phrase_ids() == [p1.id, p2.id]
-    from phraseforge.ui.popup import ROLE_RIGHT
-    assert pop.list.item(4).data(ROLE_RIGHT) == "[ap#]"
+    # default menu.contents = Description - QuickKey
+    assert pop.list.item(0).data(ROLE_QK) == "NumPad1" and pop.list.item(4).data(ROLE_RIGHT) == ""
+    store.set_setting("menu.contents", "description_autotext")
+    pop.show_at(10, 10, caret=None)
+    assert pop.list.item(4).data(ROLE_RIGHT) == "[ap#]" and not pop.list.item(4).data(ROLE_QK)
+    pop.hide_all(force=True)
+
+
+def test_menu_sorting(app, store):
+    from phraseforge.ui.popup import PhrasePopup
+    a = store.add_phrase(Phrase("item 10", "x", sort=1))
+    b = store.add_phrase(Phrase("item 2", "x", sort=3))
+    c = store.add_phrase(Phrase("item 1", "x", sort=2))
+    store.record_use(b.id)
+    store.record_use(b.id)
+    store.record_use(a.id)
+    pop = PhrasePopup(store)
+    store.set_setting("features.last_used_folder", "0")
+    store.set_setting("clipboard_history.enabled", "0")
+    for settings, want in (
+            ({"menu.sort_by": "description", "menu.sort_method": "alpha", "menu.sort_order": "asc"}, [c, a, b]),
+            ({"menu.sort_method": "numeric"}, [c, b, a]),
+            ({"menu.sort_order": "desc"}, [a, b, c]),
+            ({"menu.sort_by": "usage", "menu.sort_order": "desc"}, [b, a, c]),
+            ({"menu.sort_enabled": "0"}, [a, c, b])):          # manual order (sort field)
+        for k, v in settings.items():
+            store.set_setting(k, v)
+        pop._load_settings()
+        pop.refresh()
+        assert pop.visible_phrase_ids() == [p.id for p in want], settings
+
+
+def test_hide_restricted_off_shows_all(app, store):
+    from phraseforge.ui.popup import PhrasePopup
+    w = store.add_folder(Folder("WordOnly", apps_include="winword.exe"))
+    store.add_phrase(Phrase("in word", "x", folder_id=w.id))
+    store.set_setting("menu.hide_restricted", "0")
+    pop = PhrasePopup(store)
+    pop.app_exe = "notepad.exe"
+    pop.refresh()
+    assert "WordOnly" in [r[2] for r in _rows(pop)]
+
+
+def test_quickkeys_confirm_and_search_hotkeys(app, store):
+    from phraseforge.ui.popup import PhrasePopup, quickkey_label
+    store.set_setting("features.last_used_folder", "0")
+    store.set_setting("clipboard_history.enabled", "0")
+    a = store.add_phrase(Phrase("a", "x"))
+    b = store.add_phrase(Phrase("b", "x"))
+    pop = PhrasePopup(store)
+    pop.refresh()
+    chosen = []
+    pop.phrase_chosen.connect(chosen.append)
+    # default QuickKeys: keypad digits, no modifier
+    assert pop.handle_key(QKeyEvent(QKeyEvent.KeyPress, Qt.Key_2, Qt.KeypadModifier, "2"))
+    assert chosen == [b.id]
+    # confirm hotkey (default Tab) inserts the selected row
+    pop.refresh()
+    pop.list.setCurrentRow(0)
+    assert pop.handle_key(QKeyEvent(QKeyEvent.KeyPress, Qt.Key_Tab, Qt.NoModifier))
+    assert chosen == [b.id, a.id]
+    # search hotkey (default F3) opens quick search
+    pop.refresh()
+    assert pop.handle_key(QKeyEvent(QKeyEvent.KeyPress, Qt.Key_F3, Qt.NoModifier))
+    assert pop.header.currentWidget() is pop.search_bar
+    pop.end_search()
+    # letters with Ctrl
+    store.set_setting("menu.quickkey_keys", "letters")
+    store.set_setting("menu.quickkey_modifier", "ctrl")
+    pop._load_settings()
+    pop.refresh()
+    assert pop.handle_key(QKeyEvent(QKeyEvent.KeyPress, Qt.Key_A, Qt.ControlModifier, "a"))
+    assert chosen[-1] == a.id
+    assert quickkey_label("fkeys", 11) == "F12" and quickkey_label("digits", 9) == ""
+
+
+def test_quick_search_options(app, store):
+    from phraseforge.ui.popup import PhrasePopup
+    f = store.add_folder(Folder("Sub"))
+    store.add_phrase(Phrase("Greeting", "hello there"))
+    store.add_phrase(Phrase("Nested Greeting", "x", folder_id=f.id))
+    pop = PhrasePopup(store)
+    assert [r[2] for r in pop.search_entries("hello")] == []          # descriptions only
+    store.set_setting("quicksearch.descriptions", "0")
+    pop._load_settings()
+    assert [r[2] for r in pop.search_entries("hello")] == ["Greeting"]
+    store.set_setting("quicksearch.subfolders", "0")
+    pop._load_settings()
+    assert [r[2] for r in pop.search_entries("greeting")] == ["Greeting"]
+    store.set_setting("quicksearch.match_case", "1")
+    pop._load_settings()
+    assert pop.search_entries("greeting") == []
+
+
+def test_position_and_fallback(app, store):
+    from PySide6.QtGui import QCursor
+    from phraseforge.ui.popup import PhrasePopup
+    pop = PhrasePopup(store)
+    assert pop.placement(5, 6, (100, 200)) == ("caret", 100, 200)
+    mode, x, y = pop.placement(5, 6, None)            # no caret -> fallback (mouse)
+    c = QCursor.pos()
+    assert (mode, x, y) == ("mouse", c.x(), c.y())
+    store.set_setting("menu.position_fallback", "center")
+    pop._load_settings()
+    assert pop.placement(5, 6, None)[0] == "center"
+    store.set_setting("menu.position", "mouse")
+    pop._load_settings()
+    assert pop.placement(5, 6, (100, 200))[0] == "mouse"
+
+
+def test_appearance_preview_and_dim(app, store):
+    import json
+    from phraseforge.ui.popup import PhrasePopup
+    p = store.add_phrase(Phrase("Sig", "Best regards"))
+    store.set_setting("menu.appearance", json.dumps({"background": "#ffeecc", "description": "#112233",
+                                                     "font": "Arial,12,-1,5,400,0,0,0,0,0"}))
+    store.set_setting("ui.theme", "light")
+    pop = PhrasePopup(store)
+    pop.refresh()
+    assert pop.colors["background"] == "#ffeecc" and pop.colors["description"] == "#112233"
+    assert pop.menu_font.startswith("Arial,12")
+    from phraseforge.ui import pe_style
+    old_qss, old_font, old_style = app.styleSheet(), app.font(), app.style().name()
+    try:
+        pe_style.apply(app)                     # app-wide QSS must not override the menu font
+        pop.apply_appearance()
+        pop.refresh()
+        app.processEvents()
+        assert pop.list.font().family() == "Arial" and pop.list.font().pointSize() == 12
+    finally:                                    # don't leak the app style into other tests
+        app.setStyleSheet(old_qss)
+        app.setFont(old_font)
+        app.setStyle(old_style)
+    item = next(pop.list.item(i) for i in range(pop.list.count()) if pop.list.item(i).text() == "Sig")
+    assert item.toolTip() == "Best regards"
+    store.set_setting("menu.show_preview", "0")
+    store.set_setting("ui.theme", "dark")
+    pop._load_settings()
+    pop.refresh()
+    item = next(pop.list.item(i) for i in range(pop.list.count()) if pop.list.item(i).text() == "Sig")
+    assert item.toolTip() == ""
+    assert pop.colors["background"] != "#ffeecc"              # dimmed in dark mode
+    store.set_setting("menu.dim_dark", "0")
+    pop._load_settings()
+    assert pop.colors["background"] == "#ffeecc"
 
 
 def test_submenu_cascade_and_choose(app, store):
@@ -119,12 +262,12 @@ def test_hidden_and_restricted(app, store):
 
 def test_settings_and_new_phrase(app, store):
     from phraseforge.ui.popup import PhrasePopup
-    store.set_setting("popup.width", "420")
-    store.set_setting("popup.max_items", "3")
-    store.set_setting("popup.show_last_used", "0")
+    store.set_setting("menu.width", "420")
+    store.set_setting("features.last_used_folder", "0")
     for i in range(6):
         store.add_phrase(Phrase(f"p{i}", "x"))
     pop = PhrasePopup(store)
+    pop.max_items = 3
     pop.refresh()
     assert pop.width() == 420
     assert pop.list.height() == 3 * 32 and not pop.up_arrow.isHidden()
@@ -135,13 +278,63 @@ def test_settings_and_new_phrase(app, store):
     assert got == [None]
 
 
-def test_typed_letter_starts_search(app, store):
+def test_typed_letter_quick_jump_or_search(app, store):
     from phraseforge.ui.popup import PhrasePopup
+    store.add_phrase(Phrase("apple", "x"))
     store.add_phrase(Phrase("hello world", "x"))
     pop = PhrasePopup(store)
     pop.refresh()
+    # Quick Jump on (default): typing jumps to the matching row
+    pop.handle_key(QKeyEvent(QKeyEvent.KeyPress, Qt.Key_H, Qt.NoModifier, "h"))
+    assert pop.search.text() == "" and pop.list.currentItem().text() == "hello world"
+    # Quick Jump off: typing starts a search
+    store.set_setting("quicksearch.quick_jump", "0")
+    pop._load_settings()
     pop.handle_key(QKeyEvent(QKeyEvent.KeyPress, Qt.Key_H, Qt.NoModifier, "h"))
     assert pop.search.text() == "h"
+
+
+def test_show_at_folder(app, store):
+    from phraseforge.ui.popup import CLIPBOARD, LAST_USED, PhrasePopup
+    f = store.add_folder(Folder("Mail"))
+    sub = store.add_folder(Folder("Replies", parent_id=f.id))
+    p = store.add_phrase(Phrase("Thanks", "t", folder_id=f.id))
+    store.add_phrase(Phrase("Top level", "x"))
+    store.add_clipboard("clip text")
+    pop = PhrasePopup(store)
+    pop.show_at(10, 10, caret=None, folder=str(f.id))          # numeric str works too
+    assert [r[2] for r in _rows(pop)] == ["Replies", "Thanks"]
+    assert pop.band.title == "Mail" and not pop.band.wordmark
+    got = []
+    pop.new_phrase_requested.connect(lambda: got.append(pop.new_phrase_folder_id))
+    pop.footer.clicked.emit()
+    assert got == [f.id]
+    pop.show_at(10, 10, caret=None, folder=CLIPBOARD)
+    assert [r[2] for r in _rows(pop)] == ["clip text"] and pop.band.title == "Clipboard Cache"
+    store.record_use(p.id)
+    pop.show_at(10, 10, caret=None, folder=LAST_USED)
+    assert [r[1] for r in _rows(pop)] == [p.id]
+    pop.show_at(10, 10, caret=None)                              # back to the normal menu
+    assert pop.band.wordmark and "Top level" in [r[2] for r in _rows(pop)]
+    pop.show_at(10, 10, caret=None, folder=99999)                # unknown folder -> normal menu
+    assert pop.folder_key is None
+    pop.hide_all(force=True)
+    assert sub.id
+
+
+def test_last_used_cap_and_clipboard_switch(app, store):
+    from phraseforge.ui.popup import LAST_USED, CLIPBOARD, PhrasePopup
+    for i in range(5):
+        p = store.add_phrase(Phrase(f"u{i}", "x"))
+        store.record_use(p.id)
+    store.set_setting("last_used.max", "2")
+    pop = PhrasePopup(store)
+    assert len(pop.last_used_phrases()) == 2
+    store.set_setting("clipboard_history.enabled", "0")
+    pop._load_settings()
+    pop.refresh()
+    ids = [r[1] for r in _rows(pop)]
+    assert CLIPBOARD not in ids and LAST_USED in ids
 
 
 def test_stats_math(app, store):
@@ -160,7 +353,7 @@ def test_stats_math(app, store):
     w.speed.setValue(200)
     w.usage.setChecked(False)
     w.accept()
-    assert store.setting("stats.typing_speed") == "200" and store.setting("stats.enabled") == "0"
+    assert store.setting("stats.typing_speed") == "200" and store.setting("features.usage_statistics") == "0"
     assert w.top.rowCount() == 1
 
 

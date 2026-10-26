@@ -1,7 +1,7 @@
 """PhraseForge main window, laid out like the PhraseExpress reference
 (reference/phraseexpress/01_main_phrase_selected.png):
 
-  ribbon (File | Phrases | View | Help | [Phrase content]) + search box + user
+  ribbon (File | Phrases | View | Tools | Help | [Phrase content]) + search box + user
   quick toolbar
   tree panel | (phrase list in three-column mode) | editor
   status bar: breadcrumb links ................................ editor info
@@ -246,6 +246,84 @@ class ClipEntryView(QWidget):
         self.text.setPlainText(e.text if e else "")
 
 
+class StickyNoteView(QWidget):
+    """Read-only view of one Microsoft Sticky Notes note (or, for the folder node, a summary)."""
+
+    def __init__(self, store: Store, window: "MainWindow", parent=None):
+        super().__init__(parent)
+        self.store = store
+        self.window = window
+        self.note = None
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(12, 6, 12, 6)
+        self.caption = pe_style.caption("Sticky note")
+        lay.addWidget(self.caption)
+        self.info = QLabel()
+        self.info.setStyleSheet("color:#666666")
+        lay.addWidget(self.info)
+        self.text = QPlainTextEdit()
+        self.text.setReadOnly(True)
+        lay.addWidget(self.text, 1)
+        row = QHBoxLayout()
+        self.copy_btn = QPushButton(icon("copy"), "Copy")
+        self.copy_btn.clicked.connect(self.copy)
+        self.create_btn = QPushButton(icon("new_phrase"), "Create phrase from this note")
+        self.create_btn.clicked.connect(self.create_phrase)
+        self.open_btn = QPushButton(icon("sticky_notes"), "Open Sticky Notes")
+        self.open_btn.clicked.connect(open_sticky_notes)
+        for b in (self.copy_btn, self.create_btn, self.open_btn):
+            row.addWidget(b)
+        row.addStretch(1)
+        lay.addLayout(row)
+
+    def load(self, note_id=None) -> None:
+        """note_id: a note id from the tree, or None for the "Sticky Notes" folder node."""
+        from phraseforge.ui import tree_panel as tp
+        if note_id is None:
+            notes = tp.sticky_notes()
+            self.note = None
+            self.caption.setText("Sticky Notes")
+            self.info.setText(f"{len(notes)} note(s) in Microsoft Sticky Notes (read-only). "
+                              "Choose a note to view it, or import them with Import > From Sticky Notes.")
+            self.text.setPlainText("")
+            self.text.setVisible(False)
+            self.copy_btn.setVisible(False)
+            self.create_btn.setVisible(False)
+            return
+        n = self.window.panel.notes_by_id.get(note_id) or next(
+            (x for x in tp.sticky_notes() if x.id == note_id), None)
+        self.note = n
+        self.caption.setText(n.title if n else "Sticky note")
+        when = n.updated.strftime("%Y-%m-%d %H:%M") if n and n.updated else ""
+        self.info.setText(f"Updated {when} (UTC) - read-only, from Microsoft Sticky Notes" if when
+                          else "Read-only, from Microsoft Sticky Notes")
+        self.text.setPlainText(n.text if n else "")
+        self.text.setVisible(True)
+        self.copy_btn.setVisible(True)
+        self.create_btn.setVisible(True)
+
+    def copy(self) -> None:
+        if self.note is not None:
+            QApplication.clipboard().setText(self.note.text)
+
+    def create_phrase(self):
+        """New phrase (root folder) with description = note title and content = note text."""
+        if self.note is None:
+            return None
+        p = self.store.add_phrase(Phrase(self.note.title, self.note.text, tags=["stickynotes"]))
+        self.window.refresh_tree()
+        self.window.select_phrase(p.id)
+        return p
+
+
+def open_sticky_notes() -> None:
+    try:
+        from phraseforge import stickynotes
+        stickynotes.open_app()
+    except Exception as e:  # Sticky Notes missing / shell error
+        QMessageBox.warning(None, "Sticky Notes", str(e))
+
+
 def initials_avatar(name: str) -> QPixmap:
     parts = [p for p in name.replace(".", " ").split() if p] or ["?"]
     ini = (parts[0][0] + (parts[1][0] if len(parts) > 1 else "")).upper()
@@ -269,10 +347,12 @@ class MainWindow(QMainWindow):
     SEARCH_SCOPES = (("all", "Search everywhere"), ("description", "Search in Description"),
                      ("content", "Search in Phrase content"), ("autotext", "Search in Autotext"))
 
-    def __init__(self, store: Store, on_test_phrase: Callable[[int], None] | None = None):
+    def __init__(self, store: Store, on_test_phrase: Callable[[int], None] | None = None,
+                 on_command: Callable[[str], None] | None = None):
         super().__init__()
         self.store = store
         self.on_test_phrase = on_test_phrase
+        self.on_command = on_command        # app-level commands (OneNote, OCR, Search files)
         from phraseforge import __version__
         self.setWindowTitle(f"PhraseForge v{__version__}")
         try:
@@ -335,6 +415,7 @@ class MainWindow(QMainWindow):
         self._build_file_menu()
         self._build_phrases_tab()
         self._build_view_tab()
+        self._build_tools_tab()
         self._build_help_tab()
         self._build_content_tab()
         self._build_shortcuts()
@@ -351,6 +432,7 @@ class MainWindow(QMainWindow):
         self._refresh_timer.setSingleShot(True)
         self._refresh_timer.setInterval(150)
         self._refresh_timer.timeout.connect(self.refresh_tree)
+        self._last_tree_settings = self._tree_settings()
         self.store.on_change(self._on_store_change)
 
         self.set_columns(3 if self.three_columns else 2, save=False)
@@ -504,9 +586,18 @@ class MainWindow(QMainWindow):
         imp = menu_with(self, [("File import (JSON, CSV, TXT)...", "import", self.import_file),
                                ("Files including directory structure...", "folder_tree", self.import_folder),
                                None,
-                               ("TextExpander (.csv / .textexpander)...", "textexpander", self.import_textexpander)])
+                               ("From PhraseExpress (CSV export)...", "import", self.import_phraseexpress),
+                               ("TextExpander / macOS (.csv / .textexpander / .plist)...", "textexpander", self.import_textexpander),
+                               ("From OneNote...", "on_notebook", self.import_onenote)])
         exp = menu_with(self, [("Export to file (JSON, CSV)...", "export", self.export_file),
-                               ("Text files (one file per phrase)...", "text_file", self.export_text_folder)])
+                               ("Text files (one file per phrase)...", "text_file", self.export_text_folder),
+                               None,
+                               ("Word document (.docx)...", "export", lambda: self.export_document("docx")),
+                               ("PDF document (.pdf)...", "print", lambda: self.export_document("pdf")),
+                               None,
+                               ("For PhraseExpress (CSV)...", "export", lambda: self.export_for("phraseexpress")),
+                               ("For TextExpander (CSV)...", "textexpander", lambda: self.export_for("textexpander")),
+                               ("For macOS Text Replacements (.plist)...", "export", lambda: self.export_for("macos"))])
         self.btn_import = g.add_large("Import", "import", menu=imp, split=False)
         self.btn_export = g.add_large("Export", "export", menu=exp, split=False)
         g.add_large("Print\nphrases", "print", self.print_phrases)
@@ -543,6 +634,31 @@ class MainWindow(QMainWindow):
         grid.addLayout(right)
         g.add_widget(box)
         g.caption.setText("")
+
+    # (label, icon, command) per group. Grouped like OneNote's Insert tab and the
+    # ONENOTEM / onenotecapture tray tools; layout not yet checked against screenshots.
+    TOOLS_TAB = (
+        ("OneNote", (("Send clipboard\nto OneNote", "on_send", "onenote_send_clipboard"),
+                     ("Screen\nclipping", "on_clip", "onenote_clip"),
+                     ("New quick\nnote", "sticky_notes", "quick_note"))),
+        ("Capture", (("Screen\nOCR", "m_ocr", "ocr"),
+                     ("Sticky\nNotes", "sticky_notes", "open_sticky_notes"))),
+        ("Find", (("Search\nfiles", "file_search", "file_search"),)),
+    )
+
+    def _build_tools_tab(self) -> None:
+        t = self.ribbon.add_tab("tools", "Tools")
+        self.tool_buttons: dict[str, QToolButton] = {}
+        for group, items in self.TOOLS_TAB:
+            g = t.add_group(group)
+            for label, icon_name, cmd in items:
+                b = g.add_large(label, icon_name, lambda c=cmd: self.run_tool(c))
+                b.setEnabled(self.on_command is not None)
+                self.tool_buttons[cmd] = b
+
+    def run_tool(self, cmd: str) -> None:
+        if self.on_command is not None:
+            self.on_command(cmd)
 
     def _build_help_tab(self) -> None:
         t = self.ribbon.add_tab("help", "Help")
@@ -703,11 +819,25 @@ class MainWindow(QMainWindow):
             self._content_focus(False)
 
     # ================================================================= selection
+    TREE_SETTINGS = ("features.last_used_folder", "clipboard_history.enabled", "last_used.max",
+                     "features.usage_statistics")
+
+    def _tree_settings(self) -> tuple:
+        return tuple(self.store.setting(k, "") for k in self.TREE_SETTINGS)
+
     def _on_store_change(self, kind: str, _id) -> None:
         if kind in ("folder", "phrase", "clipboard"):
             self._refresh_timer.start()
+        elif kind == "setting":
+            # only settings that change the tree's special folders trigger a rebuild
+            cur = self._tree_settings()
+            if cur != getattr(self, "_last_tree_settings", None):
+                self._last_tree_settings = cur
+                self._refresh_timer.start()
 
     def refresh_tree(self) -> None:
+        if getattr(self.store, "closed", False):   # a queued refresh after the store was closed
+            return
         self.panel.refresh()
         if self.three_columns:
             k, i = self.panel.current()
@@ -814,7 +944,13 @@ class MainWindow(QMainWindow):
                 return f"{n} {word}{'' if n == 1 else 's'}"
             saved = ", ".join(x for x in (unit(d, "day") if d else "", unit(h, "hour") if h else "",
                                           unit(m, "minute") if m or not (d or h) else "") if x)
-            self.breadcrumb.setText(f"PhraseForge inserted {st['expansions']} phrases and saved {saved} for you.")
+            from phraseforge.ui import i18n
+            if i18n.language() == "ar":
+                saved_ar = "، ".join(x for x in (f"{d} يوم" if d else "", f"{h} ساعة" if h else "",
+                                                 f"{m} دقيقة" if m or not (d or h) else "") if x)
+                self.breadcrumb.setText(f"أدرج PhraseForge ‏{st['expansions']} عبارة ووفّر لك {saved_ar}.")
+            else:
+                self.breadcrumb.setText(f"PhraseForge inserted {st['expansions']} phrases and saved {saved} for you.")
         if kind != "phrase":
             self.info.setText("")
 
@@ -929,13 +1065,32 @@ class MainWindow(QMainWindow):
                                          content_format="html" if rich else "text"))
         self.refresh_tree()
         self.select_phrase(p.id)
-        self._focus_description()
+        # Settings > Display: "Prompt for additional information after creating a new phrase"
+        if self.store.setting("display.prompt_after_new_phrase", "1") == "1":
+            self._focus_description()
+        else:
+            self._focus_content()
         return p
 
     def _focus_description(self) -> None:
-        fn = getattr(self.editor, "focus_description", None)
-        if callable(fn):
-            QTimer.singleShot(0, fn)
+        """Put the cursor in the editor's Description field with its text selected."""
+        def go():
+            fn = getattr(self.editor, "focus_description", None)
+            if callable(fn):
+                fn()
+                return
+            d = getattr(self.editor, "description", None)
+            if d is not None and hasattr(d, "selectAll"):
+                d.setFocus()
+                d.selectAll()
+        QTimer.singleShot(0, go)
+
+    def _focus_content(self) -> None:
+        def go():
+            ce = getattr(self.editor, "content_edit", None)
+            if ce is not None:
+                ce.setFocus()
+        QTimer.singleShot(0, go)
 
     def duplicate_phrase(self, phrase_id: int) -> Phrase | None:
         p = self.store.get_phrase(phrase_id)
@@ -1249,10 +1404,10 @@ class MainWindow(QMainWindow):
         self.store.set_setting("ui.language", code)
         try:
             from phraseforge.ui import i18n
-            i18n.set_language(code)
-            QApplication.instance().setLayoutDirection(Qt.RightToLeft if code == "ar" else Qt.LeftToRight)
+            i18n.install(QApplication.instance(), i18n.resolve_language(code))
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).exception("language switch failed")
 
     # ---------------------------------------------------------------- context menus
     def _tree_menu(self, pos) -> None:
@@ -1306,9 +1461,11 @@ class MainWindow(QMainWindow):
         if kind in ("folder", "root"):
             fid = id_ if kind == "folder" else None
             bulk = m.addMenu("Bulk edit")
-            bulk.addAction("Enable all phrases", lambda: self.bulk_enable(fid, True))
-            bulk.addAction("Disable all phrases", lambda: self.bulk_enable(fid, False))
-            bulk.addAction("Sort phrases alphabetically", lambda: self.bulk_sort(fid))
+            self._fill_bulk_menu(bulk, fid)
+            srt = m.addMenu("Sort")
+            from phraseforge.bulk_edit import SORT_KEYS
+            for key, (title, _fn) in SORT_KEYS.items():
+                srt.addAction(title, lambda k=key: self.bulk_sort_by(fid, k))
         if kind == "folder":
             f = self.store.get_folder(id_)
             m.addSeparator()
@@ -1327,6 +1484,61 @@ class MainWindow(QMainWindow):
         a.setShortcut("Alt+Return")
         a.setEnabled(item)
         return m
+
+    def _fill_bulk_menu(self, bulk: QMenu, fid: int | None) -> None:
+        """PhraseExpress folder menu > Bulk edit (observed in PhraseExpress 18)."""
+        from phraseforge.bulk_edit import TEXT_OP_TITLES
+        bulk.addAction("Remove duplicates", lambda: self.bulk_remove_duplicates(fid))
+        for target, title in (("description", "Descriptions"), ("content", "Phrase contents"),
+                              ("autotext", "Autotexts")):
+            sub = bulk.addMenu(title)
+            if target == "description":
+                sub.addAction("Generate", lambda: self.bulk_run(fid, "generate_descriptions"))
+            if target == "content":
+                sub.addAction("Convert to plain text", lambda: self.bulk_run(fid, "plain_text"))
+            for i, (op, op_title) in enumerate(TEXT_OP_TITLES.items()):
+                if i in (0, 2, 4):
+                    sub.addSeparator()
+                sub.addAction(op_title, lambda t=target, o=op: self.bulk_text(fid, t, o))
+        bulk.addSeparator()
+        bulk.addAction("Enable all phrases", lambda: self.bulk_enable(fid, True))
+        bulk.addAction("Disable all phrases", lambda: self.bulk_enable(fid, False))
+        bulk.addAction("Sort phrases alphabetically", lambda: self.bulk_sort(fid))
+
+    def bulk_text(self, folder_id: int | None, target: str, op: str, arg: str | None = None) -> int:
+        from phraseforge import bulk_edit
+        if op in ("prefix", "append") and arg is None:
+            arg, ok = QInputDialog.getText(self, "Bulk edit", "Prefix text:" if op == "prefix" else "Append text:")
+            if not ok or not arg:
+                return 0
+        n = bulk_edit.apply_text_op(self.store, folder_id, target, op, arg or "")
+        self.refresh_tree()
+        return n
+
+    def bulk_run(self, folder_id: int | None, what: str) -> int:
+        from phraseforge import bulk_edit
+        fn = {"generate_descriptions": bulk_edit.generate_descriptions,
+              "plain_text": bulk_edit.convert_to_plain_text}[what]
+        n = fn(self.store, folder_id)
+        self.refresh_tree()
+        return n
+
+    def bulk_remove_duplicates(self, folder_id: int | None, confirm: bool = True) -> int:
+        from phraseforge import bulk_edit
+        if confirm and QMessageBox.question(
+                self, "Remove duplicates",
+                "Delete phrases in this folder whose description and text repeat an earlier phrase?") \
+                != QMessageBox.Yes:
+            return 0
+        n = bulk_edit.remove_duplicates(self.store, folder_id)
+        self.refresh_tree()
+        return n
+
+    def bulk_sort_by(self, folder_id: int | None, key: str) -> int:
+        from phraseforge import bulk_edit
+        n = bulk_edit.sort_phrases(self.store, folder_id, key, descending=key in ("times_used", "last_used"))
+        self.refresh_tree()
+        return n
 
     def bulk_enable(self, folder_id: int | None, on: bool) -> None:
         for p in self.store.phrases(folder_id):
@@ -1493,9 +1705,63 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "Import", str(e))
 
+    def import_phraseexpress(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Import from PhraseExpress", "",
+                                              "PhraseExpress export (*.csv *.txt *.tsv);;"
+                                              "PhraseExpress phrase files (*.pexdb *.pexdbhub *.pxp);;All files (*)")
+        if path:
+            self.import_phraseexpress_path(path)
+
+    def import_phraseexpress_path(self, path: str, show_message: bool = True):
+        """Import a PhraseExpress CSV export; returns the report (None on error)."""
+        try:
+            from phraseforge.importers.phraseexpress import import_any
+            rep = import_any(self.store, path)
+        except Exception as e:
+            if show_message:
+                QMessageBox.warning(self, "Import from PhraseExpress", str(e))
+            return None
+        self.refresh_tree()
+        if rep.folder_id is not None:
+            self.select_folder(rep.folder_id)
+        self.last_import_summary = f"Imported {rep.imported} phrase(s)." + (
+            f" Skipped {rep.skipped} empty row(s)." if rep.skipped else "")
+        if show_message:
+            QMessageBox.information(self, "Import from PhraseExpress", self.last_import_summary)
+        return rep
+
+    EXPORT_KINDS = {
+        "phraseexpress": ("Export for PhraseExpress", "phrases-phraseexpress.csv", "CSV (*.csv)"),
+        "textexpander": ("Export for TextExpander", "phrases-textexpander.csv", "CSV (*.csv)"),
+        "macos": ("Export for macOS Text Replacements", "Text Substitutions.plist", "Property list (*.plist)"),
+    }
+
+    def export_for(self, kind: str, path: str | None = None, show_message: bool = True):
+        """Export all phrases in another program's format (active phrase language)."""
+        self.save_current()
+        title, default, flt = self.EXPORT_KINDS[kind]
+        if path is None:
+            path, _ = QFileDialog.getSaveFileName(self, title, default, flt)
+            if not path:
+                return None
+        try:
+            from phraseforge.importers.phraseexpress import export_any
+            rep = export_any(self.store, path, kind, language=self.store.setting("phrase.active_language", ""))
+        except Exception as e:
+            if show_message:
+                QMessageBox.warning(self, title, str(e))
+            return None
+        lines = [f"Exported {rep.exported} phrase(s)."] + rep.notes
+        if rep.kept_as_text:
+            lines.append("Macros without an equivalent were kept as text: "
+                         + ", ".join(f"{k} ×{n}" for k, n in sorted(rep.kept_as_text.items())))
+        if show_message:
+            QMessageBox.information(self, title, "\n".join(lines))
+        return rep
+
     def import_textexpander(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Import from TextExpander", "",
-                                              "TextExpander exports (*.csv *.textexpander);;All files (*)")
+                                              "TextExpander / macOS exports (*.csv *.textexpander *.plist);;All files (*)")
         if path:
             self.import_textexpander_path(path)
 
@@ -1517,6 +1783,62 @@ class MainWindow(QMainWindow):
         self.last_import_summary = self.textexpander_summary(rep)
         if show_message:
             QMessageBox.information(self, "Import from TextExpander", self.last_import_summary)
+        return rep
+
+    # ---- OneNote import
+    def import_onenote(self, client_factory=None) -> None:
+        """Import > From OneNote...: tick notebooks/sections, each page becomes a phrase."""
+        from phraseforge.ui.onenote_picker import OneNotePicker, default_client_factory
+        factory = client_factory or default_client_factory(self.store.setting("onenote.exe", ""))
+        dlg = OneNotePicker(self, mode="import", client_factory=factory)
+        if dlg.exec():
+            refs = dlg.checked_refs()
+            if refs:
+                self.import_onenote_refs(refs, factory)
+
+    def import_onenote_refs(self, refs: list[str], client_factory, show_message: bool = True):
+        """Run the import with a progress dialog. Runs on the UI thread (store listeners update
+        widgets), keeping the window responsive between pages. Returns the report or None."""
+        from PySide6.QtWidgets import QApplication, QProgressDialog
+        from phraseforge.importers.onenote import import_nodes
+        prog = QProgressDialog("Reading OneNote...", "Cancel", 0, 0, self)
+        prog.setWindowTitle("Import from OneNote")
+        prog.setWindowModality(Qt.WindowModal)
+        prog.setMinimumDuration(300)
+
+        def progress(done: int, total: int, name: str = "") -> bool:
+            prog.setMaximum(max(total, 1))
+            prog.setValue(done)
+            prog.setLabelText(f"Importing {done} of {total}\n{name}")
+            QApplication.processEvents()
+            return not prog.wasCanceled()
+
+        try:
+            rep = import_nodes(self.store, client_factory(), refs,
+                               include_ocr=self.store.setting("onenote.include_ocr", "0") == "1",
+                               progress=progress)
+        except Exception as e:
+            prog.close()
+            if show_message:
+                QMessageBox.warning(self, "Import from OneNote", str(e))
+            return None
+        prog.close()
+        self.refresh_tree()
+        if getattr(rep, "folder_id", None) is not None:
+            self.select_folder(rep.folder_id)
+            it = self.tree.currentItem()
+            if it:
+                it.setExpanded(True)
+        lines = [f"Imported {rep.imported} OneNote page(s) as phrases."]
+        errors = list(getattr(rep, "errors", []) or [])
+        if errors:
+            lines.append(f"{len(errors)} page(s) could not be read:")
+            lines += [f"  {e}" for e in errors[:10]]
+            if len(errors) > 10:
+                lines.append(f"  ... and {len(errors) - 10} more")
+        self.last_import_summary = "\n".join(lines)
+        if show_message:
+            QMessageBox.information(self, "Import from OneNote", self.last_import_summary)
         return rep
 
     @staticmethod
@@ -1560,6 +1882,35 @@ class MainWindow(QMainWindow):
             return self.store.phrases(self.sel_id)
         return self.store.phrases()
 
+    def export_document(self, kind: str, path: str | None = None, show_message: bool = True):
+        """Selected phrase, selected folder or all phrases as .docx / .pdf (Arabic right to left)."""
+        self.save_current()
+        from phraseforge import documents
+        from phraseforge.ui import i18n
+        title = "Export as Word document" if kind == "docx" else "Export as PDF"
+        if path is None:
+            flt = "Word document (*.docx)" if kind == "docx" else "PDF (*.pdf)"
+            path, _ = QFileDialog.getSaveFileName(self, title, f"phrases.{kind}", flt)
+            if not path:
+                return None
+            if not path.lower().endswith("." + kind):
+                path += "." + kind
+        try:
+            n = documents.export(self.store, self.phrases_for_print(), path, i18n.language(),
+                                 self.store.setting("phrase.active_language", ""))
+        except Exception as e:
+            if show_message:
+                QMessageBox.warning(self, title, str(e))
+            return None
+        if show_message:
+            msg = f"صُدّرت {n} عبارة." if i18n.language() == "ar" else f"Exported {n} phrase(s)."
+            box = QMessageBox(QMessageBox.Information, title, msg, QMessageBox.Close, self)
+            btn = box.addButton("Open", QMessageBox.AcceptRole)
+            box.exec()
+            if box.clickedButton() is btn:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        return n
+
     def print_phrases(self) -> None:
         self.save_current()
         PrintPreviewDialog(print_html(self.store, self.phrases_for_print()), self).exec()
@@ -1601,9 +1952,35 @@ class MainWindow(QMainWindow):
                           f"<b>PhraseForge v{__version__}</b><br>An original text expander for Windows.<br>"
                           "Screen OCR by Capture2Text (separate GPLv3 program).")
 
-    def check_updates(self) -> None:
-        from phraseforge import __version__
-        QMessageBox.information(self, "Check for updates", f"You are up to date (PhraseForge v{__version__}).")
+    def check_updates(self, opener=None) -> str:
+        """Ask GitHub Releases (only on request). Returns the message shown."""
+        from phraseforge import __version__, updates
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            rel = updates.latest_release(opener=opener) if opener else updates.latest_release()
+            err = ""
+        except Exception as e:  # network down, proxy, rate limit
+            rel, err = None, str(e)
+        finally:
+            QApplication.restoreOverrideCursor()
+        if err:
+            msg = f"Could not check for updates: {err}"
+        elif rel is None:
+            msg = f"No release has been published yet. You have PhraseForge v{__version__}."
+        elif updates.is_newer(rel["version"], __version__):
+            msg = f"PhraseForge v{rel['version']} is available (you have v{__version__}).\n{rel['url']}"
+        else:
+            msg = f"You are up to date (PhraseForge v{__version__})."
+        if not getattr(self, "_quiet_updates", False):
+            box = QMessageBox(QMessageBox.Information, "Check for updates", msg, QMessageBox.Close, self)
+            if rel is not None and not err and updates.is_newer(rel["version"], __version__):
+                btn = box.addButton("Open download page", QMessageBox.AcceptRole)
+                box.exec()
+                if box.clickedButton() is btn:
+                    QDesktopServices.openUrl(QUrl(rel["url"]))
+            else:
+                box.exec()
+        return msg
 
     def get_support(self) -> None:
         QMessageBox.information(self, "Get support",
@@ -1611,9 +1988,11 @@ class MainWindow(QMainWindow):
                                 "for help, or check the log file in %APPDATA%\\PhraseForge.")
 
     def open_help(self) -> None:
-        readme = Path(__file__).resolve().parents[2] / "README.md"
-        if readme.exists():
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(readme)))
+        from phraseforge.ui import i18n
+        from phraseforge.ui.help_viewer import GuideDialog
+        dlg = GuideDialog(i18n.language(), self)
+        dlg.show() if getattr(self, "_quiet_updates", False) else dlg.exec()
+        return dlg
 
     def macro_reference(self) -> None:
         from PySide6.QtWidgets import QHeaderView, QTableWidget, QTableWidgetItem

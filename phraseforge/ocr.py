@@ -67,3 +67,64 @@ class Capture2TextOCR:
     @staticmethod
     def _clean(text: str) -> str:
         return text.replace("\r\n", "\n").strip()
+
+
+# ---- post-processing (modelled on Capture2Text's Settings > Replace and Output > Logging pages)
+
+def parse_replace_rules(text: str) -> list[tuple[str | None, str, str]]:
+    """Rules, one per line: ``regex => replacement``.
+
+    A line ``[Arabic]`` starts a section whose rules apply only when OCR ran in that
+    language; rules before any section apply to every language. Blank lines and lines
+    starting with ``#`` are ignored. Bad regexes are skipped.
+    """
+    import re
+    rules: list[tuple[str | None, str, str]] = []
+    lang: str | None = None
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            lang = line[1:-1].strip() or None
+            continue
+        if "=>" not in raw:
+            continue
+        find, _, repl = raw.partition("=>")
+        find, repl = find.strip(), repl.strip()
+        if not find:
+            continue
+        try:
+            re.compile(find)
+        except re.error:
+            continue
+        rules.append((lang, find, repl.replace("\\n", "\n").replace("\\t", "\t")))
+    return rules
+
+
+def apply_replacements(text: str, rules, language: str = "") -> str:
+    import re
+    for lang, find, repl in rules:
+        if lang is None or lang.lower() == (language or "").lower():
+            text = re.sub(find, repl, text)
+    return text
+
+
+def format_log_entry(text: str, fmt: str = "${capture}${linebreak}", when=None) -> str:
+    from datetime import datetime
+    when = when or datetime.now()
+    return ((fmt or "${capture}${linebreak}")
+            .replace("${capture}", text)
+            .replace("${linebreak}", "\n")
+            .replace("${tab}", "\t")
+            .replace("${timestamp}", when.strftime("%Y-%m-%d %H:%M:%S")))
+
+
+def quick_languages(value: str) -> list[str]:
+    """Up to three quick-access languages from 'Arabic, English, ...'."""
+    out = []
+    for part in (value or "").replace(";", ",").split(","):
+        p = part.strip()
+        if p and p not in out:
+            out.append(p)
+    return out[:3]

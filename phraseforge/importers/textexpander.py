@@ -227,8 +227,40 @@ def import_textexpander_file(store: Store, path: str | Path) -> ImportReport:
     return report
 
 
+def import_macos_plist(store: Store, path: str | Path, data=None) -> ImportReport:
+    """macOS Text Replacements export ("Text Substitutions.plist"): a list of
+    {"shortcut": ..., "phrase": ...} dictionaries. TextExpander's web import lists this format."""
+    path = Path(path)
+    if data is None:
+        with open(path, "rb") as fh:
+            data = plistlib.load(fh)
+    if not isinstance(data, list):
+        raise ValueError("Not a macOS Text Replacements file (expected a list of shortcut/phrase entries).")
+    report = ImportReport()
+    folder = store.add_folder(Folder(path.stem))
+    report.folder_id = folder.id
+    for item in data:
+        if not isinstance(item, dict):
+            report.skipped += 1
+            continue
+        shortcut = str(item.get("shortcut", "") or "").strip()
+        phrase = str(item.get("phrase", "") or "")
+        if not phrase:
+            report.skipped += 1
+            continue
+        conv_label = (phrase.strip().splitlines() or [shortcut])[0][:60]
+        triggers = [Trigger(TriggerKind.AUTOTEXT, shortcut)] if shortcut else []   # expands at a delimiter, like macOS
+        store.add_phrase(Phrase(conv_label, phrase, folder_id=folder.id, triggers=triggers, tags=["macos"]))
+        report.imported += 1
+    return report
+
+
 def import_any(store: Store, path: str | Path) -> ImportReport:
     p = Path(path)
     if p.suffix.lower() == ".csv":
         return import_csv(store, p)
+    with open(p, "rb") as fh:
+        data = plistlib.load(fh)
+    if isinstance(data, list):                      # macOS Text Replacements (.plist)
+        return import_macos_plist(store, p, data)
     return import_textexpander_file(store, p)
