@@ -592,6 +592,9 @@ class MainWindow(QMainWindow):
         exp = menu_with(self, [("Export to file (JSON, CSV)...", "export", self.export_file),
                                ("Text files (one file per phrase)...", "text_file", self.export_text_folder),
                                None,
+                               ("Word document (.docx)...", "export", lambda: self.export_document("docx")),
+                               ("PDF document (.pdf)...", "print", lambda: self.export_document("pdf")),
+                               None,
                                ("For PhraseExpress (CSV)...", "export", lambda: self.export_for("phraseexpress")),
                                ("For TextExpander (CSV)...", "textexpander", lambda: self.export_for("textexpander")),
                                ("For macOS Text Replacements (.plist)...", "export", lambda: self.export_for("macos"))])
@@ -1878,6 +1881,35 @@ class MainWindow(QMainWindow):
         if self.sel_kind == "folder":
             return self.store.phrases(self.sel_id)
         return self.store.phrases()
+
+    def export_document(self, kind: str, path: str | None = None, show_message: bool = True):
+        """Selected phrase, selected folder or all phrases as .docx / .pdf (Arabic right to left)."""
+        self.save_current()
+        from phraseforge import documents
+        from phraseforge.ui import i18n
+        title = "Export as Word document" if kind == "docx" else "Export as PDF"
+        if path is None:
+            flt = "Word document (*.docx)" if kind == "docx" else "PDF (*.pdf)"
+            path, _ = QFileDialog.getSaveFileName(self, title, f"phrases.{kind}", flt)
+            if not path:
+                return None
+            if not path.lower().endswith("." + kind):
+                path += "." + kind
+        try:
+            n = documents.export(self.store, self.phrases_for_print(), path, i18n.language(),
+                                 self.store.setting("phrase.active_language", ""))
+        except Exception as e:
+            if show_message:
+                QMessageBox.warning(self, title, str(e))
+            return None
+        if show_message:
+            msg = f"صُدّرت {n} عبارة." if i18n.language() == "ar" else f"Exported {n} phrase(s)."
+            box = QMessageBox(QMessageBox.Information, title, msg, QMessageBox.Close, self)
+            btn = box.addButton("Open", QMessageBox.AcceptRole)
+            box.exec()
+            if box.clickedButton() is btn:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        return n
 
     def print_phrases(self) -> None:
         self.save_current()

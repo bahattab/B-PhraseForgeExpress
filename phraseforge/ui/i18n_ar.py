@@ -1069,4 +1069,8 @@ AR_EXTRA = {
     'HTML only': 'HTML فقط',
     'RTF only': 'RTF فقط',
     'RTF & HTML': 'RTF وHTML',
+    'Word document (.docx)': 'مستند Word \u200f(.docx)',
+    'PDF document (.pdf)': 'مستند PDF \u200f(.pdf)',
+    'Export as Word document': 'تصدير كمستند Word',
+    'Export as PDF': 'تصدير كملف PDF',
 }

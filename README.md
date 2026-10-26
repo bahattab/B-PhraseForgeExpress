@@ -106,7 +106,8 @@ Phrases can hold one version per language; dates can be Hijri with Arabic digits
 - Phrases > Import: PhraseForge JSON, CSV, folder of .txt files; PhraseExpress CSV export;
   TextExpander CSV / `.textexpander`; macOS Text Replacements `.plist`; OneNote pages.
   PhraseExpress `.pexdb` files are encrypted: export a CSV from PhraseExpress instead.
-- Phrases > Export: JSON, CSV, text files, and files for PhraseExpress, TextExpander and macOS.
+- Phrases > Export: JSON, CSV, text files, Word (.docx) and PDF documents (Arabic right to left),
+  and files for PhraseExpress, TextExpander and macOS.
 
 ## License
 
