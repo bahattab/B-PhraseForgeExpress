@@ -6,6 +6,7 @@ Settings honoured (Settings > Expert Options > Text Insertion / Delays / Phrase 
 - output.per_app_method + output.app_methods (JSON {exe: "type"|"paste"}): programs that
   need a specific method
 - output.format: auto | plain | rich | html; format.html_output: auto | inline | css
+- output.rich_formats: rtf_html | rtf | html (clipboard formats for formatted phrases)
 - output.restore_clipboard, delay.paste, delay.clipboard_restore, delay.keypress
 """
 from __future__ import annotations
@@ -243,7 +244,7 @@ class OutputExecutor:
                 continue          # position applied at the end via Left presses
             flush_text()
             if isinstance(a, HtmlAction):
-                cb.set_html(a.html, a.plain)
+                cb.set_html(a.html, a.plain, self.setting("output.rich_formats", "html") or "html")
                 paste_now()
                 used_clipboard = True
             elif isinstance(a, ImageAction):

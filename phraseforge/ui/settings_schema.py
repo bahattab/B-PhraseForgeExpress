@@ -56,6 +56,9 @@ SCHEMA: dict[str, str] = {
     "clipboard_history.hotkey": DEFAULT_SETTINGS["clipboard_history.hotkey"],
     # Display
     "ui.language": "auto",
+    "date.lang": "en",                   # month/day names in {#date}
+    "date.calendar": "gregorian",        # gregorian | hijri (tabular)
+    "date.digits": "latin",              # latin | arabic (٠-٩)
     "phrase.languages": "[]",            # languages offered for phrase versions (JSON list)
     "phrase.active_language": "",        # version inserted by autotext/hotkeys ("" = default)
     "display.highlight_unedited": "1",
@@ -189,6 +192,7 @@ SCHEMA: dict[str, str] = {
     "output.key_method": "vk_packet",  # vk_packet | unicode | scancode
     "output.paste_long": "1",
     "output.paste_threshold": DEFAULT_SETTINGS["output.paste_threshold"],
+    "output.rich_formats": "html",      # html | rtf_html | rtf: clipboard formats of formatted phrases
     "output.format": "auto",           # auto | plain | rich | html
     "output.restore_clipboard": DEFAULT_SETTINGS["output.restore_clipboard"],
     "output.per_app_method": "1",

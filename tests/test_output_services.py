@@ -32,7 +32,7 @@ class FakeCB:
     def save_all(self): self.calls.append(("save",)); return ["snap"]
     def restore(self, s): self.calls.append(("restore", s))
     def set_text(self, t): self.calls.append(("clip", t))
-    def set_html(self, h, p): self.calls.append(("html", h, p))
+    def set_html(self, h, p, formats="html"): self.calls.append(("html", h, p))
     def set_image(self, p): self.calls.append(("image", p))
 
 

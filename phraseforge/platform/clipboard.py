@@ -150,10 +150,20 @@ def parse_cf_html(data: bytes) -> str:
         return data.decode("utf-8", errors="replace")
 
 
-def set_html(html: str, plain: str) -> None:
+def rtf_format_id() -> int:
+    return user32.RegisterClipboardFormatW("Rich Text Format")
+
+
+def set_html(html: str, plain: str, formats: str = "html") -> None:
+    """Put formatted text on the clipboard. formats: "html", "rtf" or "rtf_html"
+    (PhraseExpress's "HTML only" / "RTF only" / "RTF & HTML"). Plain text is always added."""
     with _Open():
         user32.EmptyClipboard()
-        _put(html_format_id(), build_cf_html(html) + b"\x00")
+        if formats in ("html", "rtf_html", "auto"):
+            _put(html_format_id(), build_cf_html(html) + b"\x00")
+        if formats in ("rtf", "rtf_html", "auto"):
+            from phraseforge.rtf import html_to_rtf
+            _put(rtf_format_id(), html_to_rtf(html).encode("ascii", errors="replace") + b"\x00")
         _put(CF_UNICODETEXT, _utf16z(plain))
     _mark_own()
 

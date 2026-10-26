@@ -38,6 +38,7 @@ version_file.write_text(f"""VSVersionInfo(
 
 datas = [
     (str(ROOT / "README.md"), "."),     # About dialog / Help open README next to the package
+    (str(ROOT / "docs" / "USER_GUIDE.ar.md"), "docs"),   # Help > User guide in the Arabic interface
     (str(ROOT / "LICENSE"), "."),
     (str(ROOT / "phraseforge" / "macros" / "README.md"), "phraseforge/macros"),
 ]

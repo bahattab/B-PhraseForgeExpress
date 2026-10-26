@@ -80,7 +80,9 @@ def _item(rt, args, opts):
 
 # ====================================================================== date / time
 def _dt_out(rt, dt, opts, default_fmt):
-    return dtm.format_dt(dt, opts.get("format", default_fmt), opts.get("lang", "en"))
+    return dtm.format_dt(dt, opts.get("format", default_fmt), opts.get("lang", rt.setting("date.lang", "en")),
+                         opts.get("calendar", rt.setting("date.calendar", "gregorian")),
+                         opts.get("digits", rt.setting("date.digits", "latin")))
 
 
 _WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
@@ -127,8 +129,10 @@ def _now(rt, opts):
     return dt
 
 
-@macro("date", "Date & time", '{#date -format "yyyy-MM-dd" -offset +3d -lang en}',
-       "Current date. Offset units: y, m/mo (month), w, d, wd (workday), h, min, s.", "{#date -format \"yyyy-MM-dd\"}")
+@macro("date", "Date & time", '{#date -format "yyyy-MM-dd" -offset +3d -lang en -calendar hijri -digits arabic}',
+       "Current date. Offset units: y, m/mo (month), w, d, wd (workday), h, min, s. "
+       "-calendar hijri gives the tabular Hijri date (may differ a day from Umm al-Qura); "
+       "-digits arabic writes Arabic-Indic digits.", "{#date -format \"yyyy-MM-dd\"}")
 def _date(rt, args, opts):
     return _dt_out(rt, _now(rt, opts), opts, rt.setting("date.format", "yyyy-MM-dd"))
 

@@ -63,6 +63,12 @@ def run() -> int:
         assert PROJECT_README.is_file(), PROJECT_README
     check("README bundled", readme)
 
+    def guide() -> None:
+        from phraseforge.ui.help_viewer import guide_path
+        p = guide_path("ar")
+        assert p.name == "USER_GUIDE.ar.md" and p.is_file(), p
+    check("Arabic user guide bundled", guide)
+
     lines.append("RESULT: " + ("FAIL" if failed else "PASS"))
     (paths.data_dir() / "selftest.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return 1 if failed else 0

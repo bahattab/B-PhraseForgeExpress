@@ -1920,9 +1920,35 @@ class MainWindow(QMainWindow):
                           f"<b>PhraseForge v{__version__}</b><br>An original text expander for Windows.<br>"
                           "Screen OCR by Capture2Text (separate GPLv3 program).")
 
-    def check_updates(self) -> None:
-        from phraseforge import __version__
-        QMessageBox.information(self, "Check for updates", f"You are up to date (PhraseForge v{__version__}).")
+    def check_updates(self, opener=None) -> str:
+        """Ask GitHub Releases (only on request). Returns the message shown."""
+        from phraseforge import __version__, updates
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            rel = updates.latest_release(opener=opener) if opener else updates.latest_release()
+            err = ""
+        except Exception as e:  # network down, proxy, rate limit
+            rel, err = None, str(e)
+        finally:
+            QApplication.restoreOverrideCursor()
+        if err:
+            msg = f"Could not check for updates: {err}"
+        elif rel is None:
+            msg = f"No release has been published yet. You have PhraseForge v{__version__}."
+        elif updates.is_newer(rel["version"], __version__):
+            msg = f"PhraseForge v{rel['version']} is available (you have v{__version__}).\n{rel['url']}"
+        else:
+            msg = f"You are up to date (PhraseForge v{__version__})."
+        if not getattr(self, "_quiet_updates", False):
+            box = QMessageBox(QMessageBox.Information, "Check for updates", msg, QMessageBox.Close, self)
+            if rel is not None and not err and updates.is_newer(rel["version"], __version__):
+                btn = box.addButton("Open download page", QMessageBox.AcceptRole)
+                box.exec()
+                if box.clickedButton() is btn:
+                    QDesktopServices.openUrl(QUrl(rel["url"]))
+            else:
+                box.exec()
+        return msg
 
     def get_support(self) -> None:
         QMessageBox.information(self, "Get support",
@@ -1930,9 +1956,11 @@ class MainWindow(QMainWindow):
                                 "for help, or check the log file in %APPDATA%\\PhraseForge.")
 
     def open_help(self) -> None:
-        readme = Path(__file__).resolve().parents[2] / "README.md"
-        if readme.exists():
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(readme)))
+        from phraseforge.ui import i18n
+        from phraseforge.ui.help_viewer import GuideDialog
+        dlg = GuideDialog(i18n.language(), self)
+        dlg.show() if getattr(self, "_quiet_updates", False) else dlg.exec()
+        return dlg
 
     def macro_reference(self) -> None:
         from PySide6.QtWidgets import QHeaderView, QTableWidget, QTableWidgetItem
