@@ -48,6 +48,10 @@ datas += collect_data_files("googleapiclient")    # Drive API discovery document
 hiddenimports = collect_submodules("phraseforge")   # modules loaded lazily / by name
 hiddenimports += ["google_auth_oauthlib.flow", "google.auth.transport.requests",
                   "googleapiclient.discovery", "googleapiclient.http"]
+# Built-in OCR (Windows.Media.Ocr through the WinRT bindings).
+hiddenimports += ["winrt.windows.media.ocr", "winrt.windows.globalization", "winrt.windows.graphics.imaging",
+                  "winrt.windows.storage.streams", "winrt.windows.foundation",
+                  "winrt.windows.foundation.collections", "winrt.runtime", "winrt.system"]
 
 # Qt modules PhraseForge never uses; keeps the build much smaller.
 excludes = [

@@ -957,11 +957,8 @@ spec(MacroSpec("open_folder", "Open folder", lambda v: call("openfolder", v.get(
 
 def _processes():
     try:
-        import subprocess
-        out = subprocess.run(["tasklist", "/fo", "csv", "/nh"], capture_output=True, text=True, timeout=5,
-                             creationflags=0x08000000).stdout
-        names = sorted({line.split('","')[0].strip('"').lower() for line in out.splitlines() if line})
-        return [""] + names
+        from phraseforge.platform.processes import running_exes
+        return [""] + running_exes()
     except Exception:
         return [""]
 
@@ -1324,15 +1321,13 @@ text_spec("put_into_clipboard", "Put text into clipboard", "setclipboard")
 
 def _ocr_languages():
     try:
-        from phraseforge.ocr import Capture2TextOCR
-        store = get_store()
-        path = store.setting("ocr.cli_path") if store is not None else ""
-        langs = Capture2TextOCR(path).languages()
+        from phraseforge.ocr import WindowsOCR
+        langs = WindowsOCR().languages()
         if langs:
             return langs
     except Exception:
         pass
-    return ["English", "Arabic", "Russian"]
+    return ["English", "Arabic"]
 
 
 def build_ocr(v):
@@ -1344,7 +1339,7 @@ def build_ocr(v):
 spec(MacroSpec("ocr", "Screen OCR", build_ocr, commands=("ocr", "ocrfile"),
                parse=lambda a, o: {"source": "file" if a else "screen", "path": a[0] if a else "",
                                    "lang": o.get("lang", ""), "linebreaks": "linebreaks" in o},
-               description="Recognizes text on screen (Capture2Text). When the phrase runs you drag a rectangle "
+               description="Recognizes text on screen (built-in OCR). When the phrase runs you drag a rectangle "
                            "around the text to read.",
                fields=[Radio("source", options=[("Select a screen region when the phrase runs", "screen"),
                                                 ("Read an image file", "file")]),

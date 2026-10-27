@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 from phraseforge import paths
 from phraseforge.db import Store
 from phraseforge.ui.hotkey_picker import KEYS, HotkeyPicker
+from phraseforge.ui.i18n import tr
 from phraseforge.ui.iconset import icon
 from phraseforge.ui.settings_schema import (
     SCHEMA, decode_delimiters, encode_delimiters, ensure_defaults,
@@ -1287,24 +1288,35 @@ class SettingsDialog(QDialog):
         lay.addStretch(1)
         return w
 
-    # ---- Screen OCR (Capture2Text)
+    # ---- Screen OCR (built in: Windows OCR engine, no external program)
     def _page_ocr(self) -> QWidget:
         w, lay = self._page()
-        g, gl = _group("Capture2Text")
-        gl.addWidget(_wrap_label("Screen OCR runs Capture2Text (a separate program) through Capture2Text_CLI.exe."))
-        gl.addWidget(QLabel("Capture2Text_CLI.exe location:"))
-        self.ocr_path = self.bind("ocr.cli_path", QLineEdit())
-        gl.addWidget(_row(self.ocr_path, _icon_button("folder", "Browse", self._browse_ocr), stretch=False))
+        g, gl = _group("Text recognition")
+        gl.addWidget(_wrap_label("PhraseForge reads text from the screen with the OCR engine built into "
+                                 "Windows. No other program is needed. To read Arabic, add the Arabic "
+                                 "language in Windows Settings > Time & language > Language & region."))
         gl.addWidget(QLabel("OCR language:"))
         self.ocr_language = DataCombo([])
         self.ocr_language.setEditable(True)
         self.ocr_language.setFixedWidth(198)
-        self._ocr_queried = False   # ask Capture2Text for languages only when the page is opened
+        self._ocr_queried = False   # ask Windows for its OCR languages only when the page is opened
         self.bind_custom("ocr.language", lambda: self.ocr_language.currentText().strip(),
                          lambda v: self._fill_ocr_languages(v, query=self._ocr_queried))
         test = QPushButton("Test OCR")
         test.clicked.connect(self._test_ocr)
         gl.addWidget(_row(self.ocr_language, test))
+        self.ocr_installed = _wrap_label("")
+        gl.addWidget(self.ocr_installed)
+        self.ocr_scale = self.bind("ocr.scale", DataCombo(
+            [("Automatic", "0"), ("1x", "1"), ("2x", "2"), ("3x", "3"), ("4x", "4")]))
+        gl.addWidget(_row("Enlarge the capture before reading:", self.ocr_scale))
+        gl.addWidget(QLabel("Keep only these characters (empty = all):"))
+        self.ocr_whitelist = self.bind("ocr.whitelist", QLineEdit())
+        self.ocr_whitelist.setPlaceholderText("0123456789")
+        gl.addWidget(self.ocr_whitelist)
+        gl.addWidget(QLabel("Remove these characters:"))
+        self.ocr_blacklist = self.bind("ocr.blacklist", QLineEdit())
+        gl.addWidget(self.ocr_blacklist)
         gl.addWidget(self.bind("ocr.keep_line_breaks", QCheckBox("Keep line breaks")))
         lay.addWidget(g)
         g, gl = _group("Output")
@@ -1323,6 +1335,12 @@ class SettingsDialog(QDialog):
         gl.addWidget(self.ocr_hotkey)
         gl.addWidget(QLabel("Re-capture the last area:"))
         gl.addWidget(self.bind("ocr.recapture_hotkey", Hotkey()))
+        gl.addWidget(QLabel("Read the text line under the mouse pointer:"))
+        gl.addWidget(self.bind("ocr.textline_hotkey", Hotkey()))
+        gl.addWidget(QLabel("Read from the mouse pointer to the end of the line:"))
+        gl.addWidget(self.bind("ocr.forward_hotkey", Hotkey()))
+        gl.addWidget(QLabel("Read the text block (bubble) around the mouse pointer:"))
+        gl.addWidget(self.bind("ocr.bubble_hotkey", Hotkey()))
         gl.addWidget(QLabel("Quick-access languages (up to 3, comma separated):"))
         self.ocr_quick = self.bind("ocr.quick_languages", QLineEdit())
         gl.addWidget(self.ocr_quick)
@@ -1340,7 +1358,6 @@ class SettingsDialog(QDialog):
         gl.addWidget(self.ocr_replace)
         lay.addWidget(g)
         lay.addStretch(1)
-        self.ocr_path.editingFinished.connect(lambda: self._fill_ocr_languages(self.ocr_language.currentText()))
         return w
 
     def _browse_ocr_log(self) -> None:
@@ -1348,25 +1365,22 @@ class SettingsDialog(QDialog):
         if path:
             self.ocr_log_file.setText(path)
 
-    def _browse_ocr(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Capture2Text_CLI.exe", self.ocr_path.text(), "Programs (*.exe)")
-        if path:
-            self.ocr_path.setText(path)
-            self._fill_ocr_languages(self.ocr_language.currentText())
-
     def _fill_ocr_languages(self, current: str, query: bool = True) -> None:
         langs: list[str] = []
         if query:
             self._ocr_queried = True
             try:
-                from phraseforge.ocr import Capture2TextOCR
-                ocr = Capture2TextOCR(self.ocr_path.text())
+                from phraseforge.ocr import WindowsOCR
+                ocr = WindowsOCR()
                 if ocr.available():
                     langs = ocr.languages()
             except Exception:
                 langs = []
+            self.ocr_installed.setText(
+                tr("Installed in Windows: ") + ", ".join(langs) if langs else
+                tr("Windows reported no OCR languages."))
         self.ocr_language.clear()
-        self.ocr_language.addItems(langs or ["English", "Arabic", "Russian"])
+        self.ocr_language.addItems(langs or ["English", "Arabic"])
         self.ocr_language.setEditText(current or "English")
         i = self.ocr_language.findText(current or "English")
         if i >= 0:
@@ -1374,20 +1388,24 @@ class SettingsDialog(QDialog):
 
     def _test_ocr(self) -> None:
         try:
-            from phraseforge.ocr import Capture2TextOCR
+            from phraseforge.app import _grab_screen_png
+            from phraseforge.ocr import WindowsOCR
             from phraseforge.ui.region_select import select_region
             self.hide()
             rect = select_region()
+            png = _grab_screen_png(rect) if rect else None
             self.show()
-            if not rect:
+            if not png:
                 return
-            text = Capture2TextOCR(self.ocr_path.text()).ocr_rect(
-                *rect, language=self.ocr_language.currentText(),
+            v = self.values()
+            text = WindowsOCR(scale=int(v.get("ocr.scale", "0") or 0), whitelist=v.get("ocr.whitelist", ""),
+                              blacklist=v.get("ocr.blacklist", "")).ocr_png(
+                png, language=self.ocr_language.currentText(),
                 keep_line_breaks=_b(self.values().get("ocr.keep_line_breaks", "1")))
-            QMessageBox.information(self, "Screen OCR", text or "(no text recognised)")
+            QMessageBox.information(self, tr("Screen OCR"), text or tr("(no text recognised)"))
         except Exception as e:  # show any OCR problem to the user
             self.show()
-            QMessageBox.warning(self, "Screen OCR", str(e))
+            QMessageBox.warning(self, tr("Screen OCR"), tr(str(e)))
 
     # ---- OneNote (desktop app through its official COM API)
     def _page_onenote(self) -> QWidget:
@@ -1421,12 +1439,9 @@ class SettingsDialog(QDialog):
         g, gl = _group("Screen clipping")
         gl.addWidget(QLabel("Hotkey: clip a screen area"))
         gl.addWidget(self.bind("onenote.clip_hotkey", Hotkey()))
-        self.onenote_clip_tool = self.bind("onenote.clip_tool", DataCombo(
-            [("PhraseForge area selection", "phraseforge"), ("OneNote's own clipping tool", "onenote")]))
         self.onenote_clip_action = self.bind("onenote.clip_action", DataCombo(
-            [("Add the picture to OneNote", "image"), ("Copy the recognised text (Capture2Text OCR)", "ocr"),
+            [("Add the picture to OneNote", "image"), ("Copy the recognised text (built-in OCR)", "ocr"),
              ("Both", "both")]))
-        gl.addWidget(_row("Tool:", self.onenote_clip_tool))
         gl.addWidget(_row("Then:", self.onenote_clip_action))
         lay.addWidget(g)
         lay.addStretch(1)

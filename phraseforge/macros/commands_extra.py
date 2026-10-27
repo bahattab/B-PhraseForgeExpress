@@ -674,14 +674,14 @@ def _onenote(rt, args, opts):
         ref, include_title=_flag(opts, "title"), include_ocr=include_ocr)
 
 
-# ---------------------------------------------------------------- Microsoft Sticky Notes
+# ---------------------------------------------------------------- sticky notes (built in)
 @macro("stickynote", "External data", '{#stickynote "first line or search word" -all -sep "\\n---\\n"}',
-       "Insert the text of a Sticky Notes note (matched by its first line, else the newest note "
-       "containing the words). -all inserts every note. Reads a copy of your notes file; Sticky Notes "
-       "itself is never changed.")
+       "Insert the text of one of your PhraseForge sticky notes (matched by its first line, else the "
+       "newest note containing the words). -all inserts every note.")
 def _stickynote(rt, args, opts):
     from phraseforge import stickynotes
-    notes = stickynotes.read_notes()
+    notes = rt.store.sticky_notes() if rt.store is not None else []
+    notes = [n for n in notes if n.text.strip()]
     if not notes:
         raise MacroError("stickynote: no Sticky Notes found")
     if _flag(opts, "all"):

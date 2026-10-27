@@ -106,7 +106,6 @@ SCHEMA: dict[str, str] = {
     "net.proxy_user": "",
     "net.proxy_password": "",
     # Screen OCR (Capture2Text)
-    "ocr.cli_path": DEFAULT_SETTINGS["ocr.cli_path"],
     "ocr.language": DEFAULT_SETTINGS["ocr.language"],
     "ocr.keep_line_breaks": "1",
     "ocr.hotkey": DEFAULT_SETTINGS["ocr.hotkey"],
@@ -118,6 +117,12 @@ SCHEMA: dict[str, str] = {
     "ocr.quick1_hotkey": "",
     "ocr.quick2_hotkey": "",
     "ocr.quick3_hotkey": "",
+    "ocr.textline_hotkey": "",
+    "ocr.forward_hotkey": "",
+    "ocr.bubble_hotkey": "",
+    "ocr.scale": "0",                    # 0 = automatic, 1-4 = enlarge the capture
+    "ocr.whitelist": "",
+    "ocr.blacklist": "",
     "ocr.replace_rules": "",
     "ocr.log_file": "",
     "ocr.log_format": "${capture}${linebreak}",
@@ -142,7 +147,6 @@ SCHEMA: dict[str, str] = {
     "filesearch.actions": 'Edit with Notepad = notepad.exe | "{path}"',
     "filesearch.commands": FILESEARCH_COMMANDS,  # "keyword = Title | program | parameter with {query}"
     "filesearch.favorites": "",              # folders listed while the search box is empty
-    "onenote.clip_tool": "phraseforge",    # phraseforge | onenote (onenotecapture.exe)
     "onenote.clip_action": "image",        # image | ocr | both
     "onenote.include_ocr": "0",            # include text OneNote recognised in images
     # Phrase menu

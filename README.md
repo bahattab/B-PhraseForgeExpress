@@ -1,7 +1,8 @@
 # B-PhraseForgeExpress (PhraseForge)
 
 An original text expander for Windows with the feature set of PhraseExpress,
-screen OCR through Capture2Text, and import of TextExpander snippet exports.
+built-in screen OCR and sticky notes, and import of TextExpander snippet exports.
+PhraseForge does not start any other program for these features.
 See [SPEC.md](SPEC.md) for the design and [macro reference](phraseforge/macros/README.md).
 
 ## Install (Windows)
@@ -52,13 +53,24 @@ C:\venvs\phraseforge\Scripts\python -m phraseforge --minimized # tray only
 C:\venvs\phraseforge\Scripts\python -m pytest -p no:cacheprovider  # full test suite
 ```
 
+## Screen OCR and sticky notes
+
+- **Screen OCR** (Ctrl+Alt+O): draw a box and the text is copied. Optional hotkeys in
+  Settings > Screen OCR read the text line under the mouse pointer, from the pointer to the
+  end of the line, or the text block around it, without drawing a box. To read Arabic, add
+  the Arabic language once in Windows Settings > Time & language > Language & region.
+- **Sticky notes**: Tools > New sticky note (or the tray menu). Notes are small desktop
+  windows with seven colours, bold/italic/underline/strikethrough/bullets and "always on
+  top"; they are saved as you type and reopen where they were. Tools > Sticky Notes lists,
+  searches and deletes notes, and can import your Microsoft Sticky Notes file once.
+
 ## Default hotkeys
 
 | Hotkey | Action |
 |---|---|
 | Ctrl+Alt+Space | Phrase popup / search |
 | Ctrl+Alt+V | Clipboard history |
-| Ctrl+Alt+O | OCR a screen region to the clipboard (Capture2Text) |
+| Ctrl+Alt+O | OCR a screen region to the clipboard (built-in Windows OCR) |
 | Ctrl+Alt+F | Search files: find and open files, folders and programs by name |
 
 Data lives in `%APPDATA%\PhraseForge` (override with `PHRASEFORGE_HOME`).
@@ -113,6 +125,6 @@ Phrases can hold one version per language; dates can be Hijri with Arabic digits
 
 MIT, see [LICENSE](LICENSE). Third-party parts keep their own licenses: PySide6 (LGPL),
 QtAwesome icon fonts (MIT / SIL OFL), Google API client libraries (Apache 2.0).
-Capture2Text (GPLv3) is not included; PhraseForge only starts its command-line tool
-if you have it installed. PhraseExpress and TextExpander are trademarks of their owners;
+Screen OCR uses the OCR engine that ships with Windows 10/11, called in-process through the
+WinRT Python bindings (MIT); no Capture2Text code is used. PhraseExpress and TextExpander are trademarks of their owners;
 PhraseForge is an independent project and contains none of their code.

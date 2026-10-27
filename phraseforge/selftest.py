@@ -18,7 +18,9 @@ from phraseforge import paths
 
 # Optional parts that a full Windows build must still contain.
 EXTRA_MODULES = ("httpx", "openpyxl", "qtawesome", "googleapiclient.discovery",
-                 "google_auth_oauthlib.flow", "google.auth.transport.requests")
+                 "google_auth_oauthlib.flow", "google.auth.transport.requests",
+                 "winrt.windows.media.ocr", "winrt.windows.graphics.imaging",
+                 "winrt.windows.storage.streams", "winrt.windows.globalization")
 
 
 def run() -> int:
@@ -68,6 +70,12 @@ def run() -> int:
         p = guide_path("ar")
         assert p.name == "USER_GUIDE.ar.md" and p.is_file(), p
     check("Arabic user guide bundled", guide)
+
+    def ocr_engine() -> None:
+        from phraseforge.ocr import WindowsOCR
+        langs = WindowsOCR().languages()
+        lines.append(f"      OCR languages: {', '.join(langs) or '(none)'}")
+    check("built-in OCR engine", ocr_engine)
 
     lines.append("RESULT: " + ("FAIL" if failed else "PASS"))
     (paths.data_dir() / "selftest.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")

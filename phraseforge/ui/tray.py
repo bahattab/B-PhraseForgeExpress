@@ -27,6 +27,8 @@ class Tray(QSystemTrayIcon):
     file_search = Signal()              # "Search files"
     ocr_language = Signal(str)          # picked in "OCR language" (like Capture2Text's tray menu)
     quick_note = Signal()               # "New quick note" (like ONENOTEM)
+    new_sticky_note = Signal()          # "New sticky note" (built-in sticky notes)
+    open_sticky_notes = Signal()        # "Sticky notes" list
     new_phrase_from_clipboard = Signal()   # TextExpander "New Snippet from Clipboard"
     edit_last_phrase = Signal()            # TextExpander "Edit Last Expanded Snippet"
     app_enabled = Signal(str, bool)        # PhraseExpress 'Enabled in "<program>"' (exe, on)
@@ -59,6 +61,8 @@ class Tray(QSystemTrayIcon):
         self.onenote_clip_action = m.addAction(icon("on_clip"), tr("Screen clip to OneNote"),
                                                self.onenote_clip.emit)
         self.quick_note_action = m.addAction(icon("sticky_notes"), tr("New quick note"), self.quick_note.emit)
+        self.new_sticky_action = m.addAction(icon("sticky_notes"), tr("New sticky note"), self.new_sticky_note.emit)
+        self.sticky_list_action = m.addAction(icon("sticky_notes"), tr("Sticky notes"), self.open_sticky_notes.emit)
         m.addSeparator()
         self.stats_action = m.addAction(icon("statistics"), tr("Statistics"), self.show_statistics.emit)
         m.addAction(icon("settings"), tr("Settings"), self.settings.emit)

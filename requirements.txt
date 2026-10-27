@@ -8,5 +8,13 @@ google-api-python-client>=2.100
 google-auth>=2.23
 google-auth-oauthlib>=1.1
 requests>=2.31
+# Built-in screen OCR: the Windows OCR engine, called in-process (Windows only)
+winrt-runtime>=2.0; sys_platform == "win32"
+winrt-Windows.Media.Ocr>=2.0; sys_platform == "win32"
+winrt-Windows.Globalization>=2.0; sys_platform == "win32"
+winrt-Windows.Graphics.Imaging>=2.0; sys_platform == "win32"
+winrt-Windows.Storage.Streams>=2.0; sys_platform == "win32"
+winrt-Windows.Foundation>=2.0; sys_platform == "win32"
+winrt-Windows.Foundation.Collections>=2.0; sys_platform == "win32"
 # Outlook / Excel macros through COM (Windows only)
 pywin32>=306; sys_platform == "win32"

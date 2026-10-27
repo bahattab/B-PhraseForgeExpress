@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import base64
 import html
-import os
 import re
 import threading
 import xml.etree.ElementTree as ET
@@ -23,7 +22,6 @@ from pathlib import Path
 NS = "http://schemas.microsoft.com/office/onenote/2013/onenote"
 _N = f"{{{NS}}}"
 DEFAULT_EXE = r"C:\Program Files\Microsoft Office\root\Office16\ONENOTE.EXE"
-CAPTURE_EXE = r"C:\Program Files\Microsoft Office\root\Office16\onenotecapture.exe"
 
 # OneNote enums (documented in the OneNote 2013 developer reference)
 HS_PAGES = 4               # HierarchyScope.hsPages
@@ -272,6 +270,3 @@ def _title_from(text: str) -> str:
     first = next((l.strip() for l in (text or "").splitlines() if l.strip()), "")
     return (first[:60] + "...") if len(first) > 60 else (first or "PhraseForge")
 
-
-def capture_exe() -> str:
-    return CAPTURE_EXE if os.path.isfile(CAPTURE_EXE) else ""
