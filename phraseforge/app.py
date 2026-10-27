@@ -448,6 +448,8 @@ class PhraseForgeApp(QObject):
         reg("popup_search", lambda arg, hwnd: post(lambda: self._show_popup(hwnd, search=True)))
         # trigger-layer events (triggers/manager.py)
         reg("folder_popup", lambda arg, hwnd: self._folder_popup_cmd(arg, hwnd))  # "<folder|last_used|clipboard_cache>:<erase>"
+        reg("choose", lambda arg, hwnd: self._folder_popup_cmd(  # "<id,id,...>:<erase>": phrases sharing an autotext
+            "choice:" + arg, hwnd))
         reg("smartcomplete", lambda arg, hwnd: post(lambda: self._show_tip_phrase(arg)))   # "<pid>:<len>"
         reg("autocomplete", lambda arg, hwnd: post(lambda: self._show_tip_word(arg)))      # "<word>:<len>"
         reg("suggest_hide", lambda arg, hwnd: post(self._hide_tip))

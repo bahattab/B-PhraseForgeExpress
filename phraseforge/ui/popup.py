@@ -64,6 +64,7 @@ def content_tokens(contents: str) -> list[str]:
 
 CLIPBOARD = "clipboard"
 LAST_USED = "last_used"
+CHOICE = "choice"               # phrases sharing one autotext (multiple-choice autotext)
 STICKY = "sticky_notes"          # Microsoft Sticky Notes (read-only, phraseforge.stickynotes)
 STICKY_MAX = 200
 
@@ -680,6 +681,14 @@ class _Panel(QFrame):
                 self.add_row("empty", None, "(no notes)")
             self.footer.setText("Open Sticky Notes")
             self._set_footer(True)
+        elif key == CHOICE:
+            for pid in pop.choice_ids:
+                p = st.get_phrase(pid)
+                if p is not None:
+                    self.add_row("phrase", p.id, p.description, right=pop.right_text(p))
+            if self.list.count() == 0:
+                self.add_row("empty", None, "(empty)")
+            self._set_footer(False)
         elif key == LAST_USED:
             for p in pop.last_used_phrases():
                 self.add_row("phrase", p.id, p.description, right=pop.right_text(p))
@@ -828,6 +837,7 @@ class PhrasePopup(_Panel):
         self.pinned = False
         self.subs: list[_Panel] = []
         self.new_phrase_folder_id: int | None = None
+        self.choice_ids: list[int] = []   # rows of the "choice:" root (multiple-choice autotext)
         self.max_items = 30          # visible rows before the menu scrolls
         self._load_settings()
         # header: band with search + pin, or the search bar
@@ -1321,7 +1331,10 @@ class PhrasePopup(_Panel):
         key, title = None, ""
         if folder == "clipboard_cache":
             folder = CLIPBOARD
-        if folder in (LAST_USED, CLIPBOARD, STICKY):
+        if isinstance(folder, str) and folder.startswith(CHOICE + ":"):
+            self.choice_ids = [int(x) for x in folder[len(CHOICE) + 1:].split(",") if x.strip().isdigit()]
+            key, title = CHOICE, tr("Select phrase")
+        elif folder in (LAST_USED, CLIPBOARD, STICKY):
             key = folder
             title = tr({LAST_USED: "Last Used", CLIPBOARD: "Clipboard Cache", STICKY: "Sticky Notes"}[folder])
         elif folder is not None and str(folder).strip().lstrip("-").isdigit():
@@ -1337,7 +1350,8 @@ class PhrasePopup(_Panel):
                 caret: tuple[int, int] | None | bool = True, folder=None) -> None:
         """Show the menu. caret=True looks the caret up; pass a (x, y) or None to skip the lookup.
         search=True opens straight into quick search. folder (id or "last_used" /
-        "clipboard_cache") opens the menu on that folder's contents (folder triggers)."""
+        "clipboard_cache") opens the menu on that folder's contents (folder triggers);
+        "choice:<id,id,...>" lists just those phrases (several phrases share one autotext)."""
         self.app_exe = app_exe or ""
         self.set_root_folder(folder)
         self._load_settings()
