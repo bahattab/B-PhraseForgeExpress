@@ -1001,7 +1001,7 @@ def _translate(rt, args, opts):
        "Select a screen region and insert its text (Capture2Text). Languages: Arabic, English, Russian.",
        "{#ocr -lang English}")
 def _ocr(rt, args, opts):
-    lang = opts.get("lang") or rt.setting("ocr.language", "English")
+    lang = opts.get("lang") or rt.setting("ocr.language", "Auto")
     if _flag(opts, "linebreaks"):
         keep = True
     elif _flag(opts, "nolinebreaks"):
@@ -1013,7 +1013,7 @@ def _ocr(rt, args, opts):
 
 @macro("ocrfile", "OCR", '{#ocrfile "C:\\image.png" -lang English}', "OCR an image file.")
 def _ocrfile(rt, args, opts):
-    lang = opts.get("lang") or rt.setting("ocr.language", "English")
+    lang = opts.get("lang") or rt.setting("ocr.language", "Auto")
     return rt.host.ocr_image(os.path.expandvars(_arg(args, 0)), language=lang)
 
 

@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Publish a GitHub Release with this tag (e.g. v0.5.0). Leave empty to only build."
+        description: "Publish a GitHub Release with this tag (e.g. v0.5.1). Leave empty to only build."
         required: false
         default: ""
 
@@ -42,6 +42,19 @@ jobs:
           $v = python -c "import phraseforge; print(phraseforge.__version__)"
           "version=$v" >> $env:GITHUB_OUTPUT
           Write-Host "PhraseForge $v"
+
+      # Lets the tests check Arabic OCR and automatic language detection for real.
+      # Optional: if Windows Update is unreachable the Arabic checks are skipped.
+      - name: Add Arabic OCR to Windows
+        continue-on-error: true
+        timeout-minutes: 10
+        run: |
+          $name = "Language.OCR~~~ar-SA~0.0.1.0"
+          if ((Get-WindowsCapability -Online -Name $name).State -ne "Installed") {
+            Add-WindowsCapability -Online -Name $name | Out-Null
+          }
+          Get-WindowsCapability -Online -Name "Language.OCR*" | Where-Object State -eq Installed |
+            ForEach-Object { Write-Host "OCR language installed: $($_.Name)" }
 
       - name: Run tests
         env:

@@ -79,7 +79,10 @@ QAbstractSpinBox::down-button {{ subcontrol-position: bottom right; }}
 QAbstractSpinBox::up-button:hover, QAbstractSpinBox::down-button:hover {{ background: #e5f1fb; }}
 
 /* ---------------- buttons ---------------- */
-QPushButton {{ background: #e1e1e1; border: 1px solid #adadad; padding: 3px 14px; min-width: 64px; }}
+QPushButton {{ background: #e1e1e1; border: 1px solid #adadad; padding: 3px 14px; }}
+/* min-width only on OK/Cancel-type buttons: as a general rule it fixes every button's minimum
+   width, so a tight layout squeezed long labels ("Save as phrase") until they were cut off. */
+QDialogButtonBox QPushButton {{ min-width: 64px; }}
 QPushButton:hover {{ background: #e5f1fb; border-color: #0078d7; }}
 QPushButton:pressed {{ background: #cce4f7; border-color: #005499; }}
 QPushButton:default {{ border: 1px solid #0078d7; }}

@@ -98,6 +98,10 @@ def _b(v) -> bool:
 
 
 # ---------------------------------------------------------------- small widgets
+
+OCR_AUTO_HINT = ("Auto: PhraseForge reads the capture with each installed OCR language and keeps "
+                 "the one that fits, for example Arabic or English.")
+
 class DataCombo(QComboBox):
     """Combo of (text, value) items. setCurrentText also accepts the stored value."""
 
@@ -1299,6 +1303,7 @@ class SettingsDialog(QDialog):
         self.ocr_language = DataCombo([])
         self.ocr_language.setEditable(True)
         self.ocr_language.setFixedWidth(198)
+        self.ocr_language.setToolTip(tr(OCR_AUTO_HINT))
         self._ocr_queried = False   # ask Windows for its OCR languages only when the page is opened
         self.bind_custom("ocr.language", lambda: self.ocr_language.currentText().strip(),
                          lambda v: self._fill_ocr_languages(v, query=self._ocr_queried))
@@ -1307,6 +1312,7 @@ class SettingsDialog(QDialog):
         gl.addWidget(_row(self.ocr_language, test))
         self.ocr_installed = _wrap_label("")
         gl.addWidget(self.ocr_installed)
+        gl.addWidget(_wrap_label(OCR_AUTO_HINT))
         self.ocr_scale = self.bind("ocr.scale", DataCombo(
             [("Automatic", "0"), ("1x", "1"), ("2x", "2"), ("3x", "3"), ("4x", "4")]))
         gl.addWidget(_row("Enlarge the capture before reading:", self.ocr_scale))
@@ -1380,9 +1386,9 @@ class SettingsDialog(QDialog):
                 tr("Installed in Windows: ") + ", ".join(langs) if langs else
                 tr("Windows reported no OCR languages."))
         self.ocr_language.clear()
-        self.ocr_language.addItems(langs or ["English", "Arabic"])
-        self.ocr_language.setEditText(current or "English")
-        i = self.ocr_language.findText(current or "English")
+        self.ocr_language.addItems(["Auto"] + (langs or ["English", "Arabic"]))
+        self.ocr_language.setEditText(current or "Auto")
+        i = self.ocr_language.findText(current or "Auto")
         if i >= 0:
             self.ocr_language.setCurrentIndex(i)
 

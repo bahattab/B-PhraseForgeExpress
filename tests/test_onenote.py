@@ -145,3 +145,15 @@ def test_onenote_macro_uses_host(tmp_path):
 def test_output_target_onenote_listed():
     from phraseforge import output_target
     assert "onenote" in output_target.TARGETS
+
+
+def test_find_exe_falls_back_to_registered_path(tmp_path, monkeypatch):
+    from phraseforge import onenote
+    exe = tmp_path / "ONENOTE.EXE"
+    exe.write_bytes(b"MZ")
+    monkeypatch.setattr(onenote, "_registry_candidates", lambda: [str(exe)])
+    monkeypatch.setattr(onenote, "_COMMON_DIRS", ())
+    assert onenote.find_exe(str(tmp_path / "missing.exe")) == str(exe)
+    assert onenote.find_exe(str(exe)) == str(exe)
+    monkeypatch.setattr(onenote, "_registry_candidates", lambda: [])
+    assert onenote.find_exe(str(tmp_path / "missing.exe")) == ""

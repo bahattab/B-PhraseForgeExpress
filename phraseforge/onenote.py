@@ -175,6 +175,57 @@ def page_update_xml(page_id: str, text: str = "", image_png: bytes | None = None
 # ---------------------------------------------------------------- COM client
 _tls = threading.local()
 
+_COMMON_DIRS = (r"C:\Program Files\Microsoft Office\root\Office16",
+                r"C:\Program Files (x86)\Microsoft Office\root\Office16",
+                r"C:\Program Files\Microsoft Office\Office16",
+                r"C:\Program Files (x86)\Microsoft Office\Office16",
+                r"C:\Program Files\Microsoft Office\root\Office15",
+                r"C:\Program Files\Microsoft Office\Office15",
+                r"C:\Program Files (x86)\Microsoft Office\Office15")
+
+
+def _registry_candidates() -> list[str]:
+    """ONENOTE.EXE paths that Windows knows about (App Paths, OneNote.Application's COM server)."""
+    try:
+        import winreg
+    except ImportError:
+        return []
+    found: list[str] = []
+
+    def read(root, key, value=""):
+        for view in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
+            try:
+                with winreg.OpenKey(root, key, 0, winreg.KEY_READ | view) as k:
+                    return str(winreg.QueryValueEx(k, value)[0])
+            except OSError:
+                continue
+        return ""
+
+    for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        found.append(read(root, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\ONENOTE.EXE"))
+    clsid = read(winreg.HKEY_CLASSES_ROOT, r"OneNote.Application\CLSID")
+    if clsid:
+        found.append(read(winreg.HKEY_CLASSES_ROOT, rf"CLSID\{clsid}\LocalServer32"))
+    out = []
+    for f in found:
+        f = f.strip()
+        if f.startswith('"'):
+            f = f[1:].split('"', 1)[0]
+        elif f.lower().find(".exe") > 0:
+            f = f[:f.lower().find(".exe") + 4]
+        if f:
+            out.append(f)
+    return out
+
+
+def find_exe(preferred: str = "") -> str:
+    """The desktop OneNote program: the configured path if it exists, else the one
+    registered in Windows, else a standard Office folder. "" when not installed."""
+    for cand in [preferred, *_registry_candidates(), *(d + "\\ONENOTE.EXE" for d in _COMMON_DIRS)]:
+        if cand and Path(cand).is_file():
+            return cand
+    return ""
+
 
 def _com_app(exe: str = DEFAULT_EXE):
     """OneNote.Application for the current thread (COM objects are per apartment)."""
@@ -191,8 +242,11 @@ def _com_app(exe: str = DEFAULT_EXE):
         comtypes.CoInitialize()
     except OSError:
         pass  # already initialised on this thread
-    if not Path(exe).is_file():
-        raise OneNoteError(f"OneNote desktop app not found: {exe}")
+    found = find_exe(exe)
+    if not found:
+        raise OneNoteError(f"The OneNote desktop app was not found ({exe}). "
+                           "Install OneNote for Windows, or set its path in Settings > OneNote.")
+    exe = found
     try:
         mod = comtypes.client.GetModule(LoadTypeLibEx(exe + "\\3"))
         app = comtypes.client.CreateObject("OneNote.Application", interface=mod.IApplication)

@@ -18,3 +18,7 @@ winrt-Windows.Foundation>=2.0; sys_platform == "win32"
 winrt-Windows.Foundation.Collections>=2.0; sys_platform == "win32"
 # Outlook / Excel macros through COM (Windows only)
 pywin32>=306; sys_platform == "win32"
+# OneNote (send notes, read pages) through its COM type library (Windows only)
+comtypes>=1.4; sys_platform == "win32"
+# {#dbquery} macro with an ODBC connection string (Windows only)
+pyodbc>=5.1; sys_platform == "win32"

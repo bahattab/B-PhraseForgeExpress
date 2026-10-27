@@ -281,6 +281,8 @@ class TreePanel(QWidget):
                 for p in sorted(self.store.phrases(), key=lambda p: p.description.lower()):
                     if not self.locked(p.folder_id):
                         root.addChild(self.make_phrase_item(p, colors))
+            elif self.flat:
+                pass                # three columns: the middle list shows every phrase under "Phrases"
             else:
                 self._add_folders(root, None, colors)
                 if not self.folders_only:
@@ -349,6 +351,7 @@ class PhraseList(QWidget):
     """Middle column of the three-column layout: content of one folder."""
     selected = Signal(str, object)
     open_folder = Signal(object)          # folder id (None = root)
+    open_note = Signal(object)            # sticky note id (double-click opens it on the desktop)
 
     def __init__(self, store: Store, panel: TreePanel, parent=None):
         super().__init__(parent)
@@ -404,6 +407,11 @@ class PhraseList(QWidget):
                 it.setData(0, ROLE_ID, n.id)
                 it.setToolTip(0, n.text[:500])
                 self.list.addTopLevelItem(it)
+        elif kind == "root" and self.panel.flat:
+            # Flat list: every phrase of every (unlocked) folder, without folders
+            folders = []
+            phrases = sorted((p for p in self.store.phrases() if not self.panel.locked(p.folder_id)),
+                             key=lambda p: p.description.lower())
         elif kind in ("folder", "root"):
             fid = folder_id if kind == "folder" else None
             folders = [] if self.panel.locked(fid) else sorted_folders(self.store, fid)
@@ -444,3 +452,5 @@ class PhraseList(QWidget):
         elif k == "up":
             f = self.store.get_folder(self.folder_id) if self.folder_id else None
             self.open_folder.emit(f.parent_id if f else None)
+        elif k == "note":
+            self.open_note.emit(it.data(0, ROLE_ID))

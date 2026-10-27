@@ -8,6 +8,8 @@
 """
 from __future__ import annotations
 
+import logging
+
 import getpass
 import json
 import os
@@ -275,10 +277,15 @@ class StickyNoteView(QWidget):
         self.new_btn.clicked.connect(lambda: self._command("new_sticky_note"))
         self.open_btn = QPushButton(icon("sticky_notes"), "Open Sticky Notes")
         self.open_btn.clicked.connect(lambda: self._command("open_sticky_notes"))
-        for b in (self.open_note_btn, self.copy_btn, self.create_btn, self.new_btn, self.open_btn):
+        for b in (self.open_note_btn, self.copy_btn, self.create_btn):
             row.addWidget(b)
         row.addStretch(1)
         lay.addLayout(row)
+        row2 = QHBoxLayout()            # second row, so the pane can stay narrow without cutting labels
+        for b in (self.new_btn, self.open_btn):
+            row2.addWidget(b)
+        row2.addStretch(1)
+        lay.addLayout(row2)
 
     def _command(self, cmd: str) -> None:
         if getattr(self.window, "on_command", None) is not None:
@@ -428,6 +435,7 @@ class MainWindow(QMainWindow):
         self.panel.tree.itemChanged.connect(self._item_renamed)
         self.phrase_list.selected.connect(self._on_list_selected)
         self.phrase_list.open_folder.connect(self._open_folder_from_list)
+        self.phrase_list.open_note.connect(self._open_sticky_note)
         self.phrase_list.list.customContextMenuRequested.connect(self._list_menu)
 
         self._refresh_timer = QTimer(self)
@@ -522,6 +530,17 @@ class MainWindow(QMainWindow):
         b.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         b.setAutoRaise(True)
         b.setToolTip("Signed in as Windows user " + user)
+        b.setPopupMode(QToolButton.InstantPopup)
+        m = QMenu(b)
+        head = m.addAction(initials_avatar(user), tr("Windows user:") + " " + user)
+        head.setEnabled(False)
+        m.addSeparator()
+        m.addAction(icon("settings"), "Settings...", self.show_settings)
+        m.addAction(icon("open"), "Open data folder", self.open_data_folder)
+        m.addSeparator()
+        m.addAction(icon("help"), "User guide", self.open_help)
+        m.addAction(icon("support"), "Get support...", self.get_support)
+        b.setMenu(m)
         self.user_button = b
         self.ribbon.set_right_widget(b)
 
@@ -610,7 +629,7 @@ class MainWindow(QMainWindow):
         self.btn_two = g.add_large("Two\ncolumns", "two_columns", lambda: self.set_columns(2))
         self.btn_three = g.add_large("Three\ncolumns", "three_columns", lambda: self.set_columns(3))
         self.btn_flat = g.add_large("Flat\nlist", "flat_list", self.toggle_flat)
-        self.btn_fit = g.add_large("Resize column\nto fit contents", "fit_columns", self.phrase_list.fit_columns)
+        self.btn_fit = g.add_large("Resize column\nto fit contents", "fit_columns", self.fit_columns)
         for b in (self.btn_two, self.btn_three, self.btn_flat):
             b.setCheckable(True)
         self.btn_two.setToolTip("Two columns (Ctrl+2)")
@@ -725,6 +744,9 @@ class MainWindow(QMainWindow):
             elif kind in ("last_used", "clipboard_cache"):
                 ed = pe.SpecialFolderEditor(self.store, kind)
         except Exception:
+            # keep the window usable, but leave a trace: the simple fallback editor has
+            # no view options (rulers, word wrap...), so a silent failure looks like broken buttons
+            logging.getLogger(__name__).exception("creating the %s editor", kind)
             ed = None
         if ed is None:
             if kind == "phrase":
@@ -733,6 +755,8 @@ class MainWindow(QMainWindow):
                 ed = FallbackFolderEditor(self.store)
             elif kind == "clip":
                 ed = ClipEntryView(self.store)
+            elif kind == "note":
+                ed = StickyNoteView(self.store, self)
             else:
                 ed = QWidget()
         for sig, slot in (("content_focus_changed", self._content_focus), ("saved", self._editor_saved),
@@ -805,6 +829,13 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def _show_editor(self, kind: str, id_) -> None:
+        if kind in ("note", "sticky_notes"):
+            # one page for both: a note's text, or a summary for the folder node
+            ed = self._editor("note")
+            ed.load(id_ if kind == "note" else None)
+            self.editor_stack.setCurrentWidget(ed)
+            self._content_focus(False)
+            return
         if kind in ("phrase", "folder", "clip") and id_ is not None or kind in ("last_used", "clipboard_cache"):
             ed = self._editor(kind)
             load = getattr(ed, "load", None)
@@ -822,6 +853,8 @@ class MainWindow(QMainWindow):
             self._content_focus(False)
 
     # ================================================================= selection
+    # Tree nodes whose content the middle column lists in the three-column layout.
+    LIST_KINDS = ("folder", "root", "last_used", "clipboard_cache", "sticky_notes")
     TREE_SETTINGS = ("features.last_used_folder", "clipboard_history.enabled", "last_used.max",
                      "features.usage_statistics")
 
@@ -844,7 +877,7 @@ class MainWindow(QMainWindow):
         self.panel.refresh()
         if self.three_columns:
             k, i = self.panel.current()
-            if k in ("folder", "root", "last_used", "clipboard_cache"):
+            if k in self.LIST_KINDS:
                 self.phrase_list.show_folder(k, i)
         self._update_status()
 
@@ -862,7 +895,7 @@ class MainWindow(QMainWindow):
                     self.editor_stack.setCurrentWidget(self.blank)
                     return
         self._set_selection(kind, id_)
-        if self.three_columns and kind in ("folder", "root", "last_used", "clipboard_cache"):
+        if self.three_columns and kind in self.LIST_KINDS:
             self.phrase_list.show_folder(kind, id_)
         self._show_editor(kind, id_)
         self._push_nav(kind, id_)
@@ -877,6 +910,10 @@ class MainWindow(QMainWindow):
         self._push_nav(kind, id_)
         self._update_status()
         self._update_actions()
+
+    def _open_sticky_note(self, note_id) -> None:
+        if self.on_command is not None and note_id is not None:
+            self.on_command(f"open_sticky_notes:{note_id}")
 
     def _open_folder_from_list(self, folder_id) -> None:
         if folder_id is None:
@@ -994,6 +1031,10 @@ class MainWindow(QMainWindow):
                 kind, id_ = self._nav[pos]
                 if kind == "phrase":
                     self.select_phrase(id_)
+                elif self.panel.current() == (kind, id_):
+                    # already the tree's current item (three columns: a phrase was open in the
+                    # middle list), so no selection signal would fire: show the folder directly
+                    self._on_selected(kind, id_)
                 else:
                     self.panel.select(kind, id_)
             finally:
@@ -1023,7 +1064,19 @@ class MainWindow(QMainWindow):
     def toggle_flat(self) -> None:
         self.panel.flat = not self.panel.flat
         self.refresh_tree()
+        if self.three_columns:
+            # the folders leave the tree: show the whole list under "Phrases"
+            self.panel.select("root", None)
+            self.phrase_list.show_folder("root", None)
         self._update_actions()
+
+    def fit_columns(self) -> None:
+        """Resize the visible list's columns to their contents (middle list or tree)."""
+        if self.three_columns:
+            self.phrase_list.fit_columns()
+        else:
+            for c in range(self.tree.columnCount()):
+                self.tree.resizeColumnToContents(c)
 
     def set_view_option(self, key: str, on: bool) -> None:
         self.store.set_setting(f"view.{key}", "1" if on else "0")
@@ -1043,7 +1096,7 @@ class MainWindow(QMainWindow):
                 fn(word_wrap=self.view_option("word_wrap"), show_special=self.view_option("show_special_chars"),
                    show_macro_params=self.view_option("show_macro_params"), rulers=self.view_option("show_rulers"))
             except Exception:
-                pass
+                logging.getLogger(__name__).exception("applying view options")
 
     def _editor_status(self, st: dict) -> None:
         if self.sel_kind != "phrase":
@@ -1985,10 +2038,40 @@ class MainWindow(QMainWindow):
                 box.exec()
         return msg
 
+    ISSUES_URL = "https://github.com/bahattab/B-PhraseForgeExpress/issues"
+
+    def diagnostic_info(self) -> str:
+        import platform
+        from phraseforge import __version__, paths
+        return (f"PhraseForge {__version__}\n{platform.platform()}\nPython {platform.python_version()}\n"
+                f"Data folder: {paths.data_dir()}")
+
+    def open_data_folder(self) -> None:
+        from phraseforge import paths
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths.data_dir())))
+
     def get_support(self) -> None:
-        QMessageBox.information(self, "Get support",
-                                "PhraseForge is a personal project. See README.md in the program folder "
-                                "for help, or check the log file in %APPDATA%\\PhraseForge.")
+        """Help, the log files (phraseforge.log) and a link to report a problem."""
+        from phraseforge import paths
+        box = QMessageBox(QMessageBox.Information, "Get support",
+                          tr("Read the user guide, or report a problem on GitHub.") + "\n\n"
+                          + tr("When you report a problem, attach phraseforge.log from the data folder "
+                               "and paste the diagnostic information.") + f"\n{paths.data_dir()}",
+                          QMessageBox.Close, self)
+        guide = box.addButton("User guide", QMessageBox.ActionRole)
+        folder = box.addButton("Open data folder", QMessageBox.ActionRole)
+        copy = box.addButton("Copy diagnostic info", QMessageBox.ActionRole)
+        report = box.addButton("Report a problem", QMessageBox.ActionRole)
+        actions = {guide: self.open_help, folder: self.open_data_folder,
+                   copy: lambda: QApplication.clipboard().setText(self.diagnostic_info()),
+                   report: lambda: QDesktopServices.openUrl(QUrl(self.ISSUES_URL))}
+        if getattr(self, "_quiet_updates", False):     # tests: don't block
+            self._support_box = box
+            return
+        box.exec()
+        fn = actions.get(box.clickedButton())
+        if fn:
+            fn()
 
     def open_help(self) -> None:
         from phraseforge.ui import i18n

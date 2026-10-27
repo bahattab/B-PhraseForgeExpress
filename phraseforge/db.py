@@ -91,7 +91,7 @@ DEFAULT_SETTINGS = {
     "filesearch.enabled": "1",
     "filesearch.roots": "",               # one folder per line; empty = Start menu, Desktop, Documents, Downloads
     "filesearch.refresh_minutes": "30",
-    "ocr.language": "English",
+    "ocr.language": "Auto",
     "output.paste_threshold": "40",       # AUTO mode pastes text longer than this
     "output.restore_clipboard": "1",
     "clipboard_history.max": "200",
@@ -176,6 +176,7 @@ class Store:
                     self.conn.execute("UPDATE settings SET value=? WHERE key=?", (_seal(r[0]), k))
         self._listeners: list = []
         self._migrate_extras()
+        self._migrate_ocr_auto()
 
     # ------------------------------------------------------------ migrations
     def _columns(self, table: str) -> set[str]:
@@ -217,6 +218,15 @@ class Store:
         if c.execute("SELECT 1 FROM sqlite_master WHERE name='meta'").fetchone():
             c.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
         c.commit()
+
+    def _migrate_ocr_auto(self) -> None:
+        """0.5.1: the OCR language detects itself. A stored "English" was the old default,
+        so switch it to "Auto" once; a language chosen after that is kept."""
+        if self.setting("ocr.auto_migrated", "") == "1":
+            return
+        if self.setting("ocr.language", "") in ("English", "en", "en-US"):
+            self.set_setting("ocr.language", "Auto")
+        self.set_setting("ocr.auto_migrated", "1")
 
     def _migrate_extras(self) -> None:
         """Move the old JSON setting ui.trigger_extras into real columns (once)."""

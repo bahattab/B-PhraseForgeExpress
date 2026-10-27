@@ -28,22 +28,26 @@ class QuickNoteWindow(QDialog):
         self.edit.setFont(QFont("Segoe UI", 10))
         self.edit.setPlaceholderText(tr("Type a note…"))
         lay.addWidget(self.edit, 1)
-        row = QHBoxLayout()
-        self.hint = QLabel("Ctrl+Enter OneNote · Ctrl+S phrase · Esc hide")
+        # Keyboard hint on its own line, so the buttons always have room for their labels.
+        self.hint = QLabel(tr("Ctrl+Enter: send to OneNote · Ctrl+S: save as phrase · Esc: hide"))
         self.hint.setStyleSheet("color:#7a6f2b")
-        row.addWidget(self.hint, 1)
+        self.hint.setWordWrap(True)
+        lay.addWidget(self.hint)
+        row = QHBoxLayout()
+        row.addStretch(1)
         self.phrase_button = QPushButton(tr("Save as phrase"))
         self.phrase_button.clicked.connect(lambda: self._emit(self.save_as_phrase))
         self.onenote_button = QPushButton(tr("Send to OneNote"))
         self.onenote_button.setDefault(True)
         self.onenote_button.clicked.connect(lambda: self._emit(self.send_to_onenote))
-        row.addWidget(self.phrase_button)
-        row.addWidget(self.onenote_button)
+        for b in (self.phrase_button, self.onenote_button):
+            b.setMinimumWidth(b.fontMetrics().horizontalAdvance(b.text()) + 32)
+            row.addWidget(b)
         lay.addLayout(row)
         for keys in ("Ctrl+Return", "Ctrl+Enter"):
             QShortcut(QKeySequence(keys), self, activated=lambda: self._emit(self.send_to_onenote))
         QShortcut(QKeySequence("Ctrl+S"), self, activated=lambda: self._emit(self.save_as_phrase))
-        self.resize(360, 260)
+        self.resize(400, 280)
 
     def _emit(self, signal) -> None:
         text = self.edit.toPlainText()

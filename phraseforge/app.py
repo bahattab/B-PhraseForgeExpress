@@ -34,6 +34,27 @@ user32 = ctypes.windll.user32 if sys.platform == "win32" else None
 
 
 # ------------------------------------------------------------------ focus helpers
+def _bring_to_front(w) -> None:
+    """Raise one of our windows above other programs. A window opened from the tray
+    menu otherwise often appears behind the active program, because Windows only lets
+    the foreground program take the focus."""
+    w.show()
+    w.raise_()
+    w.activateWindow()
+    if user32:
+        try:
+            _restore_focus(int(w.winId()), force=True, settle_ms=0)
+        except Exception:
+            log.debug("bring to front failed", exc_info=True)
+
+
+def _exec_in_front(dlg):
+    """dlg.exec(), with the dialog brought in front of other programs once it is shown."""
+    from PySide6.QtCore import QTimer
+    QTimer.singleShot(0, lambda: _bring_to_front(dlg))
+    return dlg.exec()
+
+
 def _foreground_hwnd() -> int:
     return user32.GetForegroundWindow() if user32 else 0
 
@@ -111,6 +132,14 @@ def _clipboard_png() -> bytes | None:
     return _png_bytes(QApplication.clipboard().image())
 
 
+def _screen_physical(screen) -> tuple[int, int, int, int]:
+    """(x, y, width, height) of a screen in physical pixels. Qt keeps each screen's
+    origin unscaled and scales only sizes and offsets inside it (as in
+    ui.region_select.logical_to_physical, which produces the capture rectangles)."""
+    g, dpr = screen.geometry(), screen.devicePixelRatio()
+    return g.x(), g.y(), int(round(g.width() * dpr)), int(round(g.height() * dpr))
+
+
 def _grab_screen_png(rect) -> bytes | None:
     """Screenshot of a region given in physical pixels (from ui.region_select), main thread."""
     if not rect:
@@ -119,9 +148,7 @@ def _grab_screen_png(rect) -> bytes | None:
     from PySide6.QtGui import QGuiApplication
     QGuiApplication.processEvents()   # finish hiding the selection overlay first
     for screen in QGuiApplication.screens():
-        g, dpr = screen.geometry(), screen.devicePixelRatio()
-        px, py = int(g.x() * dpr), int(g.y() * dpr)            # screen origin in physical pixels
-        pw, ph = int(g.width() * dpr), int(g.height() * dpr)
+        px, py, pw, ph = _screen_physical(screen)
         if px <= x1 < px + pw and py <= y1 < py + ph:
             shot = screen.grabWindow(0)                         # whole screen, physical resolution
             return _png_bytes(shot.copy(x1 - px, y1 - py, x2 - x1, y2 - y1).toImage())
@@ -137,7 +164,7 @@ def _cursor_physical() -> tuple[int, int]:
     pos = QCursor.pos()
     screen = QGuiApplication.screenAt(pos) or QGuiApplication.primaryScreen()
     g, dpr = screen.geometry(), screen.devicePixelRatio()
-    return int(g.x() * dpr + (pos.x() - g.x()) * dpr), int(g.y() * dpr + (pos.y() - g.y()) * dpr)
+    return int(g.x() + (pos.x() - g.x()) * dpr), int(g.y() + (pos.y() - g.y()) * dpr)
 
 
 def _area_around(x: int, y: int, mode: str):
@@ -145,9 +172,8 @@ def _area_around(x: int, y: int, mode: str):
     line, a box for a bubble; clipped to the screen under the pointer."""
     from PySide6.QtGui import QGuiApplication
     for screen in QGuiApplication.screens():
-        g, dpr = screen.geometry(), screen.devicePixelRatio()
-        sx, sy = int(g.x() * dpr), int(g.y() * dpr)
-        sw, sh = int(g.width() * dpr), int(g.height() * dpr)
+        dpr = screen.devicePixelRatio()
+        sx, sy, sw, sh = _screen_physical(screen)
         if sx <= x < sx + sw and sy <= y < sy + sh:
             if mode == "bubble":
                 half_w, half_h = int(450 * dpr), int(300 * dpr)
@@ -302,11 +328,12 @@ class QtHost:
         png = self._ui(lambda: _grab_screen_png(rect))
         if not png:
             raise OCRError("The area could not be captured.")
-        lang = language or self.store.setting("ocr.language", "English")
-        text = self._ocr().ocr_at(png, x - rect[0], y - rect[1], mode=mode, language=lang,
-                                  keep_line_breaks=self._keep_breaks(None))
+        lang = language or self.store.setting("ocr.language", "Auto")
+        engine = self._ocr()
+        text = engine.ocr_at(png, x - rect[0], y - rect[1], mode=mode, language=lang,
+                             keep_line_breaks=self._keep_breaks(None))
         rules = parse_replace_rules(self.store.setting("ocr.replace_rules", ""))
-        return apply_replacements(text, rules, lang) if rules else text
+        return apply_replacements(text, rules, engine.last_language or lang) if rules else text
 
     def _keep_breaks(self, keep_line_breaks) -> bool:
         if keep_line_breaks is None:   # Settings > Screen OCR > Keep line breaks
@@ -323,22 +350,24 @@ class QtHost:
             if not rect:
                 raise Cancelled()
         self.last_ocr_rect = tuple(rect)
-        lang = language or self.store.setting("ocr.language", "English")
+        lang = language or self.store.setting("ocr.language", "Auto")
         import time
         time.sleep(0.15)   # let the selection overlay disappear before the screenshot
         png = self._ui(lambda: _grab_screen_png(rect))
         if not png:
             raise OCRError("The selected area could not be captured.")
-        text = self._ocr().ocr_png(png, language=lang, keep_line_breaks=self._keep_breaks(keep_line_breaks))
+        engine = self._ocr()
+        text = engine.ocr_png(png, language=lang, keep_line_breaks=self._keep_breaks(keep_line_breaks))
         rules = parse_replace_rules(self.store.setting("ocr.replace_rules", ""))
-        return apply_replacements(text, rules, lang) if rules else text
+        # with "Auto", rules for the language that was detected apply
+        return apply_replacements(text, rules, engine.last_language or lang) if rules else text
 
     def onenote_page_text(self, ref, include_title=False, include_ocr=False):
         """{#onenote} macro: text of a OneNote page (worker thread, own COM apartment)."""
         return self.app._onenote().page_text(ref, include_title=include_title, include_ocr=include_ocr)
 
     def ocr_image(self, path, language=""):
-        lang = language or self.store.setting("ocr.language", "English")
+        lang = language or self.store.setting("ocr.language", "Auto")
         return self._ocr().ocr_image(path, language=lang, keep_line_breaks=self._keep_breaks(None))
 
     def setting(self, key, default=""):
@@ -584,7 +613,7 @@ class PhraseForgeApp(QObject):
         if not png:
             return
         if action in ("ocr", "both"):
-            text = self.host._ocr().ocr_png(png, language=st("ocr.language", "English"),
+            text = self.host._ocr().ocr_png(png, language=st("ocr.language", "Auto"),
                                             keep_line_breaks=self.host._keep_breaks(None))
             if text:
                 self.host.set_clipboard(text)
@@ -1199,10 +1228,13 @@ class PhraseForgeApp(QObject):
     def _ocr_language_choices(self):
         """Tray "OCR language" menu: the current language plus the quick-access ones."""
         from phraseforge.ocr import quick_languages
-        current = self.store.setting("ocr.language", "English")
+        from phraseforge.ocr import AUTO
+        current = self.store.setting("ocr.language", AUTO)
         langs = quick_languages(self.store.setting("ocr.quick_languages", ""))
         if current and current not in langs:
             langs.insert(0, current)
+        if AUTO not in langs:
+            langs.insert(0, AUTO)
         return langs, current
 
     def _ocr_to_clipboard(self, mode: str = ""):
@@ -1315,7 +1347,7 @@ class PhraseForgeApp(QObject):
 
     def show_statistics(self):
         from phraseforge.ui.stats_window import StatsWindow
-        StatsWindow(self.store).exec()
+        _exec_in_front(StatsWindow(self.store))
 
     # ---- Search files (Listary-style launcher)
     def _build_file_index(self):
@@ -1388,13 +1420,13 @@ class PhraseForgeApp(QObject):
         if self.main_window is None:
             self.main_window = MainWindow(self.store, on_test_phrase=self.test_phrase,
                                           on_command=self.on_command)
-        self.main_window.show()
-        self.main_window.raise_()
-        self.main_window.activateWindow()
+        if self.main_window.isMinimized():
+            self.main_window.showNormal()
+        _bring_to_front(self.main_window)
 
     def show_settings(self):
         from phraseforge.ui.settings_dialog import SettingsDialog
-        SettingsDialog(self.store).exec()
+        _exec_in_front(SettingsDialog(self.store))
         try:
             from phraseforge import autostart
             autostart.set_enabled(self.store.setting("app.start_with_windows", "0") == "1")
@@ -1439,6 +1471,16 @@ def main(argv: list[str] | None = None) -> int:
     from phraseforge.ui import i18n
     apply_theme(qapp, store.setting("ui.theme", "system"), i18n.resolve_language(store.setting("ui.language", "auto")))
     app = PhraseForgeApp(qapp, store)
+
+    def _unhandled(*exc):
+        # An error in a menu or button handler used to be written only to the log, so the
+        # click looked as if it did nothing; show it too.
+        log.error("".join(traceback.format_exception(*exc)))
+        try:
+            app.tray.notify("PhraseForge error", f"{exc[0].__name__}: {exc[1]}"[:200])
+        except Exception:
+            pass
+    sys.excepthook = _unhandled
     try:   # sticky notes that were open last time come back where they were
         if store.sticky_notes():
             app.sticky_notes().restore()

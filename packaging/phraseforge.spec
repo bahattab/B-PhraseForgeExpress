@@ -52,6 +52,8 @@ hiddenimports += ["google_auth_oauthlib.flow", "google.auth.transport.requests",
 hiddenimports += ["winrt.windows.media.ocr", "winrt.windows.globalization", "winrt.windows.graphics.imaging",
                   "winrt.windows.storage.streams", "winrt.windows.foundation",
                   "winrt.windows.foundation.collections", "winrt.runtime", "winrt.system"]
+# OneNote COM client (comtypes generates its wrapper modules at run time) and ODBC queries.
+hiddenimports += collect_submodules("comtypes") + ["pyodbc", "win32com.client"]
 
 # Qt modules PhraseForge never uses; keeps the build much smaller.
 excludes = [
