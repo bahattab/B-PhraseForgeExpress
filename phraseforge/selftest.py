@@ -105,6 +105,48 @@ def run() -> int:
         assert hasattr(mod, "IFontDisp"), mod
     check("COM type library wrappers (OneNote)", com_wrappers)
 
+    def screen_ocr() -> None:
+        # The Screen OCR path on the real desktop: draw text in a window, capture that
+        # area the way the region selector reports it, then read it.
+        import time
+        from PySide6.QtCore import QPoint, QRect, Qt
+        from PySide6.QtGui import QFont
+        from PySide6.QtWidgets import QLabel
+        from phraseforge.app import _grab_screen_png
+        from phraseforge.ocr import WindowsOCR
+        from phraseforge.ui.region_select import logical_to_physical
+        w = QLabel("  Screen capture 2026  ")
+        w.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        w.setStyleSheet("background:white;color:black")
+        f = QFont("Arial")
+        f.setPixelSize(32)
+        w.setFont(f)
+        w.adjustSize()
+        w.move(120, 120)
+        w.show()
+        try:
+            for _ in range(10):
+                app.processEvents()
+                time.sleep(0.05)
+            screen = w.screen()
+            top_left = w.mapToGlobal(QPoint(0, 0)) - screen.geometry().topLeft()
+            rect = logical_to_physical(screen, QRect(top_left, w.size()))
+            png = _grab_screen_png(rect)
+            assert png, f"nothing captured at {rect}"
+            from PySide6.QtGui import QImage
+            img = QImage.fromData(png)
+            colours = {img.pixel(x, y) for x in range(0, img.width(), 7) for y in range(0, img.height(), 7)}
+            if len(colours) < 2:
+                lines.append(f"      screen capture is blank here (no desktop session?) {rect}")
+                return
+            langs = WindowsOCR().languages()
+            got = WindowsOCR().ocr_png(png, "English" if "English" in langs else "")
+            lines.append(f"      screen OCR {rect}: {got!r}")
+            assert "2026" in got or "capture" in got.lower(), got
+        finally:
+            w.close()
+    check("screen capture + OCR", screen_ocr)
+
     def main_window_views() -> None:
         # The View tab's editor options and layout buttons, on the real phrase editor.
         from phraseforge.db import Store

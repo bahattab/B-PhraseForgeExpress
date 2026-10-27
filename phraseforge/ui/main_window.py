@@ -530,6 +530,17 @@ class MainWindow(QMainWindow):
         b.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         b.setAutoRaise(True)
         b.setToolTip("Signed in as Windows user " + user)
+        b.setPopupMode(QToolButton.InstantPopup)
+        m = QMenu(b)
+        head = m.addAction(initials_avatar(user), tr("Windows user:") + " " + user)
+        head.setEnabled(False)
+        m.addSeparator()
+        m.addAction(icon("settings"), "Settings...", self.show_settings)
+        m.addAction(icon("open"), "Open data folder", self.open_data_folder)
+        m.addSeparator()
+        m.addAction(icon("help"), "User guide", self.open_help)
+        m.addAction(icon("support"), "Get support...", self.get_support)
+        b.setMenu(m)
         self.user_button = b
         self.ribbon.set_right_widget(b)
 
@@ -1020,6 +1031,10 @@ class MainWindow(QMainWindow):
                 kind, id_ = self._nav[pos]
                 if kind == "phrase":
                     self.select_phrase(id_)
+                elif self.panel.current() == (kind, id_):
+                    # already the tree's current item (three columns: a phrase was open in the
+                    # middle list), so no selection signal would fire: show the folder directly
+                    self._on_selected(kind, id_)
                 else:
                     self.panel.select(kind, id_)
             finally:
@@ -2023,10 +2038,40 @@ class MainWindow(QMainWindow):
                 box.exec()
         return msg
 
+    ISSUES_URL = "https://github.com/bahattab/B-PhraseForgeExpress/issues"
+
+    def diagnostic_info(self) -> str:
+        import platform
+        from phraseforge import __version__, paths
+        return (f"PhraseForge {__version__}\n{platform.platform()}\nPython {platform.python_version()}\n"
+                f"Data folder: {paths.data_dir()}")
+
+    def open_data_folder(self) -> None:
+        from phraseforge import paths
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths.data_dir())))
+
     def get_support(self) -> None:
-        QMessageBox.information(self, "Get support",
-                                "PhraseForge is a personal project. See README.md in the program folder "
-                                "for help, or check the log file in %APPDATA%\\PhraseForge.")
+        """Help, the log files (phraseforge.log) and a link to report a problem."""
+        from phraseforge import paths
+        box = QMessageBox(QMessageBox.Information, "Get support",
+                          tr("Read the user guide, or report a problem on GitHub.") + "\n\n"
+                          + tr("When you report a problem, attach phraseforge.log from the data folder "
+                               "and paste the diagnostic information.") + f"\n{paths.data_dir()}",
+                          QMessageBox.Close, self)
+        guide = box.addButton("User guide", QMessageBox.ActionRole)
+        folder = box.addButton("Open data folder", QMessageBox.ActionRole)
+        copy = box.addButton("Copy diagnostic info", QMessageBox.ActionRole)
+        report = box.addButton("Report a problem", QMessageBox.ActionRole)
+        actions = {guide: self.open_help, folder: self.open_data_folder,
+                   copy: lambda: QApplication.clipboard().setText(self.diagnostic_info()),
+                   report: lambda: QDesktopServices.openUrl(QUrl(self.ISSUES_URL))}
+        if getattr(self, "_quiet_updates", False):     # tests: don't block
+            self._support_box = box
+            return
+        box.exec()
+        fn = actions.get(box.clickedButton())
+        if fn:
+            fn()
 
     def open_help(self) -> None:
         from phraseforge.ui import i18n

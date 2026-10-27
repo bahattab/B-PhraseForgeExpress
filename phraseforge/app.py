@@ -111,6 +111,14 @@ def _clipboard_png() -> bytes | None:
     return _png_bytes(QApplication.clipboard().image())
 
 
+def _screen_physical(screen) -> tuple[int, int, int, int]:
+    """(x, y, width, height) of a screen in physical pixels. Qt keeps each screen's
+    origin unscaled and scales only sizes and offsets inside it (as in
+    ui.region_select.logical_to_physical, which produces the capture rectangles)."""
+    g, dpr = screen.geometry(), screen.devicePixelRatio()
+    return g.x(), g.y(), int(round(g.width() * dpr)), int(round(g.height() * dpr))
+
+
 def _grab_screen_png(rect) -> bytes | None:
     """Screenshot of a region given in physical pixels (from ui.region_select), main thread."""
     if not rect:
@@ -119,9 +127,7 @@ def _grab_screen_png(rect) -> bytes | None:
     from PySide6.QtGui import QGuiApplication
     QGuiApplication.processEvents()   # finish hiding the selection overlay first
     for screen in QGuiApplication.screens():
-        g, dpr = screen.geometry(), screen.devicePixelRatio()
-        px, py = int(g.x() * dpr), int(g.y() * dpr)            # screen origin in physical pixels
-        pw, ph = int(g.width() * dpr), int(g.height() * dpr)
+        px, py, pw, ph = _screen_physical(screen)
         if px <= x1 < px + pw and py <= y1 < py + ph:
             shot = screen.grabWindow(0)                         # whole screen, physical resolution
             return _png_bytes(shot.copy(x1 - px, y1 - py, x2 - x1, y2 - y1).toImage())
@@ -137,7 +143,7 @@ def _cursor_physical() -> tuple[int, int]:
     pos = QCursor.pos()
     screen = QGuiApplication.screenAt(pos) or QGuiApplication.primaryScreen()
     g, dpr = screen.geometry(), screen.devicePixelRatio()
-    return int(g.x() * dpr + (pos.x() - g.x()) * dpr), int(g.y() * dpr + (pos.y() - g.y()) * dpr)
+    return int(g.x() + (pos.x() - g.x()) * dpr), int(g.y() + (pos.y() - g.y()) * dpr)
 
 
 def _area_around(x: int, y: int, mode: str):
@@ -145,9 +151,8 @@ def _area_around(x: int, y: int, mode: str):
     line, a box for a bubble; clipped to the screen under the pointer."""
     from PySide6.QtGui import QGuiApplication
     for screen in QGuiApplication.screens():
-        g, dpr = screen.geometry(), screen.devicePixelRatio()
-        sx, sy = int(g.x() * dpr), int(g.y() * dpr)
-        sw, sh = int(g.width() * dpr), int(g.height() * dpr)
+        dpr = screen.devicePixelRatio()
+        sx, sy, sw, sh = _screen_physical(screen)
         if sx <= x < sx + sw and sy <= y < sy + sh:
             if mode == "bubble":
                 half_w, half_h = int(450 * dpr), int(300 * dpr)

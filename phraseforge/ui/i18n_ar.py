@@ -1117,4 +1117,13 @@ AR_EXTRA = {
     "Read the text block (bubble) around the mouse pointer:": "قراءة كتلة النص (الفقاعة) حول مؤشر الفأرة:",
     "The mouse pointer is outside the screens.": "مؤشر الفأرة خارج الشاشات.",
     "No text recognised": "لم يُتعرَّف على أي نص",
+    # account menu and Get support (0.5.1)
+    "Open data folder": "فتح مجلد البيانات",
+    "User guide": "دليل المستخدم",
+    "Get support...": "الحصول على الدعم...",
+    "Copy diagnostic info": "نسخ معلومات التشخيص",
+    "Report a problem": "الإبلاغ عن مشكلة",
+    "Windows user:": "مستخدم ويندوز:",
+    "When you report a problem, attach phraseforge.log from the data folder and paste the diagnostic information.": "عند الإبلاغ عن مشكلة، أرفق الملف phraseforge.log من مجلد البيانات والصق معلومات التشخيص.",
+    "Read the user guide, or report a problem on GitHub.": "اقرأ دليل المستخدم، أو أبلغ عن مشكلة في GitHub.",
 }

@@ -451,3 +451,32 @@ def test_flat_list_and_fit_columns_in_both_layouts(app, store):
     w.btn_fit.click()
     assert w.tree.columnWidth(0) > 30
     w.close()
+
+
+def test_back_in_three_columns_user_menu_and_support(app, store):
+    from phraseforge.models import Folder, Phrase
+    from phraseforge.ui.main_window import MainWindow
+    f = store.add_folder(Folder("A"))
+    store.add_phrase(Phrase("P1", "x", folder_id=f.id))
+    q = store.add_phrase(Phrase("P2", "y"))
+    w = MainWindow(store)
+    w._quiet_updates = True
+    w.set_columns(3)
+    w.select_folder(f.id)
+    w.select_phrase(q.id)
+    assert (w.sel_kind, w.sel_id) == ("phrase", q.id)
+    w.act_back.trigger()                 # used to leave the phrase open (tree item unchanged)
+    assert w.sel_kind == "root"
+    w.act_back.trigger()
+    assert (w.sel_kind, w.sel_id) == ("folder", f.id)
+    w.act_forward.trigger()
+    w.act_forward.trigger()
+    assert (w.sel_kind, w.sel_id) == ("phrase", q.id)
+    menu = w.user_button.menu()          # the account button had no action at all
+    texts = [a.text() for a in menu.actions()]
+    assert "Open data folder" in texts and "Get support..." in texts
+    w.get_support()
+    labels = {b.text() for b in w._support_box.buttons()}
+    assert {"User guide", "Open data folder", "Copy diagnostic info", "Report a problem"} <= labels
+    assert "PhraseForge" in w.diagnostic_info()
+    w.close()
