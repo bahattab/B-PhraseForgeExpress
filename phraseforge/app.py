@@ -508,6 +508,10 @@ class PhraseForgeApp(QObject):
         # the executor tells the trigger layer while it types, so our own output is ignored
         self.output = OutputExecutor(store.setting, busy_callback=self.triggers.set_busy)
         threading.Thread(target=self._worker, name="expansion", daemon=True).start()
+        # OneNote actions get their own thread: a OneNote call that waits (for example while
+        # OneNote shows a dialog) must not hold up text expansion and OCR.
+        self._onenote_jobs: queue.Queue = queue.Queue()
+        threading.Thread(target=self._onenote_worker, name="onenote", daemon=True).start()
 
     # ---------------------------------------------------------- commands
     def _build_commands(self):
@@ -543,8 +547,8 @@ class PhraseForgeApp(QObject):
         reg("autocorrect", lambda arg, hwnd: self._jobs.put(("replace", arg, hwnd)))       # "<erase>:<text>"
         reg("undo_expansion", lambda arg, hwnd: self._jobs.put(("undo", arg, hwnd)))       # "<pid>:<typed>"
         # Microsoft OneNote (Settings > OneNote hotkeys, tray menu)
-        reg("onenote_send_clipboard", lambda arg, hwnd: self._jobs.put(("call", self._onenote_send_clipboard, hwnd)))
-        reg("onenote_clip", lambda arg, hwnd: self._jobs.put(("call", self._onenote_clip, hwnd)))
+        reg("onenote_send_clipboard", lambda arg, hwnd: self._onenote_jobs.put(self._onenote_send_clipboard))
+        reg("onenote_clip", lambda arg, hwnd: self._onenote_jobs.put(self._onenote_clip))
         reg("quick_note", lambda arg, hwnd: post(self._show_quick_note))   # like ONENOTEM "New Quick Note"
         # Sticky notes built into PhraseForge (ui/sticky_notes.py)
         reg("open_sticky_notes", lambda arg, hwnd: post(
@@ -587,7 +591,7 @@ class PhraseForgeApp(QObject):
         if self.quick_note is None:
             self.quick_note = QuickNoteWindow()
             self.quick_note.send_to_onenote.connect(
-                lambda text: self._jobs.put(("call", lambda: self._onenote_send_note(text), 0)))
+                lambda text: self._onenote_jobs.put(lambda: self._onenote_send_note(text)))
             self.quick_note.save_as_phrase.connect(self._quick_note_phrase)
         self.quick_note.show_note()
 
@@ -996,7 +1000,18 @@ class PhraseForgeApp(QObject):
         self.tray.notify("PhraseForge paused", f"Text expansion resumes in {secs} seconds.")
         QTimer.singleShot(secs * 1000, lambda: self.set_paused(False))
 
-    # ---------------------------------------------------------- worker thread
+    # ---------------------------------------------------------- worker threads
+    def _onenote_worker(self):
+        while True:
+            fn = self._onenote_jobs.get()
+            try:
+                fn()
+            except Cancelled:
+                pass
+            except Exception as e:
+                log.exception("OneNote job failed")
+                self.poster.posted.emit(lambda e=e: self.tray.notify("OneNote", str(e)))
+
     def _worker(self):
         while True:
             kind, payload, hwnd = self._jobs.get()

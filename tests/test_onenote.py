@@ -53,9 +53,13 @@ class FakeApp:
         return PAGES[page_id]
 
     def GetSpecialLocation(self, loc):
-        return r"C:\Notes\Quick Notes.one"
+        # like OneNote: 1 = slUnfiledNotesSection, 2 = slDefaultNotebookFolder (a folder)
+        return {0: r"C:\Backup", 1: r"C:\Notes\Quick Notes.one", 2: r"C:\Notes"}[loc]
 
     def OpenHierarchy(self, path, rel, cft):
+        self.opened = (path, cft)
+        if not path.endswith(".one"):     # a folder is not a section: hrSectionDoesNotExist
+            raise OSError(-2147213308, None, (None, None, None, 0, None))
         return "quick"
 
     def CreateNewPage(self, section_id, style):
@@ -157,3 +161,23 @@ def test_find_exe_falls_back_to_registered_path(tmp_path, monkeypatch):
     assert onenote.find_exe(str(exe)) == str(exe)
     monkeypatch.setattr(onenote, "_registry_candidates", lambda: [])
     assert onenote.find_exe(str(tmp_path / "missing.exe")) == ""
+
+
+def test_quick_notes_section_and_readable_errors(client):
+    app = client._app
+    assert client.quick_notes_section() == "quick"
+    assert app.opened == (r"C:\Notes\Quick Notes.one", on.CFT_SECTION)   # created if missing
+
+    class Cloud(FakeApp):                 # OneNote cannot open Quick Notes: use the first section
+        def OpenHierarchy(self, path, rel, cft):
+            raise OSError(-2147213308, None, (None, None, None, 0, None))
+    c = on.OneNote(app=Cloud())
+    assert c.quick_notes_section() == "s1"
+    msg = on.explain(OSError(-2147213308, None, None))
+    assert "section does not exist" in msg and "0x80042004" in msg
+
+    class Broken(FakeApp):
+        def GetHierarchy(self, *a):
+            raise OSError(-2147213291, None, None)          # 0x80042015
+    with pytest.raises(on.OneNoteError, match="notebook does not exist"):
+        on.OneNote(app=Broken()).notebooks()

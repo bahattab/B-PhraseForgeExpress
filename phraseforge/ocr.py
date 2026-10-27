@@ -306,6 +306,45 @@ def _prepare_png(png: bytes, max_dim: int = 0, scale: int = 0) -> tuple[bytes, f
     return bytes(buf.data()), float(scale), pad, shrink
 
 
+OCR_TIMEOUT = 60.0     # seconds; Windows OCR normally answers in well under a second
+
+
+def _run_in_mta(make_coro, timeout: float = OCR_TIMEOUT):
+    """Run an async WinRT job on a fresh thread joined to the multithreaded COM apartment
+    and return its result (or the exception it raised).
+
+    The caller's thread may be a single-threaded apartment, for example the worker thread
+    after a OneNote call (comtypes.CoInitialize). Awaiting WinRT operations there never
+    completes because nothing pumps that thread's messages, so OCR hung silently and
+    blocked every later job. A thread of our own avoids that, and the timeout turns any
+    other stall into an error message."""
+    box: dict = {}
+
+    def runner():
+        ole32 = None
+        hr = -1
+        try:
+            import ctypes
+            ole32 = ctypes.WinDLL("ole32")
+            hr = ole32.CoInitializeEx(None, 0)          # COINIT_MULTITHREADED
+        except Exception:
+            ole32 = None
+        try:
+            box["value"] = asyncio.run(make_coro())
+        except BaseException as e:      # noqa: BLE001 - handed back to the caller
+            box["value"] = e
+        finally:
+            if ole32 is not None and hr in (0, 1):      # S_OK / S_FALSE
+                ole32.CoUninitialize()
+
+    t = threading.Thread(target=runner, name="windows-ocr", daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        return OCRError("Windows OCR did not answer in time. Try again, or restart PhraseForge.")
+    return box.get("value")
+
+
 class WindowsOCR:
     """OCR engine built into Windows, used in-process (no external program).
 
@@ -447,12 +486,12 @@ class WindowsOCR:
             return out
 
         with self._lock:
-            try:
-                return asyncio.run(run())
-            except OCRError:
-                raise
-            except Exception as e:  # WinRT errors arrive as OSError with an HRESULT
-                raise OCRError(f"Windows OCR failed: {e}") from e
+            out = _run_in_mta(run, timeout=OCR_TIMEOUT)
+        if isinstance(out, OCRError):
+            raise out
+        if isinstance(out, BaseException):   # WinRT errors arrive as OSError with an HRESULT
+            raise OCRError(f"Windows OCR failed: {out}") from out
+        return out
 
     def finish(self, text: str) -> str:
         return filter_chars(text, self.whitelist, self.blacklist).strip()
