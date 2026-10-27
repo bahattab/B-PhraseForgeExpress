@@ -43,6 +43,19 @@ jobs:
           "version=$v" >> $env:GITHUB_OUTPUT
           Write-Host "PhraseForge $v"
 
+      # Lets the tests check Arabic OCR and automatic language detection for real.
+      # Optional: if Windows Update is unreachable the Arabic checks are skipped.
+      - name: Add Arabic OCR to Windows
+        continue-on-error: true
+        timeout-minutes: 10
+        run: |
+          $name = "Language.OCR~~~ar-SA~0.0.1.0"
+          if ((Get-WindowsCapability -Online -Name $name).State -ne "Installed") {
+            Add-WindowsCapability -Online -Name $name | Out-Null
+          }
+          Get-WindowsCapability -Online -Name "Language.OCR*" | Where-Object State -eq Installed |
+            ForEach-Object { Write-Host "OCR language installed: $($_.Name)" }
+
       - name: Run tests
         env:
           PHRASEFORGE_HOME: ${{ runner.temp }}\pf-tests

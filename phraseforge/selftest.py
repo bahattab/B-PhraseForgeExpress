@@ -95,6 +95,10 @@ def run() -> int:
             for scale in (0, 1, 2, 3):
                 got = WindowsOCR(scale=scale).ocr_png(bytes(buf.data()), lang)
                 lines.append(f"      OCR {px}px text, scale {scale or 'auto'}: {got!r}")
+            auto = WindowsOCR()
+            got = auto.ocr_png(bytes(buf.data()), "Auto")
+            lines.append(f"      OCR {px}px text, language Auto -> {auto.last_language}: {got!r}")
+            assert "2026" in got, got
     check("built-in OCR engine", ocr_engine)
 
     def com_wrappers() -> None:

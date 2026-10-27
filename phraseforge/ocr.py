@@ -79,6 +79,73 @@ def language_name(tag: str) -> str:
     return t
 
 
+AUTO = "Auto"          # Settings > Screen OCR > OCR language: detect from the capture
+
+
+def is_auto(language: str) -> bool:
+    return (language or "").strip().lower() in ("auto", "automatic", "auto-detect", "تلقائي")
+
+
+# Writing system of each OCR language (Latin unless listed), used by automatic detection.
+_SCRIPT_RANGES = {
+    "arabic": ((0x0600, 0x06FF), (0x0750, 0x077F), (0x08A0, 0x08FF), (0xFB50, 0xFDFF), (0xFE70, 0xFEFF)),
+    "hebrew": ((0x0590, 0x05FF), (0xFB1D, 0xFB4F)),
+    "cyrillic": ((0x0400, 0x04FF), (0x0500, 0x052F)),
+    "greek": ((0x0370, 0x03FF), (0x1F00, 0x1FFF)),
+    "cjk": ((0x3040, 0x30FF), (0x3400, 0x4DBF), (0x4E00, 0x9FFF), (0xF900, 0xFAFF)),
+    "hangul": ((0x1100, 0x11FF), (0x3130, 0x318F), (0xAC00, 0xD7AF)),
+    "devanagari": ((0x0900, 0x097F),),
+    "thai": ((0x0E00, 0x0E7F),),
+}
+_LANGUAGE_SCRIPT = {"ar": "arabic", "fa": "arabic", "ur": "arabic", "he": "hebrew", "ru": "cyrillic",
+                    "uk": "cyrillic", "bg": "cyrillic", "el": "greek", "zh": "cjk", "ja": "cjk",
+                    "ko": "hangul", "hi": "devanagari", "th": "thai"}
+
+
+def script_of(language: str) -> str:
+    """'Arabic' / 'ar-SA' -> 'arabic'; languages written in Latin letters -> 'latin'."""
+    tag = language_tag(language).lower().split("-")[0]
+    return _LANGUAGE_SCRIPT.get(tag, "latin")
+
+
+def script_letters(text: str, script: str) -> tuple[int, int]:
+    """(letters of `script` in text, all letters)."""
+    letters = [c for c in text if c.isalpha()]
+    if script == "latin":
+        own = sum(1 for c in letters if c.isascii() or 0x00C0 <= ord(c) <= 0x024F)
+    else:
+        ranges = _SCRIPT_RANGES[script]
+        own = sum(1 for c in letters if any(a <= ord(c) <= b for a, b in ranges))
+    return own, len(letters)
+
+
+def detect_order(languages: list[str]) -> list[str]:
+    """Try languages with their own script (Arabic, Russian...) before Latin ones, keeping
+    the given order otherwise: each recogniser writes its own letters, so a non-Latin result
+    full of that script's letters is good evidence, while Latin output proves little."""
+    return [l for l in languages if script_of(l) != "latin"] + [l for l in languages if script_of(l) == "latin"]
+
+
+def choose_detected(results: list[tuple[str, str]], min_share: float = 0.4) -> int:
+    """Index of the result to keep. results: (language, recognised text) in detect_order.
+    A non-Latin language wins when most of its letters are in its script (the biggest such
+    result if several); otherwise the first Latin-script language; else the longest text."""
+    best, best_own = -1, 0
+    for i, (lang, text) in enumerate(results):
+        script = script_of(lang)
+        if script == "latin":
+            continue
+        own, total = script_letters(text, script)
+        if own >= 2 and own >= min_share * total and own > best_own:
+            best, best_own = i, own
+    if best >= 0:
+        return best
+    for i, (lang, _text) in enumerate(results):
+        if script_of(lang) == "latin":
+            return i
+    return max(range(len(results)), key=lambda i: len(results[i][1].strip())) if results else -1
+
+
 def _tag_matches(installed: str, wanted: str) -> bool:
     a, b = installed.lower(), wanted.lower()
     return a == b or a.startswith(b + "-") or b.startswith(a + "-")
@@ -249,6 +316,7 @@ class WindowsOCR:
 
     def __init__(self, scale: int = 0, whitelist: str = "", blacklist: str = ""):
         self.scale, self.whitelist, self.blacklist = scale, whitelist, blacklist
+        self.last_language = ""      # language actually used by the last recognize()
 
     @staticmethod
     def _modules():
@@ -303,7 +371,7 @@ class WindowsOCR:
             raise OCRError(_missing(language_name(tag)))
         return engine
 
-    def recognize(self, png: bytes, language: str = "English") -> list[Line]:
+    def recognize(self, png: bytes, language: str = AUTO) -> list[Line]:
         """Lines with their words and word boxes, in the coordinates of the given image.
 
         Automatic scale: read the capture as it is first; only when the recognised text
@@ -312,7 +380,33 @@ class WindowsOCR:
         if not png:
             raise OCRError("Nothing was captured.")
         m = self._modules()
-        engine = self._engine(m, language)
+        if is_auto(language):
+            return self._recognize_auto(m, png)
+        self.last_language = language_name(language_tag(language))
+        return self._recognize_with(m, self._engine(m, language), png)
+
+    def _recognize_auto(self, m, png: bytes) -> list[Line]:
+        """Automatic language: read with each installed OCR language that could fit
+        (see detect_order / choose_detected) and keep the most plausible reading."""
+        langs = detect_order(self.languages())
+        if not langs:
+            self.last_language = ""
+            return self._recognize_with(m, self._engine(m, ""), png)
+        results: list[tuple[str, list[Line]]] = []
+        for lang in langs:
+            lines = self._recognize_with(m, self._engine(m, lang), png)
+            results.append((lang, lines))
+            script = script_of(lang)
+            if script == "latin":
+                break                         # Latin languages share letters; the first one will do
+            own, total = script_letters(" ".join(l.text for l in lines), script)
+            if own >= 2 and own >= 0.4 * total:
+                break                         # clearly this script: no need to try the others
+        i = choose_detected([(lang, " ".join(l.text for l in lines)) for lang, lines in results])
+        self.last_language = results[i][0]
+        return results[i][1]
+
+    def _recognize_with(self, m, engine, png: bytes) -> list[Line]:
         if self.scale:
             return self._recognize_once(m, engine, png, self.scale)
         lines = self._recognize_once(m, engine, png, 1)
@@ -363,10 +457,10 @@ class WindowsOCR:
     def finish(self, text: str) -> str:
         return filter_chars(text, self.whitelist, self.blacklist).strip()
 
-    def ocr_png(self, png: bytes, language: str = "English", keep_line_breaks: bool = True) -> str:
+    def ocr_png(self, png: bytes, language: str = AUTO, keep_line_breaks: bool = True) -> str:
         return self.finish(_join(self.recognize(png, language), keep_line_breaks))
 
-    def ocr_at(self, png: bytes, x: float, y: float, mode: str = "line", language: str = "English",
+    def ocr_at(self, png: bytes, x: float, y: float, mode: str = "line", language: str = AUTO,
                keep_line_breaks: bool = True) -> str:
         """Text at a point of the image: mode "line" (the line under the point), "forward"
         (from the point to the end of the line) or "bubble" (the block around the point)."""
@@ -378,7 +472,7 @@ class WindowsOCR:
         line = pick_line(lines, x, y)
         return self.finish(line.text if line else "")
 
-    def ocr_image(self, path: str, language: str = "English", keep_line_breaks: bool = True) -> str:
+    def ocr_image(self, path: str, language: str = AUTO, keep_line_breaks: bool = True) -> str:
         if not Path(path).is_file():
             raise OCRError(f"Image not found: {path}")
         return self.ocr_png(Path(path).read_bytes(), language, keep_line_breaks)

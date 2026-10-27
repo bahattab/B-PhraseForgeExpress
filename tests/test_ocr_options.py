@@ -115,10 +115,11 @@ def test_tray_language_menu(app_like):
     t.ocr_language.connect(got.append)
     t._before_show()
     acts = t.ocr_lang_menu.actions()
-    assert [x.text() for x in acts] == ["Russian", "Arabic", "English"]
-    assert acts[0].isChecked() and not acts[1].isChecked()
-    acts[1].trigger()
-    assert got == ["Arabic"]
+    assert [x.text() for x in acts] == ["Auto", "Russian", "Arabic", "English"]
+    assert acts[1].isChecked() and not acts[0].isChecked() and not acts[2].isChecked()
+    acts[2].trigger()
+    acts[0].trigger()
+    assert got == ["Arabic", "Auto"]
 
 
 def test_ocr_hotkeys_map_to_commands():

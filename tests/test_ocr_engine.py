@@ -192,3 +192,71 @@ def test_windows_text_line_under_point():
     line = eng.ocr_at(png, 150, 130, "line", lang)
     assert "echo" in line.lower() and "alpha" not in line.lower(), line
     assert eng.ocr_at(png, 150, 130, "forward", lang).lower().startswith("echo")
+
+
+# ---- automatic language (Settings > Screen OCR > OCR language "Auto")
+def test_auto_language_helpers():
+    assert ocr.is_auto("Auto") and ocr.is_auto(" auto ") and ocr.is_auto("تلقائي")
+    assert not ocr.is_auto("English") and not ocr.is_auto("")
+    assert ocr.script_of("Arabic") == "arabic" and ocr.script_of("ar-SA") == "arabic"
+    assert ocr.script_of("English") == "latin" and ocr.script_of("French") == "latin"
+    assert ocr.script_of("Russian") == "cyrillic"
+    assert ocr.detect_order(["English", "Arabic", "French", "Russian"]) == \
+        ["Arabic", "Russian", "English", "French"]
+    assert ocr.script_letters("مرحبا world", "arabic") == (5, 10)
+
+
+def test_choose_detected():
+    # Arabic text: the Arabic recogniser returns Arabic letters, keep it
+    assert ocr.choose_detected([("Arabic", "مرحبا بالعالم"), ("English", "pal-JI ~IWI")]) == 0
+    # English text: the Arabic recogniser finds hardly any Arabic, fall back to English
+    assert ocr.choose_detected([("Arabic", "Hello world ه"), ("English", "Hello world")]) == 1
+    assert ocr.choose_detected([("Arabic", ""), ("English", "Invoice 4521")]) == 1
+    # only Arabic installed: still the Arabic reading
+    assert ocr.choose_detected([("Arabic", "Hello")]) == 0
+    assert ocr.choose_detected([]) == -1
+
+
+def test_auto_reads_each_language_until_one_fits(monkeypatch):
+    """Arabic is tried first; an Arabic reading stops the search, otherwise English is used."""
+    eng = ocr.WindowsOCR()
+    calls = []
+    readings = {"Arabic": "مرحبا بالعالم", "English": "pal-JI"}
+    monkeypatch.setattr(eng, "languages", lambda: ["English", "Arabic"])
+    monkeypatch.setattr(eng, "_engine", lambda m, lang: lang)
+    monkeypatch.setattr(eng, "_recognize_with",
+                        lambda m, e, png: calls.append(e) or [ocr.Line([], readings[e])])
+    assert [l.text for l in eng._recognize_auto({}, b"png")] == ["مرحبا بالعالم"]
+    assert calls == ["Arabic"] and eng.last_language == "Arabic"
+    calls.clear()
+    readings.update(Arabic="Hello ه", English="Hello")
+    assert [l.text for l in eng._recognize_auto({}, b"png")] == ["Hello"]
+    assert calls == ["Arabic", "English"] and eng.last_language == "English"
+
+
+def test_ocr_language_defaults_to_auto(tmp_path):
+    from phraseforge.db import Store
+    s = Store(tmp_path / "a.db")
+    assert s.setting("ocr.language") == "Auto"
+    s.set_setting("ocr.language", "English")          # old default saved by an older version
+    s.set_setting("ocr.auto_migrated", "")
+    s.close()
+    s = Store(tmp_path / "a.db")
+    assert s.setting("ocr.language") == "Auto"
+    s.set_setting("ocr.language", "English")          # chosen after the switch: kept
+    s.close()
+    s = Store(tmp_path / "a.db")
+    assert s.setting("ocr.language") == "English"
+    s.close()
+
+
+@windows_ocr
+def test_windows_auto_language():
+    eng = ocr.WindowsOCR()
+    text = eng.ocr_png(_text_png("Hello PhraseForge 2026"), language="Auto")
+    assert "Hello" in text and "2026" in text, (text, eng.last_language)
+    if "Arabic" in eng.languages():
+        ar = eng.ocr_png(_text_png("مرحبا بالعالم"), language="Auto")
+        assert eng.last_language == "Arabic" and "مرحبا" in ar, (ar, eng.last_language)
+        en = eng.ocr_png(_text_png("Hello PhraseForge 2026"), language="Auto")
+        assert "Hello" in en, (en, eng.last_language)

@@ -35,13 +35,33 @@ class ClipboardError(RuntimeError):
     pass
 
 
+_owner = threading.local()
+
+
+def _owner_hwnd():
+    """A hidden message-only window of the calling thread, used as clipboard owner.
+
+    With OpenClipboard(NULL), EmptyClipboard leaves the clipboard without an owner and
+    Windows may then refuse SetClipboardData ("SetClipboardData(13) failed"), as
+    documented for OpenClipboard. Windows close by themselves when their thread ends."""
+    hwnd = getattr(_owner, "hwnd", None)
+    if hwnd is None:
+        hwnd = user32.CreateWindowExW(0, "STATIC", "pf-clip-owner", 0, 0, 0, 0, 0,
+                                      HWND_MESSAGE, None, None, None) or 0
+        if not hwnd:
+            log.warning("clipboard owner window: CreateWindowExW failed (%s)", ctypes.get_last_error())
+        _owner.hwnd = hwnd
+    return hwnd or None
+
+
 class _Open:
     def __init__(self, retries: int = 20, delay: float = 0.02):
         self.retries, self.delay = retries, delay
 
     def __enter__(self):
+        owner = _owner_hwnd()
         for _ in range(self.retries):
-            if user32.OpenClipboard(None):
+            if user32.OpenClipboard(owner):
                 return self
             time.sleep(self.delay)
         raise ClipboardError("could not open clipboard (in use by another app)")
@@ -72,8 +92,9 @@ def _put(fmt: int, data: bytes) -> None:
     ctypes.memmove(p, data, len(data))
     kernel32.GlobalUnlock(h)
     if not user32.SetClipboardData(fmt, h):
+        err = ctypes.get_last_error()
         kernel32.GlobalFree(h)
-        raise ClipboardError(f"SetClipboardData({fmt}) failed")
+        raise ClipboardError(f"SetClipboardData({fmt}) failed (Windows error {err})")
 
 
 def _get(fmt: int) -> bytes | None:

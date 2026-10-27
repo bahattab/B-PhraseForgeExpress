@@ -1124,6 +1124,7 @@ AR_EXTRA = {
     "Copy diagnostic info": "نسخ معلومات التشخيص",
     "Report a problem": "الإبلاغ عن مشكلة",
     "Windows user:": "مستخدم ويندوز:",
+    "Auto: PhraseForge reads the capture with each installed OCR language and keeps the one that fits, for example Arabic or English.": "تلقائي: يقرأ PhraseForge المنطقة الملتقطة بكل لغة تعرّف ضوئي مثبتة ويختار اللغة المناسبة، مثل العربية أو الإنجليزية.",
     "When you report a problem, attach phraseforge.log from the data folder and paste the diagnostic information.": "عند الإبلاغ عن مشكلة، أرفق الملف phraseforge.log من مجلد البيانات والصق معلومات التشخيص.",
     "Read the user guide, or report a problem on GitHub.": "اقرأ دليل المستخدم، أو أبلغ عن مشكلة في GitHub.",
 }
