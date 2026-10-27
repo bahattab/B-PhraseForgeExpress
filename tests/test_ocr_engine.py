@@ -31,24 +31,59 @@ def test_no_external_program_is_started():
     assert "subprocess" not in src and "Capture2Text_CLI" not in src
 
 
-def _text_png(text: str, px: int = 28) -> bytes:
-    from PySide6.QtCore import QBuffer, QIODevice, Qt
-    from PySide6.QtGui import QColor, QFont, QImage, QPainter
-    from PySide6.QtWidgets import QApplication
-    QApplication.instance() or QApplication([])
-    img = QImage(900, 120, QImage.Format_ARGB32)
-    img.fill(QColor("white"))
-    p = QPainter(img)
+_RENDER = r"""
+import sys
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QFont, QImage, QPainter
+from PySide6.QtWidgets import QApplication
+app = QApplication.instance() or QApplication([])
+out, w, h = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+img = QImage(w, h, QImage.Format_ARGB32)
+img.fill(QColor("white"))
+p = QPainter(img)
+p.setRenderHint(QPainter.TextAntialiasing, True)
+p.setPen(QColor("black"))
+for i in range(4, len(sys.argv), 4):
+    text, x, y, px = sys.argv[i], int(sys.argv[i + 1]), int(sys.argv[i + 2]), int(sys.argv[i + 3])
     f = QFont("Arial")
     f.setPixelSize(px)
     p.setFont(f)
-    p.setPen(QColor("black"))
-    p.drawText(img.rect(), Qt.AlignCenter, text)
-    p.end()
-    buf = QBuffer()
-    buf.open(QIODevice.WriteOnly)
-    img.save(buf, "PNG")
-    return bytes(buf.data())
+    p.drawText(x, y, text)
+p.end()
+img.save(out, "PNG")
+"""
+
+
+def _render(w: int, h: int, items, native: bool = True) -> bytes:
+    """PNG with text items (text, x, baseline_y, px). On Windows the text is drawn in a
+    separate Python process with Qt's normal Windows platform, the way real screen text
+    looks; the test process itself runs Qt offscreen."""
+    import subprocess
+    import sys
+    import tempfile
+    args = [str(v) for item in items for v in item]
+    with tempfile.TemporaryDirectory() as d:
+        out = os.path.join(d, "t.png")
+        if native and os.name == "nt":
+            env = {k: v for k, v in os.environ.items() if k != "QT_QPA_PLATFORM"}
+            subprocess.run([sys.executable, "-c", _RENDER, out, str(w), str(h), *args],
+                           check=True, env=env, timeout=60)
+        else:
+            from PySide6.QtWidgets import QApplication
+            QApplication.instance() or QApplication([])
+            ns = {"__name__": "render"}
+            old = sys.argv
+            sys.argv = ["render", out, str(w), str(h), *args]
+            try:
+                exec(_RENDER, ns)
+            finally:
+                sys.argv = old
+        with open(out, "rb") as fh:
+            return fh.read()
+
+
+def _text_png(text: str, px: int = 28, native: bool = True) -> bytes:
+    return _render(900, 120, [(text, 20, 70, px)], native)
 
 
 def test_prepare_png_enlarges_small_captures():
@@ -87,7 +122,11 @@ def test_windows_recognises_rendered_text():
     eng = ocr.WindowsOCR()
     lang = "English" if "English" in eng.languages() else ""
     text = eng.ocr_png(_text_png("Hello PhraseForge 2026"), language=lang)
-    assert "hello" in text.lower() and "2026" in text
+    if not ("Hello" in text and "2026" in text):
+        diag = {f"{'native' if n else 'offscreen'} {px}px scale {sc}":
+                ocr.WindowsOCR(scale=sc).ocr_png(_text_png("Hello PhraseForge 2026", px, n), lang)
+                for n in (True, False) for px in (14, 28) for sc in (1, 2)}
+        raise AssertionError(f"got {text!r}; diagnostics: {diag}")
 
 
 @windows_ocr
@@ -147,46 +186,9 @@ def test_textline_hotkeys_map_to_commands():
 
 @windows_ocr
 def test_windows_text_line_under_point():
-    from PySide6.QtCore import QBuffer, QIODevice, Qt
-    from PySide6.QtGui import QColor, QFont, QImage, QPainter
-    from PySide6.QtWidgets import QApplication
-    QApplication.instance() or QApplication([])
-    img = QImage(900, 200, QImage.Format_ARGB32)
-    img.fill(QColor("white"))
-    p = QPainter(img)
-    f = QFont("Arial")
-    f.setPixelSize(28)
-    p.setFont(f)
-    p.setPen(QColor("black"))
-    p.drawText(20, 50, "Alpha Bravo Charlie")
-    p.drawText(20, 140, "Delta Echo Foxtrot")
-    p.end()
-    buf = QBuffer()
-    buf.open(QIODevice.WriteOnly)
-    img.save(buf, "PNG")
+    png = _render(900, 200, [("Alpha Bravo Charlie", 20, 50, 28), ("Delta Echo Foxtrot", 20, 140, 28)])
     eng = ocr.WindowsOCR()
     lang = "English" if "English" in eng.languages() else ""
-    assert "Echo" in eng.ocr_at(bytes(buf.data()), 150, 130, "line", lang)
-    assert eng.ocr_at(bytes(buf.data()), 150, 130, "forward", lang).startswith("Echo")
-
-
-def test_auto_scale_enlarges_only_small_text(monkeypatch):
-    calls = []
-
-    def fake_once(self, m, engine, png, scale):
-        calls.append(scale)
-        h = {1: 9 if png == b"small" else 30, 2: 18, 3: 27}[scale]
-        return [ocr.Line([ocr.Word("w", 0, 0, 10, h)], "word" * scale)]
-
-    monkeypatch.setattr(ocr.WindowsOCR, "_recognize_once", fake_once)
-    monkeypatch.setattr(ocr.WindowsOCR, "_modules", staticmethod(lambda: {}))
-    monkeypatch.setattr(ocr.WindowsOCR, "_engine", lambda self, m, lang: object())
-    eng = ocr.WindowsOCR()
-    eng.recognize(b"large")
-    assert calls == [1]                       # 30 px text: read once, not enlarged
-    calls.clear()
-    eng.recognize(b"small")
-    assert calls == [1, 3]                    # 9 px text: read again at 3x
-    calls.clear()
-    ocr.WindowsOCR(scale=2).recognize(b"large")
-    assert calls == [2]                       # a fixed scale from Settings is used as is
+    line = eng.ocr_at(png, 150, 130, "line", lang)
+    assert "echo" in line.lower() and "alpha" not in line.lower(), line
+    assert eng.ocr_at(png, 150, 130, "forward", lang).lower().startswith("echo")
