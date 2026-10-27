@@ -289,7 +289,7 @@ def test_command_dispatch():
     shown = []
     fake._show_popup = lambda hwnd, folder=None, search=False: shown.append(folder)
     fake.on_command("choose:7,9:3")                  # several phrases share one autotext
-    assert fake._jobs.get_nowait() == ("replace", "3:", 0)
+    assert fake._jobs.get_nowait()[:2] == ("replace", "3:")   # [2] is the real foreground window on Windows
     posted.pop()()
     assert shown == ["choice:7,9"]
     fake.on_command("sound:popup_display")
