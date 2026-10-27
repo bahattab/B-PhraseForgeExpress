@@ -12,6 +12,9 @@ Commands passed to on_command (the app handles each one):
   "folder_popup:<folder_id|last_used|clipboard_cache>:<erase_chars>"
                                              a folder's own autotext/hotkey: erase the typed
                                              abbreviation, then show that folder's popup
+  "choose:<phrase_id,phrase_id,...>:<erase_chars>"
+                                             several phrases share the typed autotext: erase it,
+                                             then show a menu of those phrases
   "smartcomplete:<phrase_id>:<typed_len>"    show the SmartComplete tip for this phrase
   "autocomplete:<word>:<typed_len>"          show the tip with a word completion
   "suggest_hide"                             hide the tip
@@ -33,6 +36,7 @@ import queue
 import re
 import threading
 import time
+from dataclasses import replace
 from datetime import datetime
 from typing import Callable
 
@@ -535,11 +539,24 @@ class TriggerManager:
             owner = t.folder_id if t.folder_id is not None else t.special
             self._emit(self.on_command, f"folder_popup:{owner}:{m.erase_chars}")
             return True
-        pid = t.phrase_id
-        if not self.store.phrase_allowed_in_app(pid, exe):
+        # several phrases share this abbreviation: keep those allowed in this program
+        allowed = []
+        for c in (t,) + tuple(m.alternatives):
+            if c.phrase_id is not None and c.phrase_id not in [a.phrase_id for a in allowed] \
+                    and self.store.phrase_allowed_in_app(c.phrase_id, exe):
+                allowed.append(c)
+        if not allowed:
             return False
         if self._pause_skips():
             return False
+        if len(allowed) > 1:                              # PhraseExpress multiple-choice autotext
+            ids = ",".join(str(c.phrase_id) for c in allowed)
+            self._emit(self.on_command, f"choose:{ids}:{m.erase_chars}")
+            return True
+        if allowed[0] is not t:                           # only another phrase is allowed here
+            m = replace(m, trigger=allowed[0], alternatives=())
+            t = m.trigger
+        pid = t.phrase_id
         mode = t.eff_exec() if TriggerKind(t.kind) in (TriggerKind.AUTOTEXT, TriggerKind.REGEX) else "immediate"
         if mode == "confirm" and TriggerKind(t.kind) == TriggerKind.AUTOTEXT:
             self._emit(self.on_command, f"confirm:{pid}:{typed_len(m)}")
