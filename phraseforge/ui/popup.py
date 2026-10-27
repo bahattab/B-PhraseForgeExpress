@@ -64,24 +64,22 @@ def content_tokens(contents: str) -> list[str]:
 
 CLIPBOARD = "clipboard"
 LAST_USED = "last_used"
-STICKY = "sticky_notes"          # Microsoft Sticky Notes (read-only, phraseforge.stickynotes)
+STICKY = "sticky_notes"          # PhraseForge's own sticky notes (ui/sticky_notes.py)
 STICKY_MAX = 200
 
 
+_STORE = None   # set by PhrasePopup so the helpers below can reach the notes
+
+
 def _sticky_available() -> bool:
-    """Sticky Notes installed on this PC (tests monkeypatch this)."""
-    try:
-        from phraseforge import stickynotes
-        return stickynotes.installed()
-    except Exception:
-        return False
+    """True when the user has at least one sticky note (tests monkeypatch this)."""
+    return bool(_sticky_notes())
 
 
 def _sticky_notes() -> list:
     """The user's sticky notes, newest first (tests monkeypatch this)."""
     try:
-        from phraseforge import stickynotes
-        return stickynotes.read_notes()
+        return _STORE.sticky_notes() if _STORE is not None else []
     except Exception:
         return []
 
@@ -751,11 +749,7 @@ class _Panel(QFrame):
             return
         if self.folder_key == STICKY:
             self.popup.hide_all(force=True)
-            try:
-                from phraseforge import stickynotes
-                stickynotes.open_app()
-            except Exception:
-                pass
+            self.popup.sticky_notes_requested.emit()
             return
         self.popup.request_new_phrase(self.folder_key if isinstance(self.folder_key, int) else None)
 
@@ -819,6 +813,7 @@ class PhrasePopup(_Panel):
     phrase_chosen = Signal(int)
     clipboard_chosen = Signal(str)
     new_phrase_requested = Signal()
+    sticky_notes_requested = Signal()      # "Open Sticky Notes" footer
 
     def __init__(self, store: Store, parent=None):
         super().__init__(None, None, "", 0, store=store)
@@ -962,6 +957,8 @@ class PhrasePopup(_Panel):
         self.clipboard_max = max(1, _int_setting(st, "clipboard_history.max", 200))
         self.show_last_used = on("features.last_used_folder")
         self.last_used_max = max(1, _int_setting(st, "last_used.max", 20))
+        global _STORE
+        _STORE = self.store
         self.show_sticky = on("stickynotes.show_folder") and _sticky_available()
         self._notes_cache: list | None = None          # read lazily, once per menu opening
         try:

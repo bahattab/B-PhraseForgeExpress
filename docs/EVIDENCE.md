@@ -76,7 +76,7 @@ original), **pending** (not captured yet).
 | Statistics: phrases expanded and time saved from a typing speed | TextExpander web Statistics (Words Per Minute 50, Snippets Expanded, Time Saved, Daily Activity) | observed | already implemented (Statistics window; speed set in characters per minute, default 180 ≈ 36 words per minute) | `tests/test_ui.py` |
 | Send clipboard text/picture to OneNote page or Quick Notes | Send to OneNote (ONENOTEM) | documented (OneNote COM API) | implemented | `tests/test_onenote*.py` (fake client) |
 | New quick note window (tray, hotkey): Ctrl+Enter sends to OneNote Quick Notes or the default page, Ctrl+S saves as a phrase | Send to OneNote (ONENOTEM) | published, unconfirmed (ONENOTEM's tray menu not captured yet); sending uses the documented OneNote COM API | implemented | `tests/test_quick_note.py` |
-| Screen clip to OneNote, or OCR the clip | onenotecapture.exe | documented (starts `onenotecapture.exe`; Capture2Text CLI) | implemented | `tests/test_onenote*.py` |
+| Screen clip to OneNote, or OCR the clip | onenotecapture.exe | documented | implemented with PhraseForge's own area selection and built-in OCR (no external program) | `tests/test_onenote*.py` |
 | Import OneNote pages as phrases | OneNote | documented (OneNote COM `GetHierarchy`/`GetPageContent`) | implemented | `tests/test_onenote.py` |
 | Adapt output case to the typed abbreviation (ALL CAPS / Capitalised) | TextExpander snippet editor "Case: Adapt to Case of Abbreviation" | observed | already implemented | `tests/test_triggers*.py` |
 | Expansion modes: immediately / at delimiter keep / at delimiter abandon; delimiter set; restore clipboard; play sound; expand only in / except some programs | TextExpander Preferences > Expansion | observed | already implemented, set per phrase (trailing delimiter "None", "Default", "Remove trailing delimiter") and in Settings (delimiters, sounds, program restrictions); TextExpander sets the mode once for all snippets | `tests/test_triggers*.py` |
@@ -86,7 +86,7 @@ original), **pending** (not captured yet).
 | Hotkeys: Open, Enable/Disable expansion, New phrase, New phrase from clipboard, Edit last used phrase, inline search | TextExpander Preferences > Hotkeys | observed | implemented (Settings > Hotkeys; no default keys except the existing popup search); "Edit last used" opens the last expanded phrase | `tests/test_textexpander_features.py` |
 | Tray items New phrase from clipboard, Edit last used phrase | TextExpander tray menu | observed | implemented | `test_tray_has_clipboard_and_edit_last_items` |
 | Duplicate, sort, preview, print groups, Find | TextExpander File / View / Edit menus | observed | already implemented in the main window (Duplicate, Sort, Preview, Print, search) | `tests/test_ui.py` |
-| Screen OCR to clipboard, any Capture2Text language incl. Arabic (Ctrl+Alt+O) | Capture2Text | documented (Capture2Text CLI options, open source) | already implemented | `tests/test_macros.py::test_ocr` |
+| Screen OCR to clipboard, Arabic and other languages (Ctrl+Alt+O) | Capture2Text | documented | reimplemented in-process with the Windows OCR engine | `tests/test_ocr_engine.py` |
 | OCR output options: Save to clipboard, show result popup, keep line breaks | Capture2Text tray menu and Settings > Output | observed | implemented (Settings > Screen OCR > Output) | `tests/test_ocr_options.py::test_ocr_modes_log_and_clipboard` |
 | Log captures to a file with a format (`${capture}${linebreak}`, plus `${tab}`, `${timestamp}`) | Capture2Text Settings > Output > Logging | observed | implemented | `test_log_format`, `test_ocr_modes_log_and_clipboard` |
 | Re-capture last area (hotkey) | Capture2Text Settings > Hotkeys "Re-Capture Last" | observed | implemented (no default key) | `test_ocr_modes_log_and_clipboard`, `test_ocr_hotkeys_map_to_commands` |
@@ -123,7 +123,7 @@ features of each program. It is based on vendor product information, not on scre
 |---|---|---|---|
 | OneNote | Notebooks, sections, pages, rich page canvas, inking, audio/video notes | not implemented | PhraseForge is a phrase manager. It reads from and writes to OneNote through its COM API instead of copying the editor |
 | OneNote | Ribbon layout | approximated | "Tools" tab groups the OneNote-related commands. Full tab-by-tab parity waits for the capture |
-| onenotecapture.exe | Screen clipping to a chosen page | replicated by calling it | PhraseForge starts `onenotecapture.exe`; it can also OCR the clip with Capture2Text |
+| onenotecapture.exe | Screen clipping to a chosen page | reimplemented | PhraseForge's own area selection; the clip can be read with the built-in OCR |
 | ONENOTEM.EXE | Tray icon: New quick note, screen clip, send to OneNote | approximated | Quick note window and tray actions. Its own tray menu and default actions are not captured |
 | TextExpander | Snippets, abbreviations, fill-ins, CSV and `.textexpander` import | replicated | See the feature ledger |
 | TextExpander | Cloud team sharing, account sign-in, Public groups, web dashboard (Members, Teams, Snippet Requests, Statistics) | not implemented | Needs TextExpander's online service; PhraseForge has its own optional Google Drive sync and local statistics |
@@ -142,10 +142,10 @@ features of each program. It is based on vendor product information, not on scre
 | Listary | Commands `..`, mkdir, touch | not implemented | They act on the folder open in Explorer, which Search files does not track |
 | Listary | Commands shutdown, reboot | not implemented on purpose | One mistyped Enter would turn off the PC |
 | Listary | Preview (Alt+P), Dark theme, network drives in the index, per-action hotkeys and scope | not implemented | Not needed for the work packages; PhraseForge has its own light/dark theme |
-| Capture2Text | OCR of a screen region, Arabic and other languages | replicated by calling it | PhraseForge runs `Capture2Text_CLI.exe`; no GPL code copied |
+| Capture2Text | OCR of a screen region, Arabic and other languages | reimplemented | Windows OCR engine in-process; no Capture2Text code |
 | Capture2Text | Output (clipboard, popup, line breaks, log file), Re-capture last, quick-access languages, tray language menu, Replace rules | replicated | See the feature ledger (observed from screenshots) |
-| Capture2Text | Text Line / Forward Text Line / Bubble capture (OCR around the mouse without drawing a box) | not implemented | Needs Capture2Text's own line-finding code; its CLI only takes a box or an image |
-| Capture2Text | Whitelist/Blacklist characters, Tesseract config file, scale factor, deskew, trim | not implemented | Capture2Text's own settings already apply when PhraseForge runs its CLI |
+| Capture2Text | Text Line / Forward Text Line / Bubble capture (OCR around the mouse without drawing a box) | reimplemented | `ocr.pick_line` / `pick_forward` (right-to-left aware) / `pick_bubble` on the word boxes |
+| Capture2Text | Whitelist/Blacklist characters, scale factor | reimplemented | Settings > Screen OCR; Tesseract config file and deskew do not apply to the Windows engine |
 | Capture2Text | Translate (Google Translate) and Speech | approximated / not implemented | PhraseForge has `{#translate}` through its AI settings; speech is not implemented |
 | Capture2Text | Capture box colours, debug image saving, Call Executable | not implemented | Low value for a phrase manager |
 | OneNote | Ribbon tab row, Quick Access Toolbar, Sticky Notes button | observed, partly mirrored | PhraseForge's ribbon has File, Phrases, View, Tools, Help. A Sticky Notes button is in the Tools tab |

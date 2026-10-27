@@ -52,6 +52,9 @@ COMMAND_HOTKEY_SETTINGS = {
     "ocr.quick1_hotkey": "ocr:quick1",
     "ocr.quick2_hotkey": "ocr:quick2",
     "ocr.quick3_hotkey": "ocr:quick3",
+    "ocr.textline_hotkey": "ocr:textline",     # Capture2Text "Text Line Capture"
+    "ocr.forward_hotkey": "ocr:forward",       # "Forward Text Line Capture"
+    "ocr.bubble_hotkey": "ocr:bubble",         # "Bubble Capture"
     "clipboard_history.hotkey": "clipboard_history",
     # Settings > Hotkeys page
     "hotkey.new_phrase": "new_phrase",

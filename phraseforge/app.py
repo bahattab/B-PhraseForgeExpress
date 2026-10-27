@@ -14,6 +14,7 @@ import os
 import queue
 import sys
 import threading
+import time
 import traceback
 from typing import Any, Callable
 
@@ -26,7 +27,7 @@ from phraseforge.host import (
     Cancelled, ExpansionContext, ExpansionRequest, FormField, TextAction,
 )
 from phraseforge.models import OutputMode
-from phraseforge.ocr import Capture2TextOCR, OCRError
+from phraseforge.ocr import OCRError, WindowsOCR
 
 log = logging.getLogger("phraseforge")
 user32 = ctypes.windll.user32 if sys.platform == "win32" else None
@@ -116,6 +117,7 @@ def _grab_screen_png(rect) -> bytes | None:
         return None
     x1, y1, x2, y2 = rect
     from PySide6.QtGui import QGuiApplication
+    QGuiApplication.processEvents()   # finish hiding the selection overlay first
     for screen in QGuiApplication.screens():
         g, dpr = screen.geometry(), screen.devicePixelRatio()
         px, py = int(g.x() * dpr), int(g.y() * dpr)            # screen origin in physical pixels
@@ -123,6 +125,36 @@ def _grab_screen_png(rect) -> bytes | None:
         if px <= x1 < px + pw and py <= y1 < py + ph:
             shot = screen.grabWindow(0)                         # whole screen, physical resolution
             return _png_bytes(shot.copy(x1 - px, y1 - py, x2 - x1, y2 - y1).toImage())
+    return None
+
+
+def _cursor_physical() -> tuple[int, int]:
+    """Mouse position in physical pixels (the coordinates _grab_screen_png uses)."""
+    if os.name == "nt":
+        from phraseforge.platform import windows
+        return windows.mouse_position()
+    from PySide6.QtGui import QCursor, QGuiApplication
+    pos = QCursor.pos()
+    screen = QGuiApplication.screenAt(pos) or QGuiApplication.primaryScreen()
+    g, dpr = screen.geometry(), screen.devicePixelRatio()
+    return int(g.x() * dpr + (pos.x() - g.x()) * dpr), int(g.y() * dpr + (pos.y() - g.y()) * dpr)
+
+
+def _area_around(x: int, y: int, mode: str):
+    """Screen area (physical pixels) to read around the pointer: a wide band for a text
+    line, a box for a bubble; clipped to the screen under the pointer."""
+    from PySide6.QtGui import QGuiApplication
+    for screen in QGuiApplication.screens():
+        g, dpr = screen.geometry(), screen.devicePixelRatio()
+        sx, sy = int(g.x() * dpr), int(g.y() * dpr)
+        sw, sh = int(g.width() * dpr), int(g.height() * dpr)
+        if sx <= x < sx + sw and sy <= y < sy + sh:
+            if mode == "bubble":
+                half_w, half_h = int(450 * dpr), int(300 * dpr)
+            else:
+                half_w, half_h = int(900 * dpr), int(60 * dpr)
+            return (max(sx, x - half_w), max(sy, y - half_h),
+                    min(sx + sw, x + half_w), min(sy + sh, y + half_h))
     return None
 
 
@@ -251,8 +283,30 @@ class QtHost:
         translating = (system or "").startswith("You are a translator.")
         return ai.complete(self.store.settings(), prompt, provider, model, system, raw_system=translating)
 
-    def _ocr(self) -> Capture2TextOCR:
-        return Capture2TextOCR(self.store.setting("ocr.cli_path"))
+    def _ocr(self) -> WindowsOCR:
+        s = self.store.setting
+        try:
+            scale = int(s("ocr.scale", "0") or 0)
+        except ValueError:
+            scale = 0
+        return WindowsOCR(scale=scale, whitelist=s("ocr.whitelist", ""), blacklist=s("ocr.blacklist", ""))
+
+    def ocr_at_cursor(self, mode: str = "line", language: str = "") -> str:
+        """Capture2Text's Text Line / Forward Text Line / Bubble capture: read the text
+        under the mouse pointer without drawing a box."""
+        from phraseforge.ocr import apply_replacements, parse_replace_rules
+        x, y = _cursor_physical()
+        rect = self._ui(lambda: _area_around(x, y, mode))
+        if not rect:
+            raise OCRError("The mouse pointer is outside the screens.")
+        png = self._ui(lambda: _grab_screen_png(rect))
+        if not png:
+            raise OCRError("The area could not be captured.")
+        lang = language or self.store.setting("ocr.language", "English")
+        text = self._ocr().ocr_at(png, x - rect[0], y - rect[1], mode=mode, language=lang,
+                                  keep_line_breaks=self._keep_breaks(None))
+        rules = parse_replace_rules(self.store.setting("ocr.replace_rules", ""))
+        return apply_replacements(text, rules, lang) if rules else text
 
     def _keep_breaks(self, keep_line_breaks) -> bool:
         if keep_line_breaks is None:   # Settings > Screen OCR > Keep line breaks
@@ -270,7 +324,12 @@ class QtHost:
                 raise Cancelled()
         self.last_ocr_rect = tuple(rect)
         lang = language or self.store.setting("ocr.language", "English")
-        text = self._ocr().ocr_rect(*rect, language=lang, keep_line_breaks=self._keep_breaks(keep_line_breaks))
+        import time
+        time.sleep(0.15)   # let the selection overlay disappear before the screenshot
+        png = self._ui(lambda: _grab_screen_png(rect))
+        if not png:
+            raise OCRError("The selected area could not be captured.")
+        text = self._ocr().ocr_png(png, language=lang, keep_line_breaks=self._keep_breaks(keep_line_breaks))
         rules = parse_replace_rules(self.store.setting("ocr.replace_rules", ""))
         return apply_replacements(text, rules, lang) if rules else text
 
@@ -396,6 +455,7 @@ class PhraseForgeApp(QObject):
         self.clip_window = None
         self.file_window = None
         self.quick_note = None
+        self.sticky = None          # ui.sticky_notes.StickyNotesManager, created on first use
         self.file_index = None
 
         from phraseforge.macros import MacroEngine
@@ -457,8 +517,10 @@ class PhraseForgeApp(QObject):
         reg("onenote_send_clipboard", lambda arg, hwnd: self._jobs.put(("call", self._onenote_send_clipboard, hwnd)))
         reg("onenote_clip", lambda arg, hwnd: self._jobs.put(("call", self._onenote_clip, hwnd)))
         reg("quick_note", lambda arg, hwnd: post(self._show_quick_note))   # like ONENOTEM "New Quick Note"
-        # Microsoft Sticky Notes
-        reg("open_sticky_notes", lambda arg, hwnd: self._open_sticky_notes())
+        # Sticky notes built into PhraseForge (ui/sticky_notes.py)
+        reg("open_sticky_notes", lambda arg, hwnd: post(
+            lambda: self._open_sticky_notes(int(arg) if arg.isdigit() else None)))
+        reg("new_sticky_note", lambda arg, hwnd: post(self._new_sticky_note))
         # Search files (Listary-style launcher, phraseforge/filesearch.py)
         reg("file_search", lambda arg, hwnd: post(lambda: self._show_file_search(hwnd)))
 
@@ -511,27 +573,19 @@ class PhraseForgeApp(QObject):
         self.tray.notify("PhraseForge", "Quick note saved as a phrase")
 
     def _onenote_clip(self):
-        """Screen clipping: PhraseForge's region selector (or OneNote's own clipping tool),
-        then add the image to OneNote and/or OCR it to the clipboard (Settings > OneNote)."""
+        """Screen clipping with PhraseForge's own area selection, then add the image to
+        OneNote and/or read its text with the built-in OCR (Settings > OneNote)."""
         st = self.store.setting
         action = st("onenote.clip_action", "image")
-        if st("onenote.clip_tool", "phraseforge") == "onenote":
-            png = self._clip_with_onenote_tool()
-        else:
-            rect = self.host.select_screen_region()
-            png = self.host._ui(lambda: _grab_screen_png(rect)) if rect else None
+        rect = self.host.select_screen_region()
+        if rect:
+            time.sleep(0.15)   # let the selection overlay disappear before the screenshot
+        png = self.host._ui(lambda: _grab_screen_png(rect)) if rect else None
         if not png:
             return
         if action in ("ocr", "both"):
-            import tempfile
-            fd, tmp = tempfile.mkstemp(suffix=".png")
-            os.close(fd)
-            try:
-                with open(tmp, "wb") as fh:
-                    fh.write(png)
-                text = self.host.ocr_image(tmp)
-            finally:
-                os.unlink(tmp)
+            text = self.host._ocr().ocr_png(png, language=st("ocr.language", "English"),
+                                            keep_line_breaks=self.host._keep_breaks(None))
             if text:
                 self.host.set_clipboard(text)
                 self.poster.posted.emit(lambda: self.tray.notify("Clip text copied", text[:100]))
@@ -540,32 +594,29 @@ class PhraseForgeApp(QObject):
             self._onenote().send(image_png=png, target=ref, title="Screen clipping")
             self.poster.posted.emit(lambda: self.tray.notify("Clip sent to OneNote", ref or "Quick Notes"))
 
-    def _clip_with_onenote_tool(self, timeout_s: float = 60):
-        """Start OneNote's screen clipping tool and wait for the clip to land on the clipboard."""
-        import subprocess
-        import time
-        from phraseforge.onenote import capture_exe
-        from phraseforge.platform import clipboard
-        exe = capture_exe()
-        if not exe:
-            self.poster.posted.emit(lambda: self.tray.notify("OneNote", "onenotecapture.exe was not found."))
-            return None
-        before = clipboard.sequence_number()
-        subprocess.Popen([exe])
-        end = time.time() + timeout_s
-        while time.time() < end:
-            time.sleep(0.3)
-            if clipboard.sequence_number() != before:
-                time.sleep(0.3)
-                return self.host._ui(_clipboard_png)
-        return None
+    def sticky_notes(self):
+        """The sticky-notes manager (main thread)."""
+        if self.sticky is None:
+            from phraseforge.ui.sticky_notes import StickyNotesManager
+            self.sticky = StickyNotesManager(self.store)
+            self.sticky.save_as_phrase.connect(self._sticky_note_phrase)
+        return self.sticky
 
-    def _open_sticky_notes(self):
-        try:
-            from phraseforge import stickynotes
-            stickynotes.open_app()
-        except Exception as e:
-            self.poster.posted.emit(lambda e=e: self.tray.notify("Sticky Notes", f"Could not open Sticky Notes: {e}"))
+    def _open_sticky_notes(self, note_id=None):
+        if note_id is None:
+            self.sticky_notes().show_list()
+        else:
+            self.sticky_notes().open_note(note_id)
+
+    def _new_sticky_note(self):
+        self.sticky_notes().new_note()
+
+    def _sticky_note_phrase(self, title: str, text: str):
+        from phraseforge.models import Phrase
+        if not text.strip():
+            return
+        self.store.add_phrase(Phrase(title, text, tags=["stickynotes"]))
+        self.tray.notify("PhraseForge", "Note saved as a phrase")
 
     # ---- trigger-layer command handlers
     def _pause_cmd(self):
@@ -653,7 +704,8 @@ class PhraseForgeApp(QObject):
         self.tray.settings.connect(self.show_settings)
         if hasattr(self.tray, "show_statistics"):
             self.tray.show_statistics.connect(self.show_statistics)
-        for sig in ("onenote_send_clipboard", "onenote_clip", "open_sticky_notes", "file_search", "quick_note",
+        for sig in ("onenote_send_clipboard", "onenote_clip", "open_sticky_notes", "new_sticky_note",
+                    "file_search", "quick_note",
                     "new_phrase_from_clipboard", "edit_last_phrase"):   # OneNote / Sticky Notes items
             if hasattr(self.tray, sig):
                 getattr(self.tray, sig).connect(lambda _=None, c=sig: self.on_command(c))
@@ -1156,9 +1208,17 @@ class PhraseForgeApp(QObject):
     def _ocr_to_clipboard(self, mode: str = ""):
         """mode: "" draw an area; "recapture" OCR the last area again; "quickN" draw an
         area and use quick-access language N (Settings > Screen OCR)."""
-        from phraseforge.ocr import format_log_entry, quick_languages
+        from phraseforge.ocr import quick_languages
         s = self.store.setting
         language, rect = "", None
+        if mode in ("textline", "forward", "bubble"):
+            try:
+                text = self.host.ocr_at_cursor({"textline": "line"}.get(mode, mode))
+            except OCRError as e:
+                self.poster.posted.emit(lambda e=e: self.tray.notify("OCR", str(e)))
+                return
+            self._ocr_deliver(text)
+            return
         if mode == "recapture":
             rect = getattr(self.host, "last_ocr_rect", None)
             if not rect:
@@ -1171,7 +1231,17 @@ class PhraseForgeApp(QObject):
                 self.poster.posted.emit(lambda: self.tray.notify("OCR", f"Quick-access language {i + 1} is not set"))
                 return
             language = langs[i]
-        text = self.host.ocr_region(language=language, rect=rect)
+        try:
+            text = self.host.ocr_region(language=language, rect=rect)
+        except OCRError as e:   # e.g. the OCR language is not installed in Windows
+            self.poster.posted.emit(lambda e=e: self.tray.notify("OCR", str(e)))
+            return
+        self._ocr_deliver(text)
+
+    def _ocr_deliver(self, text: str):
+        """Settings > Screen OCR > Output: log file, clipboard, notification."""
+        s = self.store.setting
+        from phraseforge.ocr import format_log_entry
         if not text:
             self.poster.posted.emit(lambda: self.tray.notify("OCR", "No text recognised"))
             return
@@ -1216,6 +1286,7 @@ class PhraseForgeApp(QObject):
                     lambda text: self._jobs.put(("text", text, self._popup_hwnd)))
             if hasattr(self.popup, "new_phrase_requested"):
                 self.popup.new_phrase_requested.connect(self._new_phrase_from_popup)
+                self.popup.sticky_notes_requested.connect(lambda: self._open_sticky_notes())
         try:
             from phraseforge.platform import windows
             self._popup_app = windows.foreground_app()[0]
@@ -1341,6 +1412,8 @@ class PhraseForgeApp(QObject):
 
     def quit(self):
         try:
+            if self.sticky is not None:
+                self.sticky.flush()      # save notes typed in the last half second
             self.triggers.stop()
             self.clip_history.stop()
             self._cloud_push_on_exit()
@@ -1366,6 +1439,11 @@ def main(argv: list[str] | None = None) -> int:
     from phraseforge.ui import i18n
     apply_theme(qapp, store.setting("ui.theme", "system"), i18n.resolve_language(store.setting("ui.language", "auto")))
     app = PhraseForgeApp(qapp, store)
+    try:   # sticky notes that were open last time come back where they were
+        if store.sticky_notes():
+            app.sticky_notes().restore()
+    except Exception:
+        log.exception("restoring sticky notes")
     if store.setting("app.first_run_done", "0") != "1":
         from phraseforge.ui.wizard import FirstRunWizard
         FirstRunWizard(store).exec()

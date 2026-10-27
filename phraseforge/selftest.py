@@ -18,7 +18,9 @@ from phraseforge import paths
 
 # Optional parts that a full Windows build must still contain.
 EXTRA_MODULES = ("httpx", "openpyxl", "qtawesome", "googleapiclient.discovery",
-                 "google_auth_oauthlib.flow", "google.auth.transport.requests")
+                 "google_auth_oauthlib.flow", "google.auth.transport.requests",
+                 "winrt.windows.media.ocr", "winrt.windows.graphics.imaging",
+                 "winrt.windows.storage.streams", "winrt.windows.globalization")
 
 
 def run() -> int:
@@ -68,6 +70,31 @@ def run() -> int:
         p = guide_path("ar")
         assert p.name == "USER_GUIDE.ar.md" and p.is_file(), p
     check("Arabic user guide bundled", guide)
+
+    def ocr_engine() -> None:
+        from PySide6.QtCore import QBuffer, QIODevice, Qt
+        from PySide6.QtGui import QColor, QFont, QImage, QPainter
+        from phraseforge.ocr import WindowsOCR
+        langs = WindowsOCR().languages()
+        lines.append(f"      OCR languages: {', '.join(langs) or '(none)'}")
+        lang = "English" if "English" in langs else ""
+        for px in (14, 28):                       # small screen text and large text
+            img = QImage(700, 3 * px, QImage.Format_ARGB32)
+            img.fill(QColor("white"))
+            p = QPainter(img)
+            f = QFont("Arial")
+            f.setPixelSize(px)
+            p.setFont(f)
+            p.setPen(QColor("black"))
+            p.drawText(img.rect(), Qt.AlignVCenter | Qt.AlignLeft, "  Hello PhraseForge 2026")
+            p.end()
+            buf = QBuffer()
+            buf.open(QIODevice.WriteOnly)
+            img.save(buf, "PNG")
+            for scale in (0, 1, 2, 3):
+                got = WindowsOCR(scale=scale).ocr_png(bytes(buf.data()), lang)
+                lines.append(f"      OCR {px}px text, scale {scale or 'auto'}: {got!r}")
+    check("built-in OCR engine", ocr_engine)
 
     lines.append("RESULT: " + ("FAIL" if failed else "PASS"))
     (paths.data_dir() / "selftest.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")

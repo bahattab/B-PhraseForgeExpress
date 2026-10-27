@@ -412,7 +412,7 @@ def test_tools_tab_runs_app_commands(app, store):
     sent = []
     w = MainWindow(store, on_command=sent.append)
     assert "tools" in w.ribbon.tabs
-    assert set(w.tool_buttons) == {"onenote_send_clipboard", "onenote_clip", "quick_note",
+    assert set(w.tool_buttons) == {"onenote_send_clipboard", "onenote_clip", "quick_note", "new_sticky_note",
                                    "ocr", "open_sticky_notes", "file_search"}
     for cmd, b in w.tool_buttons.items():
         assert b.isEnabled()

@@ -27,25 +27,23 @@ LAST_USED_MAX = 20      # default; Settings > Features > Last used phrases (last
 
 
 def sticky_available() -> bool:
-    """Microsoft Sticky Notes installed (tests monkeypatch this)."""
-    try:
-        from phraseforge import stickynotes
-        return stickynotes.installed()
-    except Exception:
-        return False
+    """Sticky notes are built in, so the folder is always available."""
+    return True
 
 
-def sticky_notes() -> list:
-    """The user's sticky notes, newest first, read-only (tests monkeypatch this)."""
+def sticky_notes(store: Store | None = None) -> list:
+    """PhraseForge's sticky notes, newest first (tests monkeypatch this)."""
+    if store is None:
+        return []
     try:
-        from phraseforge import stickynotes
-        return stickynotes.read_notes()
+        return store.sticky_notes()
     except Exception:
         return []
 
 
 def show_sticky(store: Store) -> bool:
-    return _on(store, "stickynotes.show_folder") and sticky_available()
+    """The folder appears once the user has a sticky note."""
+    return _on(store, "stickynotes.show_folder") and sticky_available() and bool(sticky_notes(store))
 
 
 def _on(store: Store, key: str, default: str = "1") -> bool:
@@ -262,13 +260,13 @@ class TreePanel(QWidget):
                     c.setToolTip(0, e.text[:500])
                     c.setFlags(c.flags() & ~Qt.ItemIsDragEnabled & ~Qt.ItemIsDropEnabled)
                     cc.addChild(c)
-            # Microsoft Sticky Notes (read-only view of the user's notes)
+            # PhraseForge's own sticky notes (ui/sticky_notes.py)
             self.notes_by_id = {}
             if show_sticky(self.store):
                 sn = self._special("sticky_notes", "Sticky Notes", "sticky_notes")
                 tree.addTopLevelItem(sn)
                 if not self.folders_only:
-                    for n in sticky_notes():
+                    for n in sticky_notes(self.store):
                         self.notes_by_id[n.id] = n
                         c = QTreeWidgetItem([n.title])
                         c.setIcon(0, icon("sticky_notes"))
@@ -398,7 +396,7 @@ class PhraseList(QWidget):
                 self.list.addTopLevelItem(it)
         elif kind == "sticky_notes":
             phrases, folders = [], []
-            for n in sticky_notes():
+            for n in sticky_notes(self.store):
                 self.panel.notes_by_id[n.id] = n
                 it = QTreeWidgetItem([n.title])
                 it.setIcon(0, icon("sticky_notes"))

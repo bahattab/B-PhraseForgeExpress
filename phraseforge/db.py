@@ -75,6 +75,10 @@ CREATE TABLE IF NOT EXISTS phrase_versions (
   phrase_id INTEGER REFERENCES phrases(id) ON DELETE CASCADE, lang TEXT NOT NULL,
   content TEXT DEFAULT '', content_format TEXT DEFAULT 'text', modified TEXT,
   PRIMARY KEY (phrase_id, lang));
+CREATE TABLE IF NOT EXISTS sticky_notes (
+  id INTEGER PRIMARY KEY, text TEXT DEFAULT '', html TEXT DEFAULT '', color TEXT DEFAULT 'yellow',
+  x INTEGER, y INTEGER, w INTEGER DEFAULT 300, h INTEGER DEFAULT 300,
+  visible INTEGER DEFAULT 1, on_top INTEGER DEFAULT 0, created TEXT, updated TEXT);
 """
 
 DEFAULT_SETTINGS = {
@@ -87,7 +91,6 @@ DEFAULT_SETTINGS = {
     "filesearch.enabled": "1",
     "filesearch.roots": "",               # one folder per line; empty = Start menu, Desktop, Documents, Downloads
     "filesearch.refresh_minutes": "30",
-    "ocr.cli_path": r"C:\Program Files\00 - Capture2Text v4.6.3 - Arabic\Capture2Text_CLI.exe",
     "ocr.language": "English",
     "output.paste_threshold": "40",       # AUTO mode pastes text longer than this
     "output.restore_clipboard": "1",
@@ -116,6 +119,13 @@ DEFAULT_SETTINGS = {
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def _parse_dt(v):
+    try:
+        return datetime.fromisoformat(v) if v else None
+    except ValueError:
+        return None
 
 
 def hash_password(pw: str) -> str:
@@ -702,6 +712,61 @@ class Store:
             self.conn.execute("UPDATE clipboard SET pinned=? WHERE id=?", (int(pinned), entry_id))
         self._changed("clipboard")
 
+    # ---------------------------------------------------------- sticky notes
+    _NOTE_COLS = ("id", "text", "html", "color", "x", "y", "w", "h", "visible", "on_top", "created", "updated")
+    _NOTE_EDITABLE = ("text", "html", "color", "x", "y", "w", "h", "visible", "on_top")
+
+    def _note(self, r):
+        from phraseforge.stickynotes import StickyNote
+        d = dict(zip(self._NOTE_COLS, r))
+        return StickyNote(id=d["id"], text=d["text"] or "", theme=d["color"] or "yellow", html=d["html"] or "",
+                          x=d["x"], y=d["y"], w=d["w"] or 300, h=d["h"] or 300, visible=bool(d["visible"]),
+                          on_top=bool(d["on_top"]),
+                          created=_parse_dt(d["created"]), updated=_parse_dt(d["updated"]))
+
+    def sticky_notes(self) -> list:
+        """PhraseForge's own sticky notes, most recently changed first."""
+        with self.lock:
+            rows = self.conn.execute(
+                f"SELECT {', '.join(self._NOTE_COLS)} FROM sticky_notes ORDER BY updated DESC, id DESC").fetchall()
+        return [self._note(r) for r in rows]
+
+    def sticky_note(self, note_id: int):
+        with self.lock:
+            r = self.conn.execute(f"SELECT {', '.join(self._NOTE_COLS)} FROM sticky_notes WHERE id=?",
+                                  (note_id,)).fetchone()
+        return self._note(r) if r else None
+
+    def add_sticky_note(self, text: str = "", html: str = "", color: str = "yellow", **fields):
+        now = _now()
+        vals = {k: v for k, v in fields.items() if k in self._NOTE_EDITABLE}
+        vals.update(text=text, html=html, color=color)
+        cols = list(vals) + ["created", "updated"]
+        with self.lock, self.conn:
+            cur = self.conn.execute(
+                f"INSERT INTO sticky_notes ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                [int(v) if isinstance(v, bool) else v for v in vals.values()] + [now, now])
+            nid = cur.lastrowid
+        self._changed("sticky", nid)
+        return self.sticky_note(nid)
+
+    def update_sticky_note(self, note_id: int, touch: bool = True, **fields) -> None:
+        """touch=False keeps the 'updated' time (window moved/resized/shown, not edited)."""
+        vals = {k: (int(v) if isinstance(v, bool) else v) for k, v in fields.items() if k in self._NOTE_EDITABLE}
+        if not vals:
+            return
+        if touch:
+            vals["updated"] = _now()
+        with self.lock, self.conn:
+            self.conn.execute(f"UPDATE sticky_notes SET {', '.join(k + '=?' for k in vals)} WHERE id=?",
+                              [*vals.values(), note_id])
+        self._changed("sticky", note_id)
+
+    def delete_sticky_note(self, note_id: int) -> None:
+        with self.lock, self.conn:
+            self.conn.execute("DELETE FROM sticky_notes WHERE id=?", (note_id,))
+        self._changed("sticky", note_id)
+
     def delete_clipboard(self, entry_id: int) -> None:
         with self.lock, self.conn:
             self.conn.execute("DELETE FROM clipboard WHERE id=?", (entry_id,))
@@ -761,7 +826,7 @@ class Store:
             self._migrate_schema()        # a backup/sync copy may come from an older version
             self.conn.executescript(SCHEMA)
         self._migrate_extras()
-        for kind in ("folder", "phrase", "setting", "var", "clipboard"):
+        for kind in ("folder", "phrase", "setting", "var", "clipboard", "sticky"):
             self._changed(kind)
 
     def backup_to(self, path: str | Path) -> None:

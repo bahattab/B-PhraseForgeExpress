@@ -19,7 +19,7 @@ from PySide6.QtCore import QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QDesktopServices, QFont, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow,
-    QMenu, QMessageBox, QPlainTextEdit, QSplitter, QStackedWidget, QStatusBar, QToolBar, QToolButton,
+    QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSplitter, QStackedWidget, QStatusBar, QToolBar, QToolButton,
     QVBoxLayout, QWidget,
 )
 
@@ -247,7 +247,7 @@ class ClipEntryView(QWidget):
 
 
 class StickyNoteView(QWidget):
-    """Read-only view of one Microsoft Sticky Notes note (or, for the folder node, a summary)."""
+    """One PhraseForge sticky note in the main window (or, for the folder node, a summary)."""
 
     def __init__(self, store: Store, window: "MainWindow", parent=None):
         super().__init__(parent)
@@ -265,42 +265,52 @@ class StickyNoteView(QWidget):
         self.text.setReadOnly(True)
         lay.addWidget(self.text, 1)
         row = QHBoxLayout()
+        self.open_note_btn = QPushButton(icon("sticky_notes"), "Open note")
+        self.open_note_btn.clicked.connect(self.open_note)
         self.copy_btn = QPushButton(icon("copy"), "Copy")
         self.copy_btn.clicked.connect(self.copy)
         self.create_btn = QPushButton(icon("new_phrase"), "Create phrase from this note")
         self.create_btn.clicked.connect(self.create_phrase)
+        self.new_btn = QPushButton(icon("sticky_notes"), "New sticky note")
+        self.new_btn.clicked.connect(lambda: self._command("new_sticky_note"))
         self.open_btn = QPushButton(icon("sticky_notes"), "Open Sticky Notes")
-        self.open_btn.clicked.connect(open_sticky_notes)
-        for b in (self.copy_btn, self.create_btn, self.open_btn):
+        self.open_btn.clicked.connect(lambda: self._command("open_sticky_notes"))
+        for b in (self.open_note_btn, self.copy_btn, self.create_btn, self.new_btn, self.open_btn):
             row.addWidget(b)
         row.addStretch(1)
         lay.addLayout(row)
+
+    def _command(self, cmd: str) -> None:
+        if getattr(self.window, "on_command", None) is not None:
+            self.window.on_command(cmd)
 
     def load(self, note_id=None) -> None:
         """note_id: a note id from the tree, or None for the "Sticky Notes" folder node."""
         from phraseforge.ui import tree_panel as tp
         if note_id is None:
-            notes = tp.sticky_notes()
+            notes = tp.sticky_notes(self.store)
             self.note = None
             self.caption.setText("Sticky Notes")
-            self.info.setText(f"{len(notes)} note(s) in Microsoft Sticky Notes (read-only). "
-                              "Choose a note to view it, or import them with Import > From Sticky Notes.")
+            self.info.setText(f"{len(notes)} note(s). Choose a note to view it, or open the notes "
+                              "to write and edit them on your desktop.")
             self.text.setPlainText("")
             self.text.setVisible(False)
-            self.copy_btn.setVisible(False)
-            self.create_btn.setVisible(False)
+            for b in (self.open_note_btn, self.copy_btn, self.create_btn):
+                b.setVisible(False)
             return
-        n = self.window.panel.notes_by_id.get(note_id) or next(
-            (x for x in tp.sticky_notes() if x.id == note_id), None)
+        n = self.window.panel.notes_by_id.get(note_id) or self.store.sticky_note(note_id)
         self.note = n
         self.caption.setText(n.title if n else "Sticky note")
         when = n.updated.strftime("%Y-%m-%d %H:%M") if n and n.updated else ""
-        self.info.setText(f"Updated {when} (UTC) - read-only, from Microsoft Sticky Notes" if when
-                          else "Read-only, from Microsoft Sticky Notes")
+        self.info.setText(f"Updated {when}" if when else "")
         self.text.setPlainText(n.text if n else "")
         self.text.setVisible(True)
-        self.copy_btn.setVisible(True)
-        self.create_btn.setVisible(True)
+        for b in (self.open_note_btn, self.copy_btn, self.create_btn):
+            b.setVisible(True)
+
+    def open_note(self) -> None:
+        if self.note is not None:
+            self._command(f"open_sticky_notes:{self.note.id}")
 
     def copy(self) -> None:
         if self.note is not None:
@@ -314,14 +324,6 @@ class StickyNoteView(QWidget):
         self.window.refresh_tree()
         self.window.select_phrase(p.id)
         return p
-
-
-def open_sticky_notes() -> None:
-    try:
-        from phraseforge import stickynotes
-        stickynotes.open_app()
-    except Exception as e:  # Sticky Notes missing / shell error
-        QMessageBox.warning(None, "Sticky Notes", str(e))
 
 
 def initials_avatar(name: str) -> QPixmap:
@@ -641,8 +643,9 @@ class MainWindow(QMainWindow):
         ("OneNote", (("Send clipboard\nto OneNote", "on_send", "onenote_send_clipboard"),
                      ("Screen\nclipping", "on_clip", "onenote_clip"),
                      ("New quick\nnote", "sticky_notes", "quick_note"))),
-        ("Capture", (("Screen\nOCR", "m_ocr", "ocr"),
-                     ("Sticky\nNotes", "sticky_notes", "open_sticky_notes"))),
+        ("Capture", (("Screen\nOCR", "m_ocr", "ocr"),)),
+        ("Sticky notes", (("New sticky\nnote", "sticky_notes", "new_sticky_note"),
+                          ("Sticky\nNotes", "sticky_notes", "open_sticky_notes"))),
         ("Find", (("Search\nfiles", "file_search", "file_search"),)),
     )
 
@@ -826,7 +829,7 @@ class MainWindow(QMainWindow):
         return tuple(self.store.setting(k, "") for k in self.TREE_SETTINGS)
 
     def _on_store_change(self, kind: str, _id) -> None:
-        if kind in ("folder", "phrase", "clipboard"):
+        if kind in ("folder", "phrase", "clipboard", "sticky"):
             self._refresh_timer.start()
         elif kind == "setting":
             # only settings that change the tree's special folders trigger a rebuild

@@ -1,6 +1,9 @@
-"""Read Microsoft Sticky Notes (the user's own notes file) - read-only.
+"""Sticky notes built into PhraseForge, plus a read-only importer for Microsoft Sticky Notes.
 
-Sticky Notes (Microsoft Store app) keeps notes in a SQLite file:
+PhraseForge's own notes live in its database (Store.sticky_notes) and are shown
+as small desktop windows by ui/sticky_notes.py. No other program is started.
+
+Import: the Microsoft Sticky Notes Store app keeps its notes in a SQLite file:
   %LOCALAPPDATA%\\Packages\\Microsoft.MicrosoftStickyNotes_8wekyb3d8bbwe\\LocalState\\plum.sqlite
 We never open that file in place: it is copied (with its -wal/-shm journal) to a
 temporary folder and read there, so Sticky Notes is never locked or modified.
@@ -13,7 +16,6 @@ import os
 import re
 import shutil
 import sqlite3
-import subprocess
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -21,7 +23,25 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 PACKAGE = "Microsoft.MicrosoftStickyNotes_8wekyb3d8bbwe"
-APP_ID = PACKAGE + "!App"
+
+# Note colours: (name, paper, header) - the seven colours Sticky Notes offers.
+COLORS = {
+    "yellow": ("#fff7d1", "#fff2ab"),
+    "green": ("#e4f9e0", "#cbf1c4"),
+    "pink": ("#ffe4f1", "#ffcce5"),
+    "purple": ("#f2e6ff", "#e7cfff"),
+    "blue": ("#e2f1ff", "#cde9ff"),
+    "gray": ("#f3f2f1", "#e1dfdd"),
+    "charcoal": ("#696969", "#4f4f4f"),
+}
+# Microsoft Sticky Notes theme names -> our colours (used by the importer)
+_MS_THEMES = {"yellow": "yellow", "green": "green", "pink": "pink", "purple": "purple",
+              "blue": "blue", "gray": "gray", "charcoal": "charcoal"}
+
+
+def color_of(theme: str) -> str:
+    t = (theme or "").strip().lower()
+    return _MS_THEMES.get(t, "yellow")
 
 
 def db_path() -> Path:
@@ -35,11 +55,18 @@ def installed() -> bool:
 
 @dataclass
 class StickyNote:
-    id: str
+    id: object                       # int for PhraseForge notes, str (guid) for imported ones
     text: str
-    theme: str = ""
+    theme: str = ""                  # colour name (COLORS)
     updated: datetime | None = None
     created: datetime | None = None
+    html: str = ""                   # rich text (bold, italic, lists...) as Qt HTML
+    x: int | None = None
+    y: int | None = None
+    w: int = 300
+    h: int = 300
+    visible: bool = True
+    on_top: bool = False
 
     @property
     def title(self) -> str:
@@ -117,8 +144,3 @@ def find(notes: list[StickyNote], query: str) -> StickyNote | None:
         if n.title.lower().rstrip(".") == q:
             return n
     return next((n for n in notes if q in n.text.lower()), None)
-
-
-def open_app() -> None:
-    """Open the Sticky Notes app (its documented Store app id)."""
-    subprocess.Popen(["explorer.exe", f"shell:AppsFolder\\{APP_ID}"])

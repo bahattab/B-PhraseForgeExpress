@@ -111,18 +111,17 @@ def test_settings_onenote_page_round_trip(app):
     from phraseforge.ui.settings_dialog import SettingsDialog, pages
     from phraseforge.ui.settings_schema import SCHEMA
     for k in ("onenote.exe", "onenote.default_target", "onenote.send_hotkey", "onenote.clip_hotkey",
-              "onenote.clip_tool", "onenote.clip_action", "onenote.include_ocr"):
+              "onenote.clip_action", "onenote.include_ocr"):
         assert k in SCHEMA
-    assert SCHEMA["onenote.clip_tool"] == "phraseforge" and SCHEMA["onenote.clip_action"] == "image"
+    assert "onenote.clip_tool" not in SCHEMA          # clipping always uses PhraseForge's own selector
+    assert SCHEMA["onenote.clip_action"] == "image"
     assert pages().index("onenote") == pages().index("ocr") + 1
     s = Store(":memory:")
     d = SettingsDialog(s, page="onenote")
     d.onenote_target.setText("Work/Projects")
-    d.onenote_clip_tool.setCurrentText("onenote")
     d.onenote_clip_action.setCurrentText("both")
     d.save()
     assert s.setting("onenote.default_target") == "Work/Projects"
-    assert s.setting("onenote.clip_tool") == "onenote"
     assert s.setting("onenote.clip_action") == "both"
 
 
