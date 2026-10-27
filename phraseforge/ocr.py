@@ -304,12 +304,28 @@ class WindowsOCR:
         return engine
 
     def recognize(self, png: bytes, language: str = "English") -> list[Line]:
-        """Lines with their words and word boxes, in the coordinates of the given image."""
+        """Lines with their words and word boxes, in the coordinates of the given image.
+
+        Automatic scale: read the capture as it is first; only when the recognised text
+        is small (under 20 pixels high) read it again enlarged 2x or 3x. Enlarging text
+        that is already large makes Windows OCR worse, so it is never done blindly."""
         if not png:
             raise OCRError("Nothing was captured.")
         m = self._modules()
         engine = self._engine(m, language)
-        data, scale, pad, shrink = _prepare_png(png, int(m["OcrEngine"].max_image_dimension or 0), self.scale)
+        if self.scale:
+            return self._recognize_once(m, engine, png, self.scale)
+        lines = self._recognize_once(m, engine, png, 1)
+        heights = sorted(w.h for l in lines for w in l.words if w.h > 0)
+        median = heights[len(heights) // 2] if heights else 0
+        if not lines or median < 20:
+            bigger = self._recognize_once(m, engine, png, 3 if 0 < median < 10 else 2)
+            if sum(len(l.text) for l in bigger) >= sum(len(l.text) for l in lines):
+                return bigger
+        return lines
+
+    def _recognize_once(self, m, engine, png: bytes, scale: int) -> list[Line]:
+        data, scale, pad, shrink = _prepare_png(png, int(m["OcrEngine"].max_image_dimension or 0), scale)
 
         async def run():
             stream = m["InMemoryRandomAccessStream"]()

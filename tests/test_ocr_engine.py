@@ -168,3 +168,25 @@ def test_windows_text_line_under_point():
     lang = "English" if "English" in eng.languages() else ""
     assert "Echo" in eng.ocr_at(bytes(buf.data()), 150, 130, "line", lang)
     assert eng.ocr_at(bytes(buf.data()), 150, 130, "forward", lang).startswith("Echo")
+
+
+def test_auto_scale_enlarges_only_small_text(monkeypatch):
+    calls = []
+
+    def fake_once(self, m, engine, png, scale):
+        calls.append(scale)
+        h = {1: 9 if png == b"small" else 30, 2: 18, 3: 27}[scale]
+        return [ocr.Line([ocr.Word("w", 0, 0, 10, h)], "word" * scale)]
+
+    monkeypatch.setattr(ocr.WindowsOCR, "_recognize_once", fake_once)
+    monkeypatch.setattr(ocr.WindowsOCR, "_modules", staticmethod(lambda: {}))
+    monkeypatch.setattr(ocr.WindowsOCR, "_engine", lambda self, m, lang: object())
+    eng = ocr.WindowsOCR()
+    eng.recognize(b"large")
+    assert calls == [1]                       # 30 px text: read once, not enlarged
+    calls.clear()
+    eng.recognize(b"small")
+    assert calls == [1, 3]                    # 9 px text: read again at 3x
+    calls.clear()
+    ocr.WindowsOCR(scale=2).recognize(b"large")
+    assert calls == [2]                       # a fixed scale from Settings is used as is
