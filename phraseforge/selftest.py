@@ -20,7 +20,8 @@ from phraseforge import paths
 EXTRA_MODULES = ("httpx", "openpyxl", "qtawesome", "googleapiclient.discovery",
                  "google_auth_oauthlib.flow", "google.auth.transport.requests",
                  "winrt.windows.media.ocr", "winrt.windows.graphics.imaging",
-                 "winrt.windows.storage.streams", "winrt.windows.globalization")
+                 "winrt.windows.storage.streams", "winrt.windows.globalization",
+                 "comtypes.client", "pyodbc", "win32com.client")
 
 
 def run() -> int:
@@ -95,6 +96,14 @@ def run() -> int:
                 got = WindowsOCR(scale=scale).ocr_png(bytes(buf.data()), lang)
                 lines.append(f"      OCR {px}px text, scale {scale or 'auto'}: {got!r}")
     check("built-in OCR engine", ocr_engine)
+
+    def com_wrappers() -> None:
+        # OneNote is reached through comtypes, which writes wrapper modules for a
+        # COM type library at run time; prove that works inside the packaged EXE.
+        import comtypes.client
+        mod = comtypes.client.GetModule("stdole2.tlb")
+        assert hasattr(mod, "IFontDisp"), mod
+    check("COM type library wrappers (OneNote)", com_wrappers)
 
     lines.append("RESULT: " + ("FAIL" if failed else "PASS"))
     (paths.data_dir() / "selftest.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")

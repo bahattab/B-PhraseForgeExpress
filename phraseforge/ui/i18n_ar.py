@@ -571,7 +571,7 @@ AR_EXTRA = {
     "Default page or section (empty = a new page in Quick Notes):": "الصفحة أو القسم الافتراضي (فارغ = صفحة جديدة في الملاحظات السريعة):",
     "Type a note…": "اكتب ملاحظة…",
     "Save as phrase": "حفظ كعبارة",
-    "Ctrl+Enter OneNote · Ctrl+S phrase · Esc hide": "Ctrl+Enter إلى OneNote · Ctrl+S عبارة · Esc إخفاء",
+    "Ctrl+Enter: send to OneNote · Ctrl+S: save as phrase · Esc: hide": "Ctrl+Enter: إرسال إلى OneNote · Ctrl+S: حفظ كعبارة · Esc: إخفاء",
 
     # Search files
     "Hotkey: open Search files": "مفتاح اختصار: فتح البحث في الملفات",
