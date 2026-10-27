@@ -275,10 +275,15 @@ class StickyNoteView(QWidget):
         self.new_btn.clicked.connect(lambda: self._command("new_sticky_note"))
         self.open_btn = QPushButton(icon("sticky_notes"), "Open Sticky Notes")
         self.open_btn.clicked.connect(lambda: self._command("open_sticky_notes"))
-        for b in (self.open_note_btn, self.copy_btn, self.create_btn, self.new_btn, self.open_btn):
+        for b in (self.open_note_btn, self.copy_btn, self.create_btn):
             row.addWidget(b)
         row.addStretch(1)
         lay.addLayout(row)
+        row2 = QHBoxLayout()            # second row, so the pane can stay narrow without cutting labels
+        for b in (self.new_btn, self.open_btn):
+            row2.addWidget(b)
+        row2.addStretch(1)
+        lay.addLayout(row2)
 
     def _command(self, cmd: str) -> None:
         if getattr(self.window, "on_command", None) is not None:
@@ -428,6 +433,7 @@ class MainWindow(QMainWindow):
         self.panel.tree.itemChanged.connect(self._item_renamed)
         self.phrase_list.selected.connect(self._on_list_selected)
         self.phrase_list.open_folder.connect(self._open_folder_from_list)
+        self.phrase_list.open_note.connect(self._open_sticky_note)
         self.phrase_list.list.customContextMenuRequested.connect(self._list_menu)
 
         self._refresh_timer = QTimer(self)
@@ -733,6 +739,8 @@ class MainWindow(QMainWindow):
                 ed = FallbackFolderEditor(self.store)
             elif kind == "clip":
                 ed = ClipEntryView(self.store)
+            elif kind == "note":
+                ed = StickyNoteView(self.store, self)
             else:
                 ed = QWidget()
         for sig, slot in (("content_focus_changed", self._content_focus), ("saved", self._editor_saved),
@@ -805,6 +813,13 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def _show_editor(self, kind: str, id_) -> None:
+        if kind in ("note", "sticky_notes"):
+            # one page for both: a note's text, or a summary for the folder node
+            ed = self._editor("note")
+            ed.load(id_ if kind == "note" else None)
+            self.editor_stack.setCurrentWidget(ed)
+            self._content_focus(False)
+            return
         if kind in ("phrase", "folder", "clip") and id_ is not None or kind in ("last_used", "clipboard_cache"):
             ed = self._editor(kind)
             load = getattr(ed, "load", None)
@@ -822,6 +837,8 @@ class MainWindow(QMainWindow):
             self._content_focus(False)
 
     # ================================================================= selection
+    # Tree nodes whose content the middle column lists in the three-column layout.
+    LIST_KINDS = ("folder", "root", "last_used", "clipboard_cache", "sticky_notes")
     TREE_SETTINGS = ("features.last_used_folder", "clipboard_history.enabled", "last_used.max",
                      "features.usage_statistics")
 
@@ -844,7 +861,7 @@ class MainWindow(QMainWindow):
         self.panel.refresh()
         if self.three_columns:
             k, i = self.panel.current()
-            if k in ("folder", "root", "last_used", "clipboard_cache"):
+            if k in self.LIST_KINDS:
                 self.phrase_list.show_folder(k, i)
         self._update_status()
 
@@ -862,7 +879,7 @@ class MainWindow(QMainWindow):
                     self.editor_stack.setCurrentWidget(self.blank)
                     return
         self._set_selection(kind, id_)
-        if self.three_columns and kind in ("folder", "root", "last_used", "clipboard_cache"):
+        if self.three_columns and kind in self.LIST_KINDS:
             self.phrase_list.show_folder(kind, id_)
         self._show_editor(kind, id_)
         self._push_nav(kind, id_)
@@ -877,6 +894,10 @@ class MainWindow(QMainWindow):
         self._push_nav(kind, id_)
         self._update_status()
         self._update_actions()
+
+    def _open_sticky_note(self, note_id) -> None:
+        if self.on_command is not None and note_id is not None:
+            self.on_command(f"open_sticky_notes:{note_id}")
 
     def _open_folder_from_list(self, folder_id) -> None:
         if folder_id is None:

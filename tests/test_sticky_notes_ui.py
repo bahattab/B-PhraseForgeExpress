@@ -155,3 +155,35 @@ def test_main_window_sticky_folder_and_note_view(app, store):
     w.tree.setCurrentItem(folder.child(0))
     w.tree.setCurrentItem(folder)
     w.close()
+
+
+@pytest.mark.parametrize("columns", [2, 3])
+def test_main_window_shows_sticky_notes(app, store, columns):
+    """Selecting the Sticky Notes folder lists the notes (three columns) and shows the
+    note view on the right; double-clicking a note in the list opens it on the desktop."""
+    from phraseforge.ui.main_window import StickyNoteView, MainWindow
+    from phraseforge.ui.tree_panel import ROLE_ID, ROLE_KIND
+    a = store.add_sticky_note("Shopping\nmilk")
+    b = store.add_sticky_note("Call Ahmed")
+    cmds = []
+    w = MainWindow(store, on_command=cmds.append)
+    w.set_columns(columns)
+    assert w.panel.select("sticky_notes", None)
+    app.processEvents()
+    assert isinstance(w.editor, StickyNoteView) and w.editor.caption.text() == "Sticky Notes"
+    assert "2 note(s)" in w.editor.info.text()
+    if columns == 3:
+        lst = w.phrase_list.list
+        ids = {lst.topLevelItem(i).data(0, ROLE_ID) for i in range(lst.topLevelItemCount())
+               if lst.topLevelItem(i).data(0, ROLE_KIND) == "note"}
+        assert ids == {a.id, b.id}
+        item = next(lst.topLevelItem(i) for i in range(lst.topLevelItemCount())
+                    if lst.topLevelItem(i).data(0, ROLE_ID) == a.id)
+        lst.setCurrentItem(item)
+        assert w.editor.text.toPlainText() == "Shopping\nmilk"
+        lst.itemDoubleClicked.emit(item, 0)
+        assert cmds[-1] == f"open_sticky_notes:{a.id}"
+    else:
+        assert w.panel.select("note", b.id)
+        assert w.editor.text.toPlainText() == "Call Ahmed"
+    w.close()

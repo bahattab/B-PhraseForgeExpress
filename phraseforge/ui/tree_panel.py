@@ -349,6 +349,7 @@ class PhraseList(QWidget):
     """Middle column of the three-column layout: content of one folder."""
     selected = Signal(str, object)
     open_folder = Signal(object)          # folder id (None = root)
+    open_note = Signal(object)            # sticky note id (double-click opens it on the desktop)
 
     def __init__(self, store: Store, panel: TreePanel, parent=None):
         super().__init__(parent)
@@ -444,3 +445,5 @@ class PhraseList(QWidget):
         elif k == "up":
             f = self.store.get_folder(self.folder_id) if self.folder_id else None
             self.open_folder.emit(f.parent_id if f else None)
+        elif k == "note":
+            self.open_note.emit(it.data(0, ROLE_ID))
