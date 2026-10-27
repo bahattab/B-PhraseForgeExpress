@@ -281,6 +281,8 @@ class TreePanel(QWidget):
                 for p in sorted(self.store.phrases(), key=lambda p: p.description.lower()):
                     if not self.locked(p.folder_id):
                         root.addChild(self.make_phrase_item(p, colors))
+            elif self.flat:
+                pass                # three columns: the middle list shows every phrase under "Phrases"
             else:
                 self._add_folders(root, None, colors)
                 if not self.folders_only:
@@ -405,6 +407,11 @@ class PhraseList(QWidget):
                 it.setData(0, ROLE_ID, n.id)
                 it.setToolTip(0, n.text[:500])
                 self.list.addTopLevelItem(it)
+        elif kind == "root" and self.panel.flat:
+            # Flat list: every phrase of every (unlocked) folder, without folders
+            folders = []
+            phrases = sorted((p for p in self.store.phrases() if not self.panel.locked(p.folder_id)),
+                             key=lambda p: p.description.lower())
         elif kind in ("folder", "root"):
             fid = folder_id if kind == "folder" else None
             folders = [] if self.panel.locked(fid) else sorted_folders(self.store, fid)

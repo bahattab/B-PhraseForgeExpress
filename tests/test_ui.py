@@ -423,3 +423,31 @@ def test_tools_tab_runs_app_commands(app, store):
     w2 = MainWindow(store)
     assert not any(b.isEnabled() for b in w2.tool_buttons.values())
     w2.close()
+
+
+def test_flat_list_and_fit_columns_in_both_layouts(app, store):
+    """Flat list used to do nothing in three columns; fit columns did nothing in two."""
+    from phraseforge.models import Folder, Phrase
+    from phraseforge.ui.main_window import MainWindow
+    from phraseforge.ui.tree_panel import ROLE_KIND
+    f = store.add_folder(Folder("Sub"))
+    store.add_phrase(Phrase("Inside a folder with a fairly long description", "x", folder_id=f.id))
+    store.add_phrase(Phrase("At the top", "y"))
+    w = MainWindow(store)
+    w.set_columns(3)
+    w.toggle_flat()
+    lst = w.phrase_list.list
+    rows = [(lst.topLevelItem(i).data(0, ROLE_KIND), lst.topLevelItem(i).text(0))
+            for i in range(lst.topLevelItemCount())]
+    assert all(k == "phrase" for k, _ in rows)
+    assert {"Inside a folder with a fairly long description", "At the top"} <= {t for _, t in rows}
+    lst.setColumnWidth(0, 40)
+    w.btn_fit.click()
+    assert lst.columnWidth(0) > 40
+    w.toggle_flat()
+    assert not w.panel.flat
+    w.set_columns(2)
+    w.tree.setColumnWidth(0, 30)
+    w.btn_fit.click()
+    assert w.tree.columnWidth(0) > 30
+    w.close()

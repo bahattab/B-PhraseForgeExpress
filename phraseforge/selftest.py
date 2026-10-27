@@ -105,6 +105,38 @@ def run() -> int:
         assert hasattr(mod, "IFontDisp"), mod
     check("COM type library wrappers (OneNote)", com_wrappers)
 
+    def main_window_views() -> None:
+        # The View tab's editor options and layout buttons, on the real phrase editor.
+        from phraseforge.db import Store
+        from phraseforge.models import Phrase
+        from phraseforge.ui.main_window import MainWindow
+        from phraseforge.ui.phrase_editor import PhraseEditor
+        from phraseforge.ui.tree_panel import ROLE_KIND
+        with tempfile.TemporaryDirectory() as d:
+            store = Store(Path(d) / "views.db")
+            p = store.add_phrase(Phrase("Self-test", "a\tb {#date}"))
+            w = MainWindow(store)
+            try:
+                w.select_phrase(p.id)
+                ed = w.editor
+                assert isinstance(ed, PhraseEditor), f"phrase editor not created: {type(ed).__name__}"
+                for cb in w.view_options.values():
+                    cb.setChecked(not cb.isChecked())
+                ce = ed.content_edit
+                assert ed.view == {"word_wrap": False, "show_special": True,
+                                   "show_macro_params": True, "rulers": True}, ed.view
+                assert ce.lineWrapMode() == ce.LineWrapMode.NoWrap and not ed.ruler.isHidden()
+                w.set_columns(3, save=False)
+                w.btn_flat.click()
+                kinds = {w.phrase_list.list.topLevelItem(i).data(0, ROLE_KIND)
+                         for i in range(w.phrase_list.list.topLevelItemCount())}
+                assert w.panel.flat and kinds == {"phrase"}, kinds
+                w.btn_fit.click()
+            finally:
+                w.close()
+                store.close()
+    check("main window view options", main_window_views)
+
     lines.append("RESULT: " + ("FAIL" if failed else "PASS"))
     (paths.data_dir() / "selftest.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return 1 if failed else 0

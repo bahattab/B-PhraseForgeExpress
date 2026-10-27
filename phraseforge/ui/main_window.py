@@ -8,6 +8,8 @@
 """
 from __future__ import annotations
 
+import logging
+
 import getpass
 import json
 import os
@@ -616,7 +618,7 @@ class MainWindow(QMainWindow):
         self.btn_two = g.add_large("Two\ncolumns", "two_columns", lambda: self.set_columns(2))
         self.btn_three = g.add_large("Three\ncolumns", "three_columns", lambda: self.set_columns(3))
         self.btn_flat = g.add_large("Flat\nlist", "flat_list", self.toggle_flat)
-        self.btn_fit = g.add_large("Resize column\nto fit contents", "fit_columns", self.phrase_list.fit_columns)
+        self.btn_fit = g.add_large("Resize column\nto fit contents", "fit_columns", self.fit_columns)
         for b in (self.btn_two, self.btn_three, self.btn_flat):
             b.setCheckable(True)
         self.btn_two.setToolTip("Two columns (Ctrl+2)")
@@ -731,6 +733,9 @@ class MainWindow(QMainWindow):
             elif kind in ("last_used", "clipboard_cache"):
                 ed = pe.SpecialFolderEditor(self.store, kind)
         except Exception:
+            # keep the window usable, but leave a trace: the simple fallback editor has
+            # no view options (rulers, word wrap...), so a silent failure looks like broken buttons
+            logging.getLogger(__name__).exception("creating the %s editor", kind)
             ed = None
         if ed is None:
             if kind == "phrase":
@@ -1044,7 +1049,19 @@ class MainWindow(QMainWindow):
     def toggle_flat(self) -> None:
         self.panel.flat = not self.panel.flat
         self.refresh_tree()
+        if self.three_columns:
+            # the folders leave the tree: show the whole list under "Phrases"
+            self.panel.select("root", None)
+            self.phrase_list.show_folder("root", None)
         self._update_actions()
+
+    def fit_columns(self) -> None:
+        """Resize the visible list's columns to their contents (middle list or tree)."""
+        if self.three_columns:
+            self.phrase_list.fit_columns()
+        else:
+            for c in range(self.tree.columnCount()):
+                self.tree.resizeColumnToContents(c)
 
     def set_view_option(self, key: str, on: bool) -> None:
         self.store.set_setting(f"view.{key}", "1" if on else "0")
@@ -1064,7 +1081,7 @@ class MainWindow(QMainWindow):
                 fn(word_wrap=self.view_option("word_wrap"), show_special=self.view_option("show_special_chars"),
                    show_macro_params=self.view_option("show_macro_params"), rulers=self.view_option("show_rulers"))
             except Exception:
-                pass
+                logging.getLogger(__name__).exception("applying view options")
 
     def _editor_status(self, st: dict) -> None:
         if self.sel_kind != "phrase":
