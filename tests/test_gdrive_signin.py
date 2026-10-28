@@ -199,11 +199,13 @@ def test_own_client_stored_encrypted(home):
 
 
 def test_legacy_plain_client_is_sealed_on_first_use(home):
-    gdrive.legacy_client_file().write_text(json.dumps(gdrive.client_json(CID, "GOCSPX-old")))
+    # The JSON file 0.5.3 wrote (fake test values).
+    gdrive.legacy_client_file().write_text(
+        '{"installed": {"client_id": "%s", "client_secret": "old-test-value"}}' % CID)
     assert gdrive.client_source() == "own"
-    assert gdrive.client_config()["installed"]["client_secret"] == "GOCSPX-old"
+    assert gdrive.client_config()["installed"]["client_secret"] == "old-test-value"
     assert not gdrive.legacy_client_file().exists()
-    assert b"GOCSPX-old" not in gdrive.client_file().read_bytes()
+    assert b"old-test-value" not in gdrive.client_file().read_bytes()
 
 
 def test_client_from_another_pc_is_ignored(home):
