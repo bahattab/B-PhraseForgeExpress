@@ -136,7 +136,7 @@ first time (free, about 5 minutes; Google requires every app to have its own cli
 **Built-in client for everyone (maintainers):** create the Desktop app client once as above,
 publish the app, then add the repository secrets `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`
 (Settings > Secrets and variables > Actions). The release build writes them into the program
-(`packaging/write_google_client.py`) and users only click **Sign in with Google**. Google does not
+(step "Built-in Google sign-in client" in `.github/workflows/windows-build.yml`) and users only click **Sign in with Google**. Google does not
 treat a Desktop app client secret as confidential.
 
 Sync runs at start, every N minutes and on exit. If phrases changed on two PCs, nothing

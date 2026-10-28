@@ -10,16 +10,15 @@ folders it created itself, nothing else in the user's Drive.
 Google requires an OAuth client ID (a "Desktop app" client from a Google Cloud
 project). PhraseForge looks for one in this order:
 1. the user's own client (JSON file or pasted ID + secret, Settings > Backup & Sync),
-   kept in the data folder;
+   kept in the data folder encrypted with the user's Windows account (DPAPI);
 2. the client built into the program (phraseforge/cloud/google_client.json, written
-   by the release build from the GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET secrets).
+   by the release workflow from the GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET secrets).
 For a "Desktop app" client Google does not treat the secret as confidential, so a
 built-in client is the normal way installed apps sign in.
 """
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 
 from phraseforge import paths
@@ -38,6 +37,12 @@ class GDriveError(RuntimeError):
 
 
 def client_file() -> Path:
+    """The user's own OAuth client, encrypted with their Windows account (DPAPI)."""
+    return paths.data_dir() / "google_oauth_client.bin"
+
+
+def legacy_client_file() -> Path:
+    """Plain JSON copy written by PhraseForge 0.5.3 and older; sealed on first use."""
     return paths.data_dir() / "google_oauth_client.json"
 
 
@@ -46,7 +51,7 @@ def token_file() -> Path:
 
 
 def builtin_client_file() -> Path:
-    """OAuth client shipped with the program (absent in source checkouts without one)."""
+    """OAuth client shipped with the program (written by the release build; absent otherwise)."""
     return Path(__file__).with_name("google_client.json")
 
 
@@ -55,28 +60,51 @@ def _valid_installed(data) -> bool:
     return isinstance(inst, dict) and bool(inst.get("client_id")) and bool(inst.get("client_secret"))
 
 
-def client_config() -> dict | None:
-    """The OAuth client to sign in with: the user's own first, then the built-in one."""
-    for f in (client_file(), builtin_client_file()):
-        try:
-            data = json.loads(f.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
+def _save_own(data: dict) -> None:
+    client_file().parent.mkdir(parents=True, exist_ok=True)
+    client_file().write_bytes(protect(json.dumps(data).encode("utf-8")))
+
+
+def _read_own() -> dict | None:
+    try:
+        data = json.loads(unprotect(client_file().read_bytes()).decode("utf-8"))
         if _valid_installed(data):
             return data
-    return None
+    except (OSError, ValueError):
+        pass
+    legacy = legacy_client_file()
+    try:
+        data = json.loads(legacy.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not _valid_installed(data):
+        return None
+    try:                                     # seal the old plain copy
+        _save_own(data)
+        legacy.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return data
+
+
+def _read_builtin() -> dict | None:
+    try:
+        data = json.loads(builtin_client_file().read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+    return data if _valid_installed(data) else None
+
+
+def client_config() -> dict | None:
+    """The OAuth client to sign in with: the user's own first, then the built-in one."""
+    return _read_own() or _read_builtin()
 
 
 def client_source() -> str:
     """"own", "builtin" or "" (no client)."""
-    cfg = client_config()
-    if cfg is None:
-        return ""
-    try:
-        own = json.loads(client_file().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        own = None
-    return "own" if own == cfg else "builtin"
+    if _read_own() is not None:
+        return "own"
+    return "builtin" if _read_builtin() is not None else ""
 
 
 def client_json(client_id: str, client_secret: str) -> dict:
@@ -89,32 +117,31 @@ def client_json(client_id: str, client_secret: str) -> dict:
 
 
 def install_client_values(client_id: str, client_secret: str) -> None:
-    """Save a pasted Client ID and secret as the user's own OAuth client."""
+    """Save a pasted Client ID and secret as the user's own OAuth client (encrypted)."""
     cid, sec = (client_id or "").strip(), (client_secret or "").strip()
     if not cid.endswith(".apps.googleusercontent.com"):
         raise GDriveError('The Client ID ends with ".apps.googleusercontent.com". Copy it from Google Cloud '
                           'Console > Credentials > your "Desktop app" OAuth client.')
     if not sec:
         raise GDriveError("Paste the client secret too (shown next to the Client ID).")
-    client_file().parent.mkdir(parents=True, exist_ok=True)
-    client_file().write_text(json.dumps(client_json(cid, sec), indent=2), encoding="utf-8")
+    _save_own(client_json(cid, sec))
 
 
 def install_client_file(src: str | Path) -> None:
-    """Validate and copy a downloaded OAuth client JSON into the data folder."""
+    """Validate a downloaded OAuth client JSON and keep an encrypted copy in the data folder."""
     try:
-        data = json.loads(Path(src).read_text(encoding="utf-8"))
+        data = json.loads(Path(src).read_text(encoding="utf-8-sig"))
     except ValueError as e:
         raise GDriveError(f"This file is not an OAuth client JSON file: {e}") from e
     if not _valid_installed(data):
         raise GDriveError('This is not a "Desktop app" OAuth client file. In Google Cloud Console create '
                           'Credentials > OAuth client ID > Application type "Desktop app" and download its JSON.')
-    client_file().parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(src, client_file())
+    _save_own(data)
 
 
 def remove_own_client() -> None:
     client_file().unlink(missing_ok=True)
+    legacy_client_file().unlink(missing_ok=True)
 
 
 class GoogleDrive:

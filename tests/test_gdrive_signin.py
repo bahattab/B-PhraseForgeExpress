@@ -21,11 +21,23 @@ def app():
     return QApplication.instance() or QApplication([])
 
 
+def _seal(b: bytes) -> bytes:              # stand-in for DPAPI off Windows: reversible, not plain text
+    return b"SEALED" + bytes(x ^ 0x5A for x in b)
+
+
+def _unseal(b: bytes) -> bytes:
+    if not b.startswith(b"SEALED"):
+        raise OSError("not sealed")
+    return bytes(x ^ 0x5A for x in b[6:])
+
+
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("PHRASEFORGE_HOME", str(tmp_path / "data"))
     (tmp_path / "data").mkdir()
     monkeypatch.setattr(gdrive, "builtin_client_file", lambda: tmp_path / "builtin.json")
+    monkeypatch.setattr(gdrive, "protect", _seal)
+    monkeypatch.setattr(gdrive, "unprotect", _unseal)
     return tmp_path
 
 
@@ -55,7 +67,7 @@ def test_pasted_values_validated(home):
     with pytest.raises(gdrive.GDriveError):
         gdrive.install_client_values(CID, " ")
     gdrive.install_client_values(f"  {CID} ", " GOCSPX-x ")
-    inst = json.loads(gdrive.client_file().read_text())["installed"]
+    inst = gdrive.client_config()["installed"]
     assert inst["client_id"] == CID and inst["client_secret"] == "GOCSPX-x"
     assert inst["token_uri"] == "https://oauth2.googleapis.com/token"
 
@@ -179,22 +191,26 @@ def test_setup_dialog_shows_errors(app, home):
     assert dlg.result() != QDialog.Accepted and "googleusercontent" in dlg.error.text()
 
 
-def test_write_google_client_script(home, monkeypatch, tmp_path):
-    import importlib.util
-    from pathlib import Path
-    spec = importlib.util.spec_from_file_location(
-        "wgc", Path(__file__).resolve().parent.parent / "packaging" / "write_google_client.py")
-    m = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(m)
-    monkeypatch.setattr(m, "ROOT", tmp_path)
-    (tmp_path / "phraseforge" / "cloud").mkdir(parents=True)
-    monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
-    monkeypatch.delenv("GOOGLE_CLIENT_SECRET", raising=False)
-    assert m.main() == 0 and not (tmp_path / "phraseforge/cloud/google_client.json").exists()
-    monkeypatch.setenv("GOOGLE_CLIENT_ID", "bad")
-    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "s")
-    assert m.main() == 1
-    monkeypatch.setenv("GOOGLE_CLIENT_ID", CID)
-    assert m.main() == 0
-    data = json.loads((tmp_path / "phraseforge/cloud/google_client.json").read_text())
-    assert data["installed"]["client_id"] == CID
+def test_own_client_stored_encrypted(home):
+    gdrive.install_client_values(CID, "GOCSPX-topsecret")
+    raw = gdrive.client_file().read_bytes()
+    assert b"GOCSPX-topsecret" not in raw and b"apps.googleusercontent" not in raw
+    assert not gdrive.legacy_client_file().exists()
+
+
+def test_legacy_plain_client_is_sealed_on_first_use(home):
+    gdrive.legacy_client_file().write_text(json.dumps(gdrive.client_json(CID, "GOCSPX-old")))
+    assert gdrive.client_source() == "own"
+    assert gdrive.client_config()["installed"]["client_secret"] == "GOCSPX-old"
+    assert not gdrive.legacy_client_file().exists()
+    assert b"GOCSPX-old" not in gdrive.client_file().read_bytes()
+
+
+def test_client_from_another_pc_is_ignored(home):
+    gdrive.client_file().write_bytes(b"garbage that DPAPI cannot open")
+    assert gdrive.client_config() is None and gdrive.client_source() == ""
+
+
+def test_builtin_client_with_bom(home):
+    (home / "builtin.json").write_bytes(b"\xef\xbb\xbf" + json.dumps(gdrive.client_json(CID, "s")).encode())
+    assert gdrive.client_source() == "builtin"

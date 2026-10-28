@@ -68,7 +68,28 @@ jobs:
         env:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-        run: python packaging/write_google_client.py
+        # A "Desktop app" client secret is not confidential (Google ships it inside installed apps),
+        # so it is written into the program as plain JSON. The file is git-ignored.
+        run: |
+          if (-not $env:GOOGLE_CLIENT_ID -or -not $env:GOOGLE_CLIENT_SECRET) {
+            Write-Host "No GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET: building without a built-in Google client."
+            exit 0
+          }
+          if (-not $env:GOOGLE_CLIENT_ID.Trim().EndsWith(".apps.googleusercontent.com")) {
+            Write-Error "GOOGLE_CLIENT_ID does not look like a Google OAuth client ID."
+            exit 1
+          }
+          $client = @{ installed = [ordered]@{
+            client_id = $env:GOOGLE_CLIENT_ID.Trim()
+            client_secret = $env:GOOGLE_CLIENT_SECRET.Trim()
+            auth_uri = "https://accounts.google.com/o/oauth2/auth"
+            token_uri = "https://oauth2.googleapis.com/token"
+            auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+            redirect_uris = @("http://localhost")
+          } }
+          $client | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8NoBOM phraseforge/cloud/google_client.json
+          python -c "from phraseforge.cloud.gdrive import _read_builtin; assert _read_builtin(), 'invalid built-in Google client'"
+          Write-Host "Built-in Google client written."
 
       - name: Build EXE (folder, for the installer)
         run: pyinstaller --noconfirm packaging/phraseforge.spec
