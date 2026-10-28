@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Publish a GitHub Release with this tag (e.g. v0.5.3). Leave empty to only build."
+        description: "Publish a GitHub Release with this tag (e.g. v0.5.4). Leave empty to only build."
         required: false
         default: ""
 
@@ -63,6 +63,12 @@ jobs:
 
       - name: Build icon
         run: python packaging/make_icon.py
+
+      - name: Built-in Google sign-in client (if the repository secrets are set)
+        env:
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+        run: python packaging/write_google_client.py
 
       - name: Build EXE (folder, for the installer)
         run: pyinstaller --noconfirm packaging/phraseforge.spec

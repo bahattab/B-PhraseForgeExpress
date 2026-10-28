@@ -43,6 +43,9 @@ datas = [
     (str(ROOT / "THIRD_PARTY_NOTICES.md"), "."),
     (str(ROOT / "phraseforge" / "macros" / "README.md"), "phraseforge/macros"),
 ]
+# Built-in Google sign-in client (written by packaging/write_google_client.py when the secrets exist).
+if (ROOT / "phraseforge" / "cloud" / "google_client.json").is_file():
+    datas.append((str(ROOT / "phraseforge" / "cloud" / "google_client.json"), "phraseforge/cloud"))
 datas += collect_data_files("qtawesome")          # icon fonts
 datas += collect_data_files("googleapiclient")    # Drive API discovery documents
 

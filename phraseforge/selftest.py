@@ -183,6 +183,17 @@ def run() -> int:
                 store.close()
     check("main window view options", main_window_views)
 
+    def google_signin() -> None:
+        # The Google sign-in libraries load, and the settings page opens the setup dialog.
+        from google_auth_oauthlib.flow import InstalledAppFlow  # noqa: F401
+        from phraseforge.cloud.gdrive import builtin_client_file, client_config
+        from phraseforge.ui.settings_dialog import GoogleClientDialog
+        GoogleClientDialog().deleteLater()
+        if builtin_client_file().is_file():
+            assert client_config() is not None, "the built-in Google client file is invalid"
+        lines.append("      built-in Google client: " + ("yes" if builtin_client_file().is_file() else "no"))
+    check("Google sign-in", google_signin)
+
     lines.append("RESULT: " + ("FAIL" if failed else "PASS"))
     (paths.data_dir() / "selftest.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return 1 if failed else 0

@@ -28,3 +28,6 @@ reference/
 # Profiler output
 *.prof
 *.out
+
+# Built-in Google sign-in client, written at build time from repository secrets
+phraseforge/cloud/google_client.json
