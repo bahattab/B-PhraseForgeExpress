@@ -33,12 +33,15 @@ def run_busy(fn):
     return box.get("value")
 
 
-def enhance(store, text: str, parent=None, quiet: bool = False, complete_fn=None) -> str | None:
-    """Improved version of `text`, or None (an error is shown unless quiet)."""
+def enhance(store, text: str, parent=None, quiet: bool = False, complete_fn=None, mode: str = "enhance") -> str | None:
+    """Improved version of `text`, or None (an error is shown unless quiet).
+    mode "enhance": clearer prompt in the same form; "boost": PromptBoost's structured
+    Markdown prompt (requirements, constraints and steps as lists)."""
     from phraseforge import ai
     settings = dict(store.settings())
+    fn = ai.boost_prompt if mode == "boost" else ai.enhance_prompt
     try:
-        return run_busy(lambda: ai.enhance_prompt(settings, text, complete_fn=complete_fn))
+        return run_busy(lambda: fn(settings, text, complete_fn=complete_fn))
     except Exception as e:      # noqa: BLE001 - shown to the user
         if not quiet:
             QMessageBox.warning(parent, tr("Enhance prompt"),

@@ -900,6 +900,8 @@ class SettingsDialog(QDialog):
         lay.addWidget(_row(self.ai_key, self.ai_test, self.ai_status_icon))
         self.ai_status = QLabel()
         lay.addWidget(self.ai_status)
+        lay.addWidget(QLabel("Boost prompt hotkey (select a prompt in any program, then press it):"))
+        lay.addWidget(self.bind("promptboost.hotkey", Hotkey()))
         lay.addWidget(QLabel("Model (leave empty for the provider's default):"))
         self.ai_model = self.bind("ai.model", QLineEdit())
         self.ai_model.setFixedWidth(330)
@@ -1337,6 +1339,21 @@ class SettingsDialog(QDialog):
         self.ocr_blacklist = self.bind("ocr.blacklist", QLineEdit())
         gl.addWidget(self.ocr_blacklist)
         gl.addWidget(self.bind("ocr.keep_line_breaks", QCheckBox("Keep line breaks")))
+        lay.addWidget(g)
+        g, gl = _group("Mistral OCR (cloud)")
+        gl.addWidget(_wrap_label("Mistral AI's OCR reads PDF files and images into Markdown, with tables and "
+                                 "images (Tools > OCR PDF / image). It can also read screen captures. "
+                                 "The file or capture is uploaded to Mistral's servers, so use it only for "
+                                 "content you may share."))
+        self.ocr_engine = self.bind("ocr.engine", DataCombo(
+            [("Windows OCR (built in, offline)", "windows"), ("Mistral OCR (cloud)", "mistral")]))
+        gl.addWidget(_row("Engine for screen captures:", self.ocr_engine))
+        gl.addWidget(QLabel("Mistral API key:"))
+        self.mistral_key = self.bind("ai.mistral_key", QLineEdit())
+        self.mistral_key.setEchoMode(QLineEdit.Password)
+        visit = QPushButton("Get a key")
+        visit.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://console.mistral.ai/api-keys")))
+        gl.addWidget(_row(self.mistral_key, visit))
         lay.addWidget(g)
         g, gl = _group("Output")
         gl.addWidget(self.bind("ocr.save_to_clipboard", QCheckBox("Save to clipboard")))

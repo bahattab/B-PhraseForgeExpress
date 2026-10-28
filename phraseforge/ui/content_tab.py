@@ -211,8 +211,11 @@ class ContentTabController:
         self.b_enhance = g.add_large("Enhance\nprompt", "m_ai", self.enhance_prompt)
         self.b_enhance.setToolTip("Rewrite the selected text (or the whole phrase) as a clearer, more "
                                   "complete AI prompt, with the engine from Settings > AI.")
+        self.b_boost = g.add_large("Boost\nprompt", "m_ai", lambda: self.enhance_prompt(mode="boost"))
+        self.b_boost.setToolTip("PromptBoost: turn the selected text (or the whole phrase) into a detailed, "
+                                "structured prompt with requirements and constraints as lists.")
 
-    def enhance_prompt(self, complete_fn=None, quiet: bool = False) -> bool:
+    def enhance_prompt(self, complete_fn=None, quiet: bool = False, mode: str = "enhance") -> bool:
         """Replace the selection (or all the text) with an improved prompt. Ctrl+Z undoes it."""
         from phraseforge.ui.ai_ui import enhance
         c = self.ed.textCursor()
@@ -226,7 +229,7 @@ class ContentTabController:
         store = getattr(self.editor, "store", None)
         if store is None:
             return False
-        out = enhance(store, text, parent=self.ed, quiet=quiet, complete_fn=complete_fn)
+        out = enhance(store, text, parent=self.ed, quiet=quiet, complete_fn=complete_fn, mode=mode)
         if not out:
             return False
         c.beginEditBlock()

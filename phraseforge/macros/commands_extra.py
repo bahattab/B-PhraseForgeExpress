@@ -655,6 +655,18 @@ def _truthy(v) -> bool:
 _register_field_aliases()
 
 
+# ---------------------------------------------------------------- PromptBoost
+@macro("promptboost", "AI", "{#promptboost {#clipboard}}",
+       "Turn a short prompt into a detailed, structured one (PromptBoost) with the AI engine from "
+       "Settings > AI, e.g. {#promptboost Create a REST API for a todo app}.")
+def _promptboost(rt, args, opts):
+    from phraseforge.ai import boost_prompt
+    text = " ".join(args).strip()
+    if not text:
+        raise MacroError("promptboost: prompt text missing")
+    return boost_prompt({}, text, complete_fn=lambda m: rt.host.ai_complete(m))
+
+
 # ---------------------------------------------------------------- Prompt Tower
 @macro("prompttower", "AI", '{#prompttower "Saved prompt name"}',
        "Insert a prompt saved in Prompt Tower (Tools > Prompt Tower): its text before and after "

@@ -356,11 +356,20 @@ class QtHost:
         png = self._ui(lambda: _grab_screen_png(rect))
         if not png:
             raise OCRError("The selected area could not be captured.")
-        engine = self._ocr()
-        text = engine.ocr_png(png, language=lang, keep_line_breaks=self._keep_breaks(keep_line_breaks))
+        if self.store.setting("ocr.engine", "windows") == "mistral":
+            # Settings > Screen OCR > engine "Mistral OCR (cloud)": the capture is uploaded
+            from phraseforge import mistral_ocr
+            try:
+                text = mistral_ocr.ocr_png_text(self.store.setting("ai.mistral_key", ""), png)
+            except mistral_ocr.MistralOCRError as e:
+                raise OCRError(str(e)) from e
+            used = language or ""
+        else:
+            engine = self._ocr()
+            text = engine.ocr_png(png, language=lang, keep_line_breaks=self._keep_breaks(keep_line_breaks))
+            used = engine.last_language or lang       # with "Auto", rules for the detected language apply
         rules = parse_replace_rules(self.store.setting("ocr.replace_rules", ""))
-        # with "Auto", rules for the language that was detected apply
-        return apply_replacements(text, rules, engine.last_language or lang) if rules else text
+        return apply_replacements(text, rules, used) if rules else text
 
     def onenote_page_text(self, ref, include_title=False, include_ocr=False):
         """{#onenote} macro: text of a OneNote page (worker thread, own COM apartment)."""
@@ -557,6 +566,9 @@ class PhraseForgeApp(QObject):
         reg("new_sticky_note", lambda arg, hwnd: post(self._new_sticky_note))
         reg("sync_now", lambda arg, hwnd: post(self.sync_now))
         reg("prompt_tower", lambda arg, hwnd: post(lambda: self.show_prompt_tower(arg)))
+        reg("ocr_file", lambda arg, hwnd: post(lambda: self.ocr_file(arg)))
+        reg("prompt_optimizer", lambda arg, hwnd: post(self.show_prompt_optimizer))
+        reg("boost_selection", lambda arg, hwnd: self._jobs.put(("call", lambda: self._boost_selection(hwnd), hwnd)))
         reg("delete_sticky_note", lambda arg, hwnd: post(
             lambda: self.sticky_notes().delete_note(int(arg)) if arg.isdigit() else None))
         # Search files (Listary-style launcher, phraseforge/filesearch.py)
@@ -743,7 +755,7 @@ class PhraseForgeApp(QObject):
         if hasattr(self.tray, "show_statistics"):
             self.tray.show_statistics.connect(self.show_statistics)
         for sig in ("onenote_send_clipboard", "onenote_clip", "open_sticky_notes", "new_sticky_note",
-                    "file_search", "quick_note", "prompt_tower",
+                    "file_search", "quick_note", "prompt_tower", "prompt_optimizer",
                     "new_phrase_from_clipboard", "edit_last_phrase"):   # OneNote / Sticky Notes items
             if hasattr(self.tray, sig):
                 getattr(self.tray, sig).connect(lambda _=None, c=sig: self.on_command(c))
@@ -1461,6 +1473,81 @@ class PhraseForgeApp(QObject):
             w.save_as_phrase.connect(self._prompt_to_phrase)
         if set_name:
             w.load_set(set_name)
+        if w.isMinimized():
+            w.showNormal()
+        _bring_to_front(w)
+        return w
+
+    def _boost_selection(self, hwnd: int, get_selection=None, boost=None) -> str:
+        """PromptBoost hotkey (worker thread): the text selected in any program is replaced
+        by a detailed, structured prompt. On any error the selection stays as it was."""
+        from phraseforge import ai
+        if get_selection is None:
+            from phraseforge.platform import windows
+            get_selection = windows.get_selected_text
+        text = (get_selection() or "").strip()
+        notify = lambda t, m: self.poster.posted.emit(lambda: self.tray.notify(t, m))   # noqa: E731
+        if not text:
+            notify("Boost prompt", "Select the prompt text first, then press the hotkey again.")
+            return ""
+        notify("Boost prompt", "Improving the selected prompt…")
+        try:
+            out = (boost or (lambda t: ai.boost_prompt(self.store.settings(), t)))(text)
+        except Exception as e:      # noqa: BLE001 - shown to the user, selection unchanged
+            notify("Boost prompt", f"The prompt was not changed: {e}")
+            return ""
+        hwnd = self._prepare_target(hwnd)
+        self._with_triggers_paused(lambda: self.output.execute([TextAction(out)], app_exe=self._exe_of(hwnd)))
+        return out
+
+    def ocr_file(self, path: str = "", post=None, open_result: bool = True):
+        """Tools > OCR PDF / image (Mistral OCR): Markdown and images are saved in a folder named
+        after the file, then the Markdown opens. Runs the upload on a background thread."""
+        from phraseforge import mistral_ocr
+        if not path:
+            from PySide6.QtWidgets import QFileDialog
+            path, _ = QFileDialog.getOpenFileName(None, "OCR a PDF or image with Mistral", "",
+                                                  mistral_ocr.FILE_FILTER)
+            if not path:
+                return None
+        key = self.store.setting("ai.mistral_key", "")
+        if not key.strip():
+            self.tray.notify("Mistral OCR", "Enter your Mistral API key in Settings > Screen OCR first.")
+            self.show_settings()
+            return None
+        self.tray.notify("Mistral OCR", f"Reading {os.path.basename(path)}…")
+        box: dict = {}
+
+        def work():
+            try:
+                md, pages = mistral_ocr.ocr_file(key, path, post=post)
+                box["md"] = md
+
+                def done(md=md, n=len(pages)):
+                    self.tray.notify("Mistral OCR", f"{n} page(s) saved to {md.parent.name}.")
+                    if open_result:
+                        from PySide6.QtCore import QUrl
+                        from PySide6.QtGui import QDesktopServices
+                        QDesktopServices.openUrl(QUrl.fromLocalFile(str(md)))
+                self.poster.posted.emit(done)
+            except Exception as e:      # noqa: BLE001 - shown to the user
+                log.warning("Mistral OCR failed: %s", e)
+                self.poster.posted.emit(lambda e=e: self.tray.notify("Mistral OCR failed", str(e)))
+        t = threading.Thread(target=work, name="mistral-ocr", daemon=True)
+        t.start()
+        if post is not None:          # tests: wait for the result
+            t.join(30)
+            return box.get("md")
+        return None
+
+    def show_prompt_optimizer(self):
+        """Prompt Optimizer: chat that turns an idea into a precise prompt (ui/prompt_optimizer.py)."""
+        from phraseforge.ui.prompt_optimizer import PromptOptimizerWindow
+        w = getattr(self, "prompt_optimizer", None)
+        if w is None:
+            w = self.prompt_optimizer = PromptOptimizerWindow(self.store)
+            w.save_as_phrase.connect(self._prompt_to_phrase)
+            w.to_prompt_tower.connect(lambda text: self.show_prompt_tower().prefix.setPlainText(text))
         if w.isMinimized():
             w.showNormal()
         _bring_to_front(w)

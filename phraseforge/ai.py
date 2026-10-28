@@ -58,9 +58,8 @@ def _post(url: str, headers: dict, payload: dict, timeout: float) -> dict:
     return r.json()
 
 
-def _messages(prompt: str, system: str) -> list[dict]:
-    msgs = [{"role": "system", "content": system}] if system else []
-    return msgs + [{"role": "user", "content": prompt}]
+def _with_system(history: list[dict], system: str) -> list[dict]:
+    return ([{"role": "system", "content": system}] if system else []) + history
 
 
 def full_system(settings: dict[str, str], system: str = "") -> str:
@@ -151,7 +150,20 @@ def translation_system(settings: dict[str, str], to: str, src: str = "", glossar
 
 def complete(settings: dict[str, str], prompt: str, provider: str = "", model: str = "", system: str = "",
              timeout_s: float = 120, max_tokens: int = 1024, raw_system: bool = False) -> str:
-    """raw_system=True skips the user's custom instructions (used by translation)."""
+    """One prompt, one answer. raw_system=True skips the user's custom instructions (used by
+    translation)."""
+    return chat(settings, [{"role": "user", "content": prompt}], provider, model, system,
+                timeout_s, max_tokens, raw_system)
+
+
+def chat(settings: dict[str, str], history: list[dict], provider: str = "", model: str = "", system: str = "",
+         timeout_s: float = 120, max_tokens: int = 1024, raw_system: bool = False) -> str:
+    """A conversation: history is [{"role": "user"|"assistant", "content": "..."}, ...]
+    (oldest first, ending with the user's turn). Returns the assistant's reply."""
+    history = [{"role": m["role"], "content": m["content"]} for m in history
+               if m.get("role") in ("user", "assistant")]
+    if not history or history[-1]["role"] != "user":
+        raise AIError("The conversation must end with a user message.")
     provider = (provider or settings.get("ai.provider") or "openai").lower()
     if provider not in DEFAULT_MODELS:
         raise AIError(f"unknown AI provider '{provider}'")
@@ -164,7 +176,7 @@ def complete(settings: dict[str, str], prompt: str, provider: str = "", model: s
         key = settings.get("ai.anthropic_key", "")
         if not key:
             raise AIError("Anthropic API key is not set (Settings > AI)")
-        payload = {"model": model, "max_tokens": max_tokens, "messages": [{"role": "user", "content": prompt}]}
+        payload = {"model": model, "max_tokens": max_tokens, "messages": history}
         if system:
             payload["system"] = system
         data = _post("https://api.anthropic.com/v1/messages",
@@ -175,7 +187,7 @@ def complete(settings: dict[str, str], prompt: str, provider: str = "", model: s
     if provider == "gpt4all":
         base = (settings.get("ai.gpt4all_url") or "http://localhost:4891/v1").rstrip("/")
         data = _post(f"{base}/chat/completions", {}, {"model": model, "max_tokens": max_tokens,
-                                                      "messages": _messages(prompt, system)}, timeout_s)
+                                                      "messages": _with_system(history, system)}, timeout_s)
         try:
             return data["choices"][0]["message"]["content"] or ""
         except (KeyError, IndexError) as e:
@@ -184,7 +196,7 @@ def complete(settings: dict[str, str], prompt: str, provider: str = "", model: s
     if provider == "ollama":
         base = (settings.get("ai.ollama_url") or "http://localhost:11434").rstrip("/")
         data = _post(f"{base}/api/chat", {}, {"model": model, "stream": False,
-                                               "messages": _messages(prompt, system)}, timeout_s)
+                                               "messages": _with_system(history, system)}, timeout_s)
         return data.get("message", {}).get("content", "")
 
     name = PROVIDER_NAMES.get(provider, provider)
@@ -196,7 +208,7 @@ def complete(settings: dict[str, str], prompt: str, provider: str = "", model: s
     if not model:
         raise AIError(f"Enter the model to use with {name} in Settings > AI > Model.")
     data = _post(url, {"Authorization": f"Bearer {key}"},
-                 {"model": model, "messages": _messages(prompt, system)}, timeout_s)
+                 {"model": model, "messages": _with_system(history, system)}, timeout_s)
     try:
         return data["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError) as e:
@@ -381,6 +393,64 @@ def enhance_prompt(settings: dict[str, str], text: str, complete_fn=None) -> str
     out = (fn(text) or "").strip()
     if len(out) > 1 and out[0] == out[-1] and out[0] in "\"'`":
         out = out[1:-1].strip()
+    if not out:
+        raise AIError("The AI engine returned nothing.")
+    return out
+
+
+# ---------------------------------------------------------------- "Boost prompt" (PromptBoost)
+# Instruction from the PromptBoost VS Code extension by Chris Dias
+# (https://github.com/chrisdias/vscode-promptboost, MIT License, Copyright (c) 2025 Chris Dias),
+# see THIRD_PARTY_NOTICES.md. PhraseForge adds the line about {#macros}.
+BOOST_INSTRUCTION = """You are a professional prompt engineer specializing in crafting precise, effective prompts.
+Your task is to enhance prompts by making them more specific, actionable, and effective.
+
+**Formatting Requirements:**
+- Use Markdown formatting in your response.
+- Present requirements, constraints, and steps as bulleted or numbered lists.
+- Separate context, instructions, and examples into clear paragraphs.
+- Use headings if appropriate.
+- Ensure the prompt is easy to read and visually organized.
+
+**Instructions:**
+- Improve the user prompt wrapped in `<original_prompt>` tags.
+- Make instructions explicit and unambiguous.
+- Add relevant context and constraints.
+- Remove redundant information.
+- Maintain the core intent.
+- Ensure the prompt is self-contained.
+- Use professional language.
+- Add references to documentation or examples if applicable.
+- Keep the language of the original prompt, and keep every placeholder in curly braces, such as {#clipboard}, exactly as written.
+
+**For invalid or unclear prompts:**
+- Respond with clear, professional guidance.
+- Keep responses concise and actionable.
+- Maintain a helpful, constructive tone.
+- Focus on what the user should provide.
+- Use a standard template for consistency.
+
+**IMPORTANT:**
+Your response must ONLY contain the enhanced prompt text, formatted as described.
+Do not include any explanations, metadata, or wrapper tags.
+
+<original_prompt>
+{prompt}
+</original_prompt>
+"""
+
+
+def boost_prompt(settings: dict[str, str], text: str, complete_fn=None) -> str:
+    """PromptBoost: turn a short prompt into a structured (Markdown) one with the AI engine
+    from Settings > AI. Raises AIError when it cannot (the caller keeps the original)."""
+    if not (text or "").strip():
+        raise AIError("Write a prompt first.")
+    message = BOOST_INSTRUCTION.replace("{prompt}", text.strip())
+    fn = complete_fn or (lambda m: complete(settings, m, raw_system=True))
+    out = (fn(message) or "").strip()
+    out = out.removeprefix("<original_prompt>").removesuffix("</original_prompt>").strip()
+    if out.startswith("```") and out.endswith("```"):
+        out = out.split("\n", 1)[1].rsplit("```", 1)[0].strip() if "\n" in out else out
     if not out:
         raise AIError("The AI engine returned nothing.")
     return out

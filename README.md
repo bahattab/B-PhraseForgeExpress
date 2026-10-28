@@ -75,6 +75,21 @@ site, save it as a phrase, or save the whole set and insert it anywhere with
 [Prompt Tower](https://github.com/backnotprop/prompt-tower) VS Code extension; see
 [docs/PROMPT_TOWER_SPEC.md](docs/PROMPT_TOWER_SPEC.md).
 
+## Prompt Optimizer, Boost prompt and Mistral OCR
+
+- **Prompt Optimizer** (Tools > AI): a chat that asks clarifying questions and ends with an
+  "Optimized Prompt:" you copy; templates with `{{fields}}`, your own templates, and project context
+  (languages and frameworks). Rebuilt from [AI Prompt Optimizer](https://github.com/mhemdan/ai-prompt-optimizer).
+- **Boost prompt**: select a prompt in any program and press Ctrl+Alt+B to replace it with a detailed,
+  structured prompt; also a button in the phrase editor and `{#promptboost text}`. Uses the instruction of
+  [PromptBoost](https://github.com/chrisdias/vscode-promptboost).
+- **Mistral OCR** (Tools > OCR PDF / image): PDF or image to Markdown with tables and images, saved in a
+  folder named after the file; optional cloud engine for screen OCR. Like
+  [Mistral OCR Unofficial](https://github.com/sldyns/mistral-ocr-unofficial), without the separate script.
+  The file is uploaded to Mistral.
+
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
 ## Default hotkeys
 
 | Hotkey | Action |

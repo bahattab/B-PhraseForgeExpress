@@ -271,9 +271,27 @@ class PromptTowerWindow(QWidget):
         if i >= 0:
             combo.setCurrentIndex(i)
 
+    def boost_prefix(self, complete_fn=None) -> bool:
+        """PromptBoost on the text before the files (the task description)."""
+        from phraseforge.ui.ai_ui import enhance
+        out = enhance(self.store, self.prefix.toPlainText(), parent=self,
+                      quiet=getattr(self, "quiet", False), complete_fn=complete_fn, mode="boost")
+        if not out:
+            return False
+        c = self.prefix.textCursor()
+        c.select(c.SelectionType.Document)
+        c.insertText(out)                     # one Ctrl+Z restores the original
+        return True
+
     def _text_part(self, lay, label: str, kind: str) -> QPlainTextEdit:
         row = QHBoxLayout()
         row.addWidget(QLabel(label), 1)
+        if kind == "prefix":
+            bb = QToolButton()
+            bb.setText(tr("Boost"))
+            bb.setToolTip(tr("PromptBoost: rewrite the task as a detailed, structured prompt (Settings > AI)."))
+            bb.clicked.connect(lambda: self.boost_prefix())
+            row.addWidget(bb)
         hb = QToolButton()
         hb.setText(tr("History"))
         hb.setPopupMode(QToolButton.InstantPopup)

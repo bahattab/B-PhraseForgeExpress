@@ -725,11 +725,11 @@ class MainWindow(QMainWindow):
         ("OneNote", (("Send clipboard\nto OneNote", "on_send", "onenote_send_clipboard"),
                      ("Screen\nclipping", "on_clip", "onenote_clip"),
                      ("New quick\nnote", "sticky_notes", "quick_note"))),
-        ("Capture", (("Screen\nOCR", "m_ocr", "ocr"),)),
+        ("Capture", (("Screen\nOCR", "m_ocr", "ocr"), ("OCR PDF /\nimage", "m_ocr", "ocr_file"))),
         ("Sticky notes", (("New sticky\nnote", "sticky_notes", "new_sticky_note"),
                           ("Sticky\nNotes", "sticky_notes", "open_sticky_notes"))),
         ("Find", (("Search\nfiles", "file_search", "file_search"),)),
-        ("AI", (("Prompt\nTower", "m_ai", "prompt_tower"),)),
+        ("AI", (("Prompt\nTower", "m_ai", "prompt_tower"), ("Prompt\nOptimizer", "m_ai", "prompt_optimizer"))),
     )
 
     def _build_tools_tab(self) -> None:

@@ -93,6 +93,8 @@ SCHEMA: dict[str, str] = {
     "ai.gemini_key": "",
     "ai.opencode_key": "",
     "ai.kilocode_key": "",
+    "ai.mistral_key": "",
+    "ocr.engine": "windows",            # windows (built in, offline) | mistral (cloud)
     "ai.ollama_url": DEFAULT_SETTINGS["ai.ollama_url"],
     "ai.gpt4all_url": DEFAULT_SETTINGS["ai.gpt4all_url"],
     "ai.deepl_key": "",
@@ -139,6 +141,7 @@ SCHEMA: dict[str, str] = {
     # Search files (Listary-style launcher)
     "filesearch.enabled": "1",
     "filesearch.hotkey": "ctrl+alt+f",
+    "promptboost.hotkey": "ctrl+alt+b",
     "filesearch.roots": "",
     "filesearch.refresh_minutes": "30",
     "filesearch.include_hidden": "0",
