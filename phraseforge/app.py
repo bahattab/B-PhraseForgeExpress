@@ -505,6 +505,7 @@ class PhraseForgeApp(QObject):
         self._build_cloud()
         self._build_local_backups()
         self._build_file_index()
+        self._build_update_check()
         # the executor tells the trigger layer while it types, so our own output is ignored
         self.output = OutputExecutor(store.setting, busy_callback=self.triggers.set_busy)
         threading.Thread(target=self._worker, name="expansion", daemon=True).start()
@@ -554,6 +555,9 @@ class PhraseForgeApp(QObject):
         reg("open_sticky_notes", lambda arg, hwnd: post(
             lambda: self._open_sticky_notes(int(arg) if arg.isdigit() else None)))
         reg("new_sticky_note", lambda arg, hwnd: post(self._new_sticky_note))
+        reg("sync_now", lambda arg, hwnd: post(self.sync_now))
+        reg("delete_sticky_note", lambda arg, hwnd: post(
+            lambda: self.sticky_notes().delete_note(int(arg)) if arg.isdigit() else None))
         # Search files (Listary-style launcher, phraseforge/filesearch.py)
         reg("file_search", lambda arg, hwnd: post(lambda: self._show_file_search(hwnd)))
 
@@ -795,11 +799,68 @@ class PhraseForgeApp(QObject):
         self._cloud_timer.start(60_000)
         QTimer.singleShot(10_000, lambda: self._cloud_tick(force_sync=True))
 
-    def _cloud_tick(self, force_sync: bool = False):
+    # ---------------------------------------------------------- automatic update check
+    def _build_update_check(self):
+        """Look for a newer release on GitHub shortly after start and then once a day
+        (Settings > General > Check for updates automatically)."""
+        from PySide6.QtCore import QTimer
+        self._update_timer = QTimer(self, interval=60 * 60_000)        # re-checks hourly whether a day passed
+        self._update_timer.timeout.connect(self.auto_check_updates)
+        self._update_timer.start()
+        QTimer.singleShot(30_000, self.auto_check_updates)
+
+    def auto_check_updates(self, latest=None, force: bool = False) -> dict | None:
+        """latest: test hook () -> release dict. Returns the newer release it announced."""
+        from datetime import datetime
+        from phraseforge import __version__, updates
+        st = self.store
+        if st.setting("updates.auto_check", "1") != "1":
+            return None
+        if not force and not updates.check_due(st.setting("updates.last_check", "")):
+            return None
+        box: dict = {}
+
+        def work():
+            try:
+                box["rel"] = (latest or updates.latest_release)()
+            except Exception as e:      # offline, proxy, rate limit: try again tomorrow
+                log.info("update check failed: %s", e)
+            st.set_setting("updates.last_check", datetime.now().isoformat(timespec="seconds"))
+            rel = box.get("rel")
+            if rel and updates.is_newer(rel["version"], __version__) and \
+                    st.setting("updates.notified_version", "") != rel["version"]:
+                st.set_setting("updates.notified_version", rel["version"])
+                url = rel.get("setup_url") or rel["url"]
+
+                def show(rel=rel, url=url):
+                    from PySide6.QtCore import QUrl
+                    from PySide6.QtGui import QDesktopServices
+                    self.tray.notify(f"PhraseForge {rel['version']} is available",
+                                     f"You have {__version__}. Click here to download the new version.",
+                                     ms=15000, on_click=lambda: QDesktopServices.openUrl(QUrl(url)))
+                self.poster.posted.emit(show)
+                box["announced"] = rel
+        if latest is not None:
+            work()                      # tests: run inline
+            return box.get("announced")
+        threading.Thread(target=work, name="update-check", daemon=True).start()
+        return None
+
+    def sync_now(self):
+        """Send/Receive updates (Ctrl+F5): synchronize with the cloud now."""
+        if self.store.setting("sync.provider", "off") == "off":
+            self.tray.notify("Send/Receive updates",
+                             "Choose a cloud service in Settings > Backup & Sync first.")
+            self.show_settings()
+            return
+        if not self._cloud_tick(force_sync=True, manual=True):
+            self.tray.notify("Send/Receive updates", "A synchronization is already running.")
+
+    def _cloud_tick(self, force_sync: bool = False, manual: bool = False) -> bool:
         from datetime import datetime, timedelta
         st = self.store
         if st.setting("sync.provider", "off") == "off" or not self._cloud_busy.acquire(blocking=False):
-            return
+            return False
 
         def due(key: str, minutes: float) -> bool:
             last = st.setting(key, "")
@@ -807,13 +868,13 @@ class PhraseForgeApp(QObject):
                 return not last or datetime.now() - datetime.fromisoformat(last) >= timedelta(minutes=minutes)
             except ValueError:
                 return True
-        do_sync = st.setting("sync.auto", "1") == "1" and (
+        do_sync = manual or st.setting("sync.auto", "1") == "1" and (
             force_sync or due("sync.last_time", float(st.setting("sync.interval_min", "15") or 15)))
-        do_backup = st.setting("backup.cloud_auto", "1") == "1" and due(
+        do_backup = not manual and st.setting("backup.cloud_auto", "1") == "1" and due(
             "backup.cloud_last", 60 * float(st.setting("backup.cloud_interval_hours", "24") or 24))
         if not (do_sync or do_backup):
             self._cloud_busy.release()
-            return
+            return True
 
         def work():
             try:
@@ -827,6 +888,10 @@ class PhraseForgeApp(QObject):
                     st.set_setting("backup.cloud_last", datetime.now().isoformat(timespec="seconds"))
                 if do_sync:
                     res = cs.sync()
+                    if manual and res.action not in ("pulled", "conflict"):
+                        msg = {"pushed": "Your phrases were sent to the cloud."}.get(
+                            res.action, "Your phrases are up to date.")
+                        self.poster.posted.emit(lambda m=msg: self.tray.notify("Send/Receive updates", m))
                     if res.action in ("pulled", "conflict"):
                         def on_ui(cs=cs, res=res):
                             from phraseforge.ui.cloud_ui import handle_sync_result
@@ -840,6 +905,7 @@ class PhraseForgeApp(QObject):
             finally:
                 self._cloud_busy.release()
         threading.Thread(target=work, name="cloud-sync", daemon=True).start()
+        return True
 
     def _cloud_push_on_exit(self):
         """Upload local changes before quitting (no pull, no prompts)."""

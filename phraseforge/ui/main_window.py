@@ -44,6 +44,14 @@ __all__ = ["MainWindow", "FolderDialog", "preview_text", "PreviewHost", "macro_c
 
 
 # ======================================================================= preview host
+
+# Layout when the user has not chosen one: three columns (folders | phrases | editor).
+DEFAULT_LAYOUT = "three"
+# Context menu > Translate
+TRANSLATE_LANGUAGES = ("Arabic", "English", "French", "German", "Spanish", "Turkish", "Urdu", "Persian",
+                       "Hindi", "Indonesian", "Malay", "Russian", "Chinese", "Japanese", "Korean",
+                       "Italian", "Portuguese")
+
 class PreviewHost:
     """HostServices stand-in for previews: never blocks, returns placeholders."""
 
@@ -263,10 +271,16 @@ class StickyNoteView(QWidget):
         self.info = QLabel()
         self.info.setStyleSheet("color:#666666")
         lay.addWidget(self.info)
-        self.text = QPlainTextEdit()
-        self.text.setReadOnly(True)
+        self.text = QPlainTextEdit()          # editable: changes are saved after a short pause
+        self.text.setPlaceholderText("Type your note…")
+        self._loading = False
+        self._save_timer = QTimer(self, singleShot=True, interval=700)
+        self._save_timer.timeout.connect(self.save)
+        self.text.textChanged.connect(self._edited)
         lay.addWidget(self.text, 1)
         row = QHBoxLayout()
+        self.delete_btn = QPushButton(icon("delete"), "Delete")
+        self.delete_btn.clicked.connect(self.delete_note)
         self.open_note_btn = QPushButton(icon("sticky_notes"), "Open note")
         self.open_note_btn.clicked.connect(self.open_note)
         self.copy_btn = QPushButton(icon("copy"), "Copy")
@@ -277,7 +291,7 @@ class StickyNoteView(QWidget):
         self.new_btn.clicked.connect(lambda: self._command("new_sticky_note"))
         self.open_btn = QPushButton(icon("sticky_notes"), "Open Sticky Notes")
         self.open_btn.clicked.connect(lambda: self._command("open_sticky_notes"))
-        for b in (self.open_note_btn, self.copy_btn, self.create_btn):
+        for b in (self.open_note_btn, self.copy_btn, self.create_btn, self.delete_btn):
             row.addWidget(b)
         row.addStretch(1)
         lay.addLayout(row)
@@ -291,9 +305,59 @@ class StickyNoteView(QWidget):
         if getattr(self.window, "on_command", None) is not None:
             self.window.on_command(cmd)
 
+    # ---- editing in the main window
+    def _edited(self) -> None:
+        if not self._loading and self.note is not None:
+            self._save_timer.start()
+
+    def is_dirty(self) -> bool:
+        return self._save_timer.isActive()
+
+    def save(self) -> bool:
+        """Store the edited text. The rich-text copy is cleared so the desktop note shows
+        the same text (formatting made on the desktop note is replaced by plain text)."""
+        self._save_timer.stop()
+        if self.note is None:
+            return False
+        text = self.text.toPlainText()
+        if text == self.note.text:
+            return False
+        self.store.update_sticky_note(self.note.id, text=text, html="")
+        self.note = self.store.sticky_note(self.note.id) or self.note
+        self.caption.setText(self.note.title)
+        return True
+
+    def delete_note(self) -> bool:
+        if self.note is None:
+            return False
+        if not getattr(self.window, "_quiet_updates", False):
+            ok = QMessageBox.question(self, "Delete note", f'Delete the sticky note "{self.note.title}"?',
+                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if ok != QMessageBox.Yes:
+                return False
+        self._save_timer.stop()
+        nid, self.note = self.note.id, None
+        if getattr(self.window, "on_command", None) is not None:
+            self.window.on_command(f"delete_sticky_note:{nid}")   # also closes its desktop window
+        else:
+            self.store.delete_sticky_note(nid)
+        self.window.panel.notes_by_id.pop(nid, None)
+        self.window.refresh_tree()
+        self.load(None)
+        return True
+
     def load(self, note_id=None) -> None:
         """note_id: a note id from the tree, or None for the "Sticky Notes" folder node."""
         from phraseforge.ui import tree_panel as tp
+        if self._save_timer.isActive():
+            self.save()                    # keep what was typed before switching notes
+        self._loading = True
+        try:
+            self._load(note_id, tp)
+        finally:
+            self._loading = False
+
+    def _load(self, note_id, tp) -> None:
         if note_id is None:
             notes = tp.sticky_notes(self.store)
             self.note = None
@@ -302,7 +366,7 @@ class StickyNoteView(QWidget):
                               "to write and edit them on your desktop.")
             self.text.setPlainText("")
             self.text.setVisible(False)
-            for b in (self.open_note_btn, self.copy_btn, self.create_btn):
+            for b in (self.open_note_btn, self.copy_btn, self.create_btn, self.delete_btn):
                 b.setVisible(False)
             return
         n = self.window.panel.notes_by_id.get(note_id) or self.store.sticky_note(note_id)
@@ -312,7 +376,7 @@ class StickyNoteView(QWidget):
         self.info.setText(f"Updated {when}" if when else "")
         self.text.setPlainText(n.text if n else "")
         self.text.setVisible(True)
-        for b in (self.open_note_btn, self.copy_btn, self.create_btn):
+        for b in (self.open_note_btn, self.copy_btn, self.create_btn, self.delete_btn):
             b.setVisible(True)
 
     def open_note(self) -> None:
@@ -321,7 +385,7 @@ class StickyNoteView(QWidget):
 
     def copy(self) -> None:
         if self.note is not None:
-            QApplication.clipboard().setText(self.note.text)
+            QApplication.clipboard().setText(self.text.toPlainText())
 
     def create_phrase(self):
         """New phrase (root folder) with description = note title and content = note text."""
@@ -382,7 +446,7 @@ class MainWindow(QMainWindow):
         self._nav: list[tuple[str, Any]] = []
         self._nav_pos = -1
         self._navigating = False
-        self.three_columns = self.store.setting("view.layout", "two") == "three"
+        self.three_columns = self.store.setting("view.layout", DEFAULT_LAYOUT) == "three"
 
         central = QWidget()
         cl = QVBoxLayout(central)
@@ -462,8 +526,7 @@ class MainWindow(QMainWindow):
         tb.setMovable(False)
         self.act_back = tb.addAction(icon("back"), "Back", self.nav_back)
         self.act_forward = tb.addAction(icon("forward"), "Forward", self.nav_forward)
-        a = tb.addAction(icon("sync"), "Send/Receive updates (not available)")
-        a.setEnabled(False)
+        tb.addAction(icon("sync"), "Send/Receive updates (Ctrl+F5)", self.sync_now)
         tb.addAction(icon("new_folder"), "New Folder (Ctrl+O)", lambda: self.new_folder())
         tb.addAction(icon("new_phrase"), "New Phrase (Ctrl+N)", lambda: self.new_phrase())
         tb.addAction(icon("column_toggle"), "Toggle two/three columns",
@@ -552,7 +615,7 @@ class MainWindow(QMainWindow):
         m.add("Save As...", "save_as", self.save_as)
         m.addSeparator()
         m.add("Restore from backup", "restore", self.restore_backup)
-        m.add("Send/Receive updates", "sync", None, "Ctrl+F5", enabled=False)
+        m.add("Send/Receive updates", "sync", self.sync_now, "Ctrl+F5")
         m.add("User Manager", "users", None, enabled=False)
         m.add("Settings", "settings", self.show_settings)
         mig = big_submenu(m, [("Save settings and phrases into migration file", "save_as", self.migration_save, True),
@@ -575,9 +638,9 @@ class MainWindow(QMainWindow):
         self.btn_new_folder.setToolTip("New Folder (Ctrl+O)")
         self.btn_new_phrase.setToolTip("New Phrase (Ctrl+N)")
         g = t.add_group("Sync")
-        b = g.add_large("Send/Receive\nupdates", "sync", None, menu=menu_with(self, [("Not available", "", None)]))
-        b.setEnabled(False)
-        b.setToolTip("Synchronization is not available in PhraseForge")
+        b = g.add_large("Send/Receive\nupdates", "sync", self.sync_now)
+        b.setToolTip("Synchronize your phrases with the cloud now (Ctrl+F5). "
+                     "Set up the cloud service in Settings > Backup & Sync.")
         g = t.add_group("Edit")
         self.color_menu = color_menu(self, self.set_color)
         self.btn_color = g.add_large("Color", "color", menu=self.color_menu, split=False)
@@ -879,6 +942,15 @@ class MainWindow(QMainWindow):
             k, i = self.panel.current()
             if k in self.LIST_KINDS:
                 self.phrase_list.show_folder(k, i)
+                if self.sel_kind == "note":         # keep the note being edited selected
+                    lst = self.phrase_list.list
+                    for r in range(lst.topLevelItemCount()):
+                        it = lst.topLevelItem(r)
+                        if it.data(0, ROLE_KIND) == "note" and it.data(0, ROLE_ID) == self.sel_id:
+                            lst.blockSignals(True)
+                            lst.setCurrentItem(it)
+                            lst.blockSignals(False)
+                            break
         self._update_status()
 
     def _all_items(self):
@@ -910,6 +982,12 @@ class MainWindow(QMainWindow):
         self._push_nav(kind, id_)
         self._update_status()
         self._update_actions()
+
+    def sync_now(self) -> None:
+        """Send/Receive updates: synchronize with the cloud (Settings > Backup & Sync)."""
+        self.save_current()
+        if self.on_command is not None:
+            self.on_command("sync_now")
 
     def _open_sticky_note(self, note_id) -> None:
         if self.on_command is not None and note_id is not None:
@@ -1147,6 +1225,78 @@ class MainWindow(QMainWindow):
             if ce is not None:
                 ce.setFocus()
         QTimer.singleShot(0, go)
+
+    @staticmethod
+    def _plain_content(p: Phrase) -> str:
+        if p.content_format == "html":
+            from PySide6.QtGui import QTextDocument
+            doc = QTextDocument()
+            doc.setHtml(p.content)
+            return doc.toPlainText()
+        return p.content
+
+    def _busy(self, fn):
+        """Run fn on a background thread while the window stays responsive; return its result
+        (or raise its error)."""
+        import threading
+        box: dict = {}
+
+        def run():
+            try:
+                box["value"] = fn()
+            except Exception as e:      # noqa: BLE001 - re-raised below
+                box["error"] = e
+        t = threading.Thread(target=run, daemon=True)
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            t.start()
+            while t.is_alive():
+                QApplication.processEvents()
+                t.join(0.05)
+        finally:
+            QApplication.restoreOverrideCursor()
+        if "error" in box:
+            raise box["error"]
+        return box.get("value")
+
+    def translate_phrase(self, phrase_id: int, language: str, translate=None) -> Phrase | None:
+        """Context menu > Translate: a copy of the phrase translated into `language`, next to
+        the original (macros are kept; formatting of rich-text phrases is not)."""
+        p = self.store.get_phrase(phrase_id)
+        if not p:
+            return None
+        text = self._plain_content(p)
+        if translate is None:
+            from phraseforge import ai
+            settings = self.store.settings()
+
+            def translate(t, lang):
+                return ai.translate_text(settings, t, lang)
+        try:
+            out = self._busy(lambda: translate(text, language))
+        except Exception as e:      # noqa: BLE001 - shown to the user
+            if not getattr(self, "_quiet_updates", False):
+                QMessageBox.warning(self, "Translate", f"The phrase could not be translated.\n\n{e}")
+            return None
+        new = Phrase(f"{p.description} ({language})", out, folder_id=p.folder_id, tags=list(p.tags))
+        new = self.store.add_phrase(new)
+        self.refresh_tree()
+        self.select_phrase(new.id)
+        return new
+
+    def pin_to_desktop(self, phrase_id: int):
+        """Context menu > Pin to desktop: show the phrase as a sticky note on the desktop."""
+        p = self.store.get_phrase(phrase_id)
+        if not p:
+            return None
+        text = self._plain_content(p)
+        first = next((l.strip() for l in text.splitlines() if l.strip()), "")
+        if p.description and first != p.description.strip():
+            text = f"{p.description}\n{text}"
+        note = self.store.add_sticky_note(text=text)
+        if self.on_command is not None:
+            self.on_command(f"open_sticky_notes:{note.id}")
+        return note
 
     def duplicate_phrase(self, phrase_id: int) -> Phrase | None:
         p = self.store.get_phrase(phrase_id)
@@ -1493,6 +1643,24 @@ class MainWindow(QMainWindow):
             m.addAction(icon("delete"), "Empty clipboard cache",
                         lambda: (self.store.clear_clipboard(keep_pinned=False), self.refresh_tree()))
             return m
+        if kind == "note":
+            view = self._editor("note")
+            if getattr(view.note, "id", None) != id_:
+                view.load(id_)
+            m.addAction(icon("sticky_notes"), "Open note", view.open_note)
+            m.addAction(icon("copy"), "Copy", view.copy)
+            m.addAction(icon("new_phrase"), "Create phrase from this note", view.create_phrase)
+            m.addSeparator()
+            m.addAction(icon("delete"), "Delete", view.delete_note)
+            m.addSeparator()
+            m.addAction(icon("sticky_notes"), "New sticky note", lambda: view._command("new_sticky_note"))
+            return m
+        if kind == "sticky_notes":
+            m.addAction(icon("sticky_notes"), "New sticky note",
+                        lambda: self.on_command and self.on_command("new_sticky_note"))
+            m.addAction(icon("sticky_notes"), "Open Sticky Notes",
+                        lambda: self.on_command and self.on_command("open_sticky_notes"))
+            return m
         item = kind in ("phrase", "folder")
         if kind == "phrase":
             m.addAction(icon("open_tab"), "Open in tab", lambda: self.open_in_window(id_))
@@ -1512,8 +1680,10 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         a = m.addAction("Delete", lambda: self.delete_item(kind, id_))
         a.setEnabled(item)
-        a = m.addAction("Translate [Demo]")
-        a.setEnabled(False)
+        tr_menu = m.addMenu(icon("languages"), "Translate")
+        tr_menu.setEnabled(kind == "phrase")
+        for lang in TRANSLATE_LANGUAGES:
+            tr_menu.addAction(lang, lambda l=lang: self.translate_phrase(id_, l))
         if kind in ("folder", "root"):
             fid = id_ if kind == "folder" else None
             bulk = m.addMenu("Bulk edit")
@@ -1533,8 +1703,8 @@ class MainWindow(QMainWindow):
             a.setChecked(bool(f and f.show_in_popup))
         else:
             m.addSeparator()
-        a = m.addAction("Pin to desktop [Demo]")
-        a.setEnabled(False)
+        a = m.addAction(icon("sticky_notes"), "Pin to desktop", lambda: self.pin_to_desktop(id_))
+        a.setEnabled(kind == "phrase")
         m.addSeparator()
         a = m.addAction("Properties", self.properties_selected)
         a.setShortcut("Alt+Return")
@@ -2030,9 +2200,12 @@ class MainWindow(QMainWindow):
         if not getattr(self, "_quiet_updates", False):
             box = QMessageBox(QMessageBox.Information, "Check for updates", msg, QMessageBox.Close, self)
             if rel is not None and not err and updates.is_newer(rel["version"], __version__):
+                dl = box.addButton("Download", QMessageBox.AcceptRole) if rel.get("setup_url") else None
                 btn = box.addButton("Open download page", QMessageBox.AcceptRole)
                 box.exec()
-                if box.clickedButton() is btn:
+                if dl is not None and box.clickedButton() is dl:
+                    QDesktopServices.openUrl(QUrl(rel["setup_url"]))
+                elif box.clickedButton() is btn:
                     QDesktopServices.openUrl(QUrl(rel["url"]))
             else:
                 box.exec()

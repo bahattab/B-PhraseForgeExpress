@@ -20,7 +20,26 @@ DEFAULT_MODELS = {
     "gpt4all": "Llama 3 8B Instruct",   # GPT4All desktop app, local API server (OpenAI format)
     "ollama": "llama3.2",
     "openrouter": "openrouter/auto",
+    "gemini": "gemini-2.5-flash",
+    "opencode": "",          # OpenCode Zen and Kilo Code serve many models: the user picks one
+    "kilocode": "",
 }
+
+# Cloud services that speak the OpenAI chat-completions format: base URL (can be changed with
+# the setting ai.<provider>_base_url) and where to get a key.
+OPENAI_COMPATIBLE = {
+    "openai": "https://api.openai.com/v1",
+    "openrouter": "https://openrouter.ai/api/v1",
+    # https://ai.google.dev/gemini-api/docs/openai
+    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai",
+    # https://opencode.ai/docs/zen (chat/completions serves the non-GPT, non-Claude models)
+    "opencode": "https://opencode.ai/zen/v1",
+    # Kilo Gateway (OpenAI-compatible); the address can be changed in Settings if Kilo moves it
+    "kilocode": "https://api.kilo.ai/api/gateway",
+}
+PROVIDER_NAMES = {"openai": "OpenAI", "anthropic": "Anthropic", "openrouter": "OpenRouter", "gemini": "Gemini",
+                  "opencode": "OpenCode Zen", "kilocode": "Kilo Code", "deepl": "DeepL",
+                  "ollama": "Ollama", "gpt4all": "GPT4All"}
 
 
 class AIError(RuntimeError):
@@ -168,12 +187,14 @@ def complete(settings: dict[str, str], prompt: str, provider: str = "", model: s
                                                "messages": _messages(prompt, system)}, timeout_s)
         return data.get("message", {}).get("content", "")
 
-    if provider == "openai":
-        key, url = settings.get("ai.openai_key", ""), "https://api.openai.com/v1/chat/completions"
-    else:
-        key, url = settings.get("ai.openrouter_key", ""), "https://openrouter.ai/api/v1/chat/completions"
+    name = PROVIDER_NAMES.get(provider, provider)
+    key = (settings.get(f"ai.{provider}_key") or "").strip()
+    base = (settings.get(f"ai.{provider}_base_url") or OPENAI_COMPATIBLE[provider]).rstrip("/")
+    url = base if base.endswith("/chat/completions") else f"{base}/chat/completions"
     if not key:
-        raise AIError(f"{provider} API key is not set (Settings > AI)")
+        raise AIError(f"{name} API key is not set (Settings > AI)")
+    if not model:
+        raise AIError(f"Enter the model to use with {name} in Settings > AI > Model.")
     data = _post(url, {"Authorization": f"Bearer {key}"},
                  {"model": model, "messages": _messages(prompt, system)}, timeout_s)
     try:
@@ -224,3 +245,142 @@ def deepl_translate(settings: dict[str, str], text: str, to: str, src: str = "",
     except (KeyError, IndexError) as e:
         raise AIError(f"unexpected response: {str(data)[:200]}") from e
     return out.replace("<keep>", "").replace("</keep>", "")
+
+
+# ---------------------------------------------------------------- free translation (no key)
+# MyMemory's public API (https://mymemory.translated.net/doc/spec.php): GET /get?q=&langpair=src|dst.
+# Used when no translation key is set, so "Translate" works out of the box. Each request takes
+# at most 500 bytes of text, and anonymous use has a daily limit.
+MYMEMORY_URL = "https://api.mymemory.translated.net/get"
+ISO_CODES = {
+    "arabic": "ar", "english": "en", "french": "fr", "german": "de", "spanish": "es", "italian": "it",
+    "portuguese": "pt", "russian": "ru", "turkish": "tr", "dutch": "nl", "polish": "pl", "swedish": "sv",
+    "danish": "da", "norwegian": "no", "finnish": "fi", "czech": "cs", "greek": "el", "hungarian": "hu",
+    "romanian": "ro", "bulgarian": "bg", "ukrainian": "uk", "chinese": "zh-CN", "japanese": "ja",
+    "korean": "ko", "hindi": "hi", "hebrew": "he", "persian": "fa", "urdu": "ur", "indonesian": "id",
+    "malay": "ms", "vietnamese": "vi", "thai": "th",
+}
+
+
+def iso_code(lang: str) -> str:
+    lang = (lang or "").strip()
+    return ISO_CODES.get(lang.lower(), lang.lower())
+
+
+def guess_language(text: str) -> str:
+    """'ar' when the text is mostly Arabic letters, else 'en' (MyMemory needs a source language)."""
+    letters = [c for c in text if c.isalpha()]
+    arabic = sum(1 for c in letters if "؀" <= c <= "ۿ" or "ݐ" <= c <= "ݿ")
+    return "ar" if letters and arabic * 2 >= len(letters) else "en"
+
+
+def _chunks(text: str, limit: int = 450) -> list[str]:
+    """Split text into pieces of at most `limit` UTF-8 bytes, at line, sentence or word ends."""
+    import re
+    out: list[str] = []
+    for part in re.split(r"(?<=[.!?؟\n])\s*", text):
+        if not part:
+            continue
+        while len(part.encode("utf-8")) > limit:
+            cut = part[:limit]
+            while len(cut.encode("utf-8")) > limit:
+                cut = cut[:-1]
+            space = cut.rfind(" ")
+            if space > len(cut) // 2:
+                cut = cut[:space]
+            out.append(cut)
+            part = part[len(cut):].lstrip()
+        if out and len((out[-1] + " " + part).encode("utf-8")) <= limit and not out[-1].endswith("\n"):
+            out[-1] = out[-1] + " " + part
+        else:
+            out.append(part)
+    return out
+
+
+def free_translate(text: str, to: str, src: str = "", timeout_s: float = 20, get=None) -> str:
+    """Translate with MyMemory (no key). get: test hook (url, params) -> JSON dict."""
+    if not text.strip():
+        return text
+    dst = iso_code(to) or "en"
+    source = iso_code(src) if src else guess_language(text)
+    if source.split("-")[0] == dst.split("-")[0]:
+        return text
+
+    def _get(url, params):
+        from phraseforge.net import client_kwargs
+        try:
+            with httpx.Client(timeout=timeout_s, **client_kwargs()) as c:
+                r = c.get(url, params=params)
+        except httpx.HTTPError as e:
+            raise AIError(f"Translation service unreachable: {e}") from e
+        if r.status_code >= 400:
+            raise AIError(f"Translation service: HTTP {r.status_code}")
+        return r.json()
+    get = get or _get
+    out = []
+    for piece in _chunks(text):
+        if not piece.strip():
+            out.append(piece)
+            continue
+        data = get(MYMEMORY_URL, {"q": piece, "langpair": f"{source}|{dst}"})
+        status = str(data.get("responseStatus", ""))
+        translated = (data.get("responseData") or {}).get("translatedText") or ""
+        if status != "200" or not translated:
+            detail = data.get("responseDetails") or translated or status
+            raise AIError(f"Translation service: {detail}")
+        out.append(translated)
+    return " ".join(p.strip() for p in out) if "\n" not in text else "\n".join(p.strip() for p in out)
+
+
+def translate_text(settings: dict[str, str], text: str, to: str, src: str = "", complete_fn=None,
+                   free_fn=None) -> str:
+    """Translate with the engine chosen in Settings > Language Translation; without a key for
+    it (or with "free"), use the free service. Macros like {#date} are kept as they are: only
+    the text between them is translated."""
+    import re
+    provider = (settings.get("translation.provider") or "free").lower()
+    has_key = provider in ("ollama", "gpt4all") or bool((settings.get(f"ai.{provider}_key", "") or "").strip())
+    if provider == "deepl" and has_key:
+        def one(t):
+            return deepl_translate(settings, t, to, src)
+    elif provider not in ("free", "deepl") and has_key:
+        system = translation_system(settings, to, src)
+
+        def one(t):
+            return (complete_fn or (lambda x: complete(settings, x, provider, "", system, raw_system=True)))(t)
+    else:
+        source = src or guess_language(text)       # one source language for the whole phrase
+
+        def one(t):
+            return (free_fn or free_translate)(t, to, source)
+    out = []
+    for i, part in enumerate(re.split(r"(\{[^{}]*\})", text)):
+        if i % 2 or not part.strip():
+            out.append(part)                        # a macro, or only spaces / line breaks
+            continue
+        lead = part[:len(part) - len(part.lstrip())]
+        trail = part[len(part.rstrip()):]
+        out.append(lead + one(part.strip()).strip() + trail)
+    return "".join(out)
+
+
+# ---------------------------------------------------------------- "Enhance prompt"
+ENHANCE_SYSTEM = (
+    "You improve prompts written for AI assistants. Rewrite the user's prompt so it is clear, "
+    "specific and complete: state the goal, the context, the constraints and the expected output "
+    "format. Keep the user's language (answer in Arabic if the prompt is Arabic) and keep their "
+    "intent. Keep every placeholder or macro in curly braces, such as {#clipboard} or {#input}, "
+    "exactly as written. Reply with the improved prompt only, without explanations or quotes.")
+
+
+def enhance_prompt(settings: dict[str, str], text: str, complete_fn=None) -> str:
+    """Rewrite a prompt so it works better, with the AI engine from Settings > AI."""
+    if not (text or "").strip():
+        raise AIError("Write a prompt first.")
+    fn = complete_fn or (lambda t: complete(settings, t, system=ENHANCE_SYSTEM, raw_system=True))
+    out = (fn(text) or "").strip()
+    if len(out) > 1 and out[0] == out[-1] and out[0] in "\"'`":
+        out = out[1:-1].strip()
+    if not out:
+        raise AIError("The AI engine returned nothing.")
+    return out

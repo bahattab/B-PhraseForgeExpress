@@ -102,11 +102,14 @@ DEFAULT_SETTINGS = {
     "learning.enabled": "1",
     "learning.min_length": "12",
     "learning.min_count": "3",
-    "ai.provider": "openai",              # openai | anthropic | ollama | openrouter
+    "ai.provider": "openai",              # openai | anthropic | gemini | openrouter | opencode | kilocode | ollama | gpt4all
     "ai.model": "",
     "ai.openai_key": "",
     "ai.anthropic_key": "",
     "ai.openrouter_key": "",
+    "ai.gemini_key": "",
+    "ai.opencode_key": "",
+    "ai.kilocode_key": "",
     "ai.ollama_url": "http://localhost:11434",
     "ai.gpt4all_url": "http://localhost:4891/v1",
     "ai.deepl_key": "",
@@ -134,7 +137,8 @@ def hash_password(pw: str) -> str:
 
 # API keys are encrypted with Windows DPAPI before they are written, so a copied
 # database file does not reveal them (other platforms: stored base64-encoded only).
-SECRET_SETTINGS = frozenset({"ai.openai_key", "ai.anthropic_key", "ai.openrouter_key", "ai.deepl_key"})
+SECRET_SETTINGS = frozenset({"ai.openai_key", "ai.anthropic_key", "ai.openrouter_key", "ai.deepl_key",
+                             "ai.gemini_key", "ai.opencode_key", "ai.kilocode_key"})
 _SEALED = "dpapi:"
 
 

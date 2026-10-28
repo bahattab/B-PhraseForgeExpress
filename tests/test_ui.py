@@ -480,3 +480,50 @@ def test_back_in_three_columns_user_menu_and_support(app, store):
     assert {"User guide", "Open data folder", "Copy diagnostic info", "Report a problem"} <= labels
     assert "PhraseForge" in w.diagnostic_info()
     w.close()
+
+
+@pytest.mark.real_layout_default
+def test_three_columns_is_the_default_layout(app, store):
+    from phraseforge.ui.main_window import MainWindow
+    w = MainWindow(store)
+    assert w.three_columns and w.phrase_list.isVisible() is not None
+    assert w.btn_three.isChecked() and not w.btn_two.isChecked()
+    w.set_columns(2)                      # a choice the user makes is kept
+    w.close()
+    w = MainWindow(store)
+    assert not w.three_columns
+    w.close()
+
+
+def test_send_receive_updates_runs_cloud_sync(app, store):
+    """The Send/Receive buttons were disabled ("not available") although cloud sync exists."""
+    from phraseforge.app import PhraseForgeApp
+    from phraseforge.ui.main_window import MainWindow
+    cmds = []
+    w = MainWindow(store, on_command=cmds.append)
+    from PySide6.QtGui import QAction, QKeySequence
+    acts = [a for a in w.findChildren(QAction) if a.shortcut() == QKeySequence("Ctrl+F5")]
+    assert len(acts) == 1 and acts[0].isEnabled()          # one shortcut: no ambiguity
+    acts[0].trigger()
+    w.sync_now()
+    assert cmds == ["sync_now", "sync_now"]
+    w.close()
+
+    class Fake:
+        def __init__(self):
+            self.store, self.notes, self.settings_shown, self.ticks = store, [], 0, []
+            self.tray = type("T", (), {"notify": lambda _s, t, m: self.notes.append(m)})()
+
+        def show_settings(self):
+            self.settings_shown += 1
+
+        def _cloud_tick(self, force_sync=False, manual=False):
+            self.ticks.append((force_sync, manual))
+            return True
+    f = Fake()
+    store.set_setting("sync.provider", "off")
+    PhraseForgeApp.sync_now(f)
+    assert f.settings_shown == 1 and "Backup & Sync" in f.notes[-1] and f.ticks == []
+    store.set_setting("sync.provider", "gdrive")
+    PhraseForgeApp.sync_now(f)
+    assert f.ticks == [(True, True)]

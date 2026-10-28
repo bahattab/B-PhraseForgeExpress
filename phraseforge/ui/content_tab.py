@@ -116,6 +116,7 @@ class ContentTabController:
         self._build_paragraph()
         self._build_insert()
         self._build_macros()
+        self._build_ai()
         self.ed.currentCharFormatChanged.connect(self._sync_char)
         self.ed.cursorPositionChanged.connect(self._sync_block)
         editor.content_focus_changed.connect(self._focus)
@@ -204,6 +205,39 @@ class ContentTabController:
         m = QMenu(g)
         self.editor._fill_insert_macro_menu(m)
         g.add_large("Insert\nmacro", "m_programming", menu=m)
+
+    def _build_ai(self):
+        g = self.tab.add_group("AI")
+        self.b_enhance = g.add_large("Enhance\nprompt", "m_ai", self.enhance_prompt)
+        self.b_enhance.setToolTip("Rewrite the selected text (or the whole phrase) as a clearer, more "
+                                  "complete AI prompt, with the engine from Settings > AI.")
+
+    def enhance_prompt(self, complete_fn=None, quiet: bool = False) -> bool:
+        """Replace the selection (or all the text) with an improved prompt. Ctrl+Z undoes it."""
+        from phraseforge.ui.ai_ui import enhance
+        c = self.ed.textCursor()
+        if not c.hasSelection():
+            c.select(QTextCursor.Document)
+        # macros are shown as chips: expand them so the AI sees (and keeps) {#clipboard} etc.
+        if hasattr(self.ed, "content_range"):
+            text = self.ed.content_range(c.selectionStart(), c.selectionEnd())
+        else:
+            text = c.selection().toPlainText()
+        store = getattr(self.editor, "store", None)
+        if store is None:
+            return False
+        out = enhance(store, text, parent=self.ed, quiet=quiet, complete_fn=complete_fn)
+        if not out:
+            return False
+        c.beginEditBlock()
+        c.removeSelectedText()
+        if hasattr(self.ed, "insert_content"):
+            self.ed.insert_content(out, c)          # macros become chips again
+        else:
+            c.insertText(out)
+        c.endEditBlock()
+        self.ed.setFocus()
+        return True
 
     # -------------------------------------------------- actions
     def _focus(self, has_focus: bool):

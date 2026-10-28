@@ -985,9 +985,25 @@ def _ai(rt, args, opts):
        "Translate text using the translation engine from Settings > Language Translation "
        "(ignored words and glossaries are applied).", '{#translate {#clipboard} -to Arabic}')
 def _translate(rt, args, opts):
-    from phraseforge.ai import deepl_translate, translation_system
     keys = ("translation.ignored_words", "translation.glossaries", "translation.glossary_langs")
     provider = opts.get("provider", "") or rt.setting("translation.provider", "")
+
+    def free():
+        from phraseforge.ai import translate_text      # free service, no key needed
+        return translate_text({"translation.provider": "free"}, " ".join(args),
+                              opts.get("to", "English"), opts.get("from", "")).strip()
+    if provider == "free":
+        return free()
+    try:
+        return _translate_with(rt, args, opts, provider, keys)
+    except Exception as e:      # noqa: BLE001
+        if "key is not set" in str(e):                 # no key for that engine: use the free one
+            return free()
+        raise
+
+
+def _translate_with(rt, args, opts, provider, keys):
+    from phraseforge.ai import deepl_translate, translation_system
     if provider == "deepl":
         settings = {k: rt.setting(k, "") for k in keys + ("ai.deepl_key",)}
         return deepl_translate(settings, " ".join(args), opts.get("to", "English"), opts.get("from", "")).strip()

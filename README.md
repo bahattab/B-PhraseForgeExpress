@@ -22,7 +22,7 @@ Windows SmartScreen may warn because the files are not code-signed: click
 ## Build the EXE and installer yourself
 
 GitHub Actions builds everything on each push (`.github/workflows/windows-build.yml`);
-pushing a tag such as `v0.5.2` also publishes a GitHub Release. To build locally on Windows
+pushing a tag such as `v0.5.3` also publishes a GitHub Release. To build locally on Windows
 (needs Python 3.12 and [Inno Setup 6](https://jrsoftware.org/isinfo.php)):
 
 ```
@@ -30,7 +30,7 @@ python -m pip install -r requirements-build.txt
 python packaging\make_icon.py
 pyinstaller --noconfirm packaging\phraseforge.spec          # dist\B-PhraseForgeExpress\B-PhraseForgeExpress.exe
 set PF_ONEFILE=1 && pyinstaller --noconfirm packaging\phraseforge.spec   # dist\B-PhraseForgeExpress-portable.exe
-"%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" /DAppVersion=0.5.2 packaging\installer.iss
+"%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" /DAppVersion=0.5.3 packaging\installer.iss
 dist\B-PhraseForgeExpress\B-PhraseForgeExpress.exe --self-test               # writes selftest.txt in the data folder
 ```
 

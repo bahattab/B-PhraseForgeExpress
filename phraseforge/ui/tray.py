@@ -176,5 +176,10 @@ class Tray(QSystemTrayIcon):
     def _on_activated(self, reason) -> None:
         self.handle_click(reason)
 
-    def notify(self, title: str, text: str, ms: int = 4000) -> None:
+    def notify(self, title: str, text: str, ms: int = 4000, on_click=None) -> None:
+        """Balloon message; on_click runs when the user clicks it (e.g. open a download page)."""
+        self._on_message_click = on_click
+        if not getattr(self, "_click_hooked", False):
+            self.messageClicked.connect(lambda: (getattr(self, "_on_message_click", None) or (lambda: None))())
+            self._click_hooked = True
         self.showMessage(title, text, QSystemTrayIcon.Information, ms)

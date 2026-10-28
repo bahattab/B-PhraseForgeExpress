@@ -86,6 +86,7 @@ ICONS: dict[str, tuple[str, str]] = {
     "m_automation": ("mdi6.cog-play-outline", PURPLE), "m_programming": ("mdi6.code-braces", ORANGE),
     "m_textops": ("mdi6.format-text", ORANGE), "m_clipboard": ("mdi6.clipboard-outline", ORANGE),
     "m_recorder": ("mdi6.record-circle", RED), "m_ocr": ("mdi6.text-recognition", TEAL),
+    "m_ai": ("mdi6.creation", PURPLE),
     # OneNote picker (generic note icons, not Microsoft artwork)
     "on_notebook": ("mdi6.notebook-outline", PURPLE), "on_group": ("mdi6.folder-multiple-outline", PURPLE),
     "on_section": ("mdi6.bookmark-outline", PURPLE), "on_page": ("mdi6.file-document-outline", GREY),
