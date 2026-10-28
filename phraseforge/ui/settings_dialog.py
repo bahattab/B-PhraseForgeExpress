@@ -354,6 +354,92 @@ def _spin(lo: int, hi: int) -> QSpinBox:
     return s
 
 
+GDRIVE_SETUP_TEXT = (
+    "Google asks every app that uses Drive for its own free \"OAuth client\". One-time setup:\n\n"
+    "1. Open console.cloud.google.com and create a project (any name).\n"
+    "2. APIs & Services > Library: enable \"Google Drive API\".\n"
+    "3. Google Auth Platform (OAuth consent screen): User type External, app name \"PhraseForge\". "
+    "Then either add your Google address under Audience > Test users, or click \"Publish app\" "
+    "(in testing mode Google signs you out after 7 days).\n"
+    "4. Clients (Credentials) > Create client > Application type \"Desktop app\".\n"
+    "5. Copy the Client ID and Client secret into PhraseForge (or download the JSON file and choose it).\n"
+    "6. Click \"Sign in with Google\" and approve in the browser.\n\n"
+    "PhraseForge only asks for access to files it creates itself (drive.file).")
+
+
+class GoogleClientDialog(QDialog):
+    """Set up the Google OAuth client: paste Client ID + secret, or choose the JSON file."""
+
+    CONSOLE_URL = "https://console.cloud.google.com/apis/credentials"
+    DRIVE_API_URL = "https://console.cloud.google.com/apis/library/drive.googleapis.com"
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Google sign-in setup")
+        self.setMinimumWidth(560)
+        lay = QVBoxLayout(self)
+        steps = QLabel(GDRIVE_SETUP_TEXT)
+        steps.setWordWrap(True)
+        lay.addWidget(steps)
+        b1 = QPushButton("Enable Google Drive API")
+        b1.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(self.DRIVE_API_URL)))
+        b2 = QPushButton("Open Google Cloud Console")
+        b2.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(self.CONSOLE_URL)))
+        lay.addWidget(_row(b1, b2))
+        form = QFormLayout()
+        self.client_id = QLineEdit()
+        self.client_id.setPlaceholderText("1234567890-abc.apps.googleusercontent.com")
+        self.client_secret = QLineEdit()
+        self.client_secret.setEchoMode(QLineEdit.Password)
+        self.client_secret.setPlaceholderText("GOCSPX-...")
+        form.addRow("Client ID:", self.client_id)
+        form.addRow("Client secret:", self.client_secret)
+        lay.addLayout(form)
+        self.file_btn = QPushButton("Choose the downloaded JSON file instead...")
+        self.file_btn.clicked.connect(self._choose_file)
+        self.remove_btn = QPushButton("Remove my client")
+        self.remove_btn.clicked.connect(self._remove)
+        from phraseforge.cloud.gdrive import client_source
+        self.remove_btn.setVisible(client_source() == "own")
+        lay.addWidget(_row(self.file_btn, self.remove_btn))
+        self.error = QLabel()
+        self.error.setWordWrap(True)
+        self.error.setStyleSheet("color:#b00020")
+        lay.addWidget(self.error)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+    def _choose_file(self, path: str | None = None) -> bool:
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(self, "Google OAuth client file", "", "JSON (*.json)")
+            if not path:
+                return False
+        from phraseforge.cloud.gdrive import install_client_file
+        try:
+            install_client_file(path)
+        except Exception as e:
+            self.error.setText(str(e))
+            return False
+        super().accept()
+        return True
+
+    def _remove(self) -> None:
+        from phraseforge.cloud.gdrive import remove_own_client
+        remove_own_client()
+        self.remove_btn.setVisible(False)
+
+    def accept(self) -> None:  # noqa: D401 - Qt override
+        from phraseforge.cloud.gdrive import install_client_values
+        try:
+            install_client_values(self.client_id.text(), self.client_secret.text())
+        except Exception as e:
+            self.error.setText(str(e))
+            return
+        super().accept()
+
+
 def _run_with_wait(parent, text, fn):
     from phraseforge.ui.cloud_ui import run_with_wait
     return run_with_wait(parent, text, fn)
@@ -1616,8 +1702,8 @@ class SettingsDialog(QDialog):
         self.gdrive_status = QLabel()
         self.gdrive_status.setWordWrap(True)
         gb.addWidget(self.gdrive_status)
-        self.gdrive_client_btn = QPushButton("OAuth client file...")
-        self.gdrive_client_btn.setToolTip('The "Desktop app" OAuth client JSON from Google Cloud Console')
+        self.gdrive_client_btn = QPushButton("OAuth client...")
+        self.gdrive_client_btn.setToolTip('Your "Desktop app" OAuth client from Google Cloud Console')
         self.gdrive_client_btn.clicked.connect(self._choose_gdrive_client)
         self.gdrive_signin_btn = QPushButton("Sign in with Google")
         self.gdrive_signin_btn.clicked.connect(self._gdrive_sign_in_out)
@@ -1668,66 +1754,69 @@ class SettingsDialog(QDialog):
 
     def _update_cloud_ui(self, *_):
         prov = next((v for v, rb in self.cloud_radios.items() if rb.isChecked()), "off")
-        self.gdrive_box.setEnabled(prov == "gdrive")
+        # The Google Drive box stays usable whatever is selected: signing in selects Google Drive.
+        self.gdrive_box.setEnabled(True)
         self.folder_box.setEnabled(prov == "folder")
+        self.gdrive_signin_btn.setEnabled(True)
         try:
             d = self._drive()
-            if not d.has_client():
-                self.gdrive_status.setText("Step 1: choose your Google OAuth client file (see How to set up).")
-                self.gdrive_signin_btn.setEnabled(False)
-                self.gdrive_signin_btn.setText("Sign in with Google")
-            elif d.signed_in():
+            if d.signed_in():
                 self.gdrive_status.setText("Signed in to Google Drive. PhraseForge can only see the files it created.")
-                self.gdrive_signin_btn.setEnabled(True)
                 self.gdrive_signin_btn.setText("Sign out")
+            elif not d.has_client():
+                self.gdrive_status.setText("Click \"Sign in with Google\". The first time, PhraseForge helps you "
+                                           "create the free Google sign-in client it needs (about 5 minutes).")
+                self.gdrive_signin_btn.setText("Sign in with Google")
             else:
-                self.gdrive_status.setText("Not signed in. Click \"Sign in with Google\": your browser opens Google's login page.")
-                self.gdrive_signin_btn.setEnabled(True)
+                self.gdrive_status.setText("Not signed in. Click \"Sign in with Google\": your browser opens "
+                                           "Google's login page.")
                 self.gdrive_signin_btn.setText("Sign in with Google")
         except Exception as e:  # library missing etc.
             self.gdrive_status.setText(f"Google Drive is not available: {e}")
-            self.gdrive_signin_btn.setEnabled(False)
+            self.gdrive_signin_btn.setText("Sign in with Google")
         last = self.store.setting("sync.last_time", "")
         self.cloud_last.setText(f"Last synchronized: {last.replace('T', ' ')}" if last else "Not synchronized yet.")
 
-    def _choose_gdrive_client(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Google OAuth client file", "", "JSON (*.json)")
-        if not path:
-            return
-        try:
-            from phraseforge.cloud.gdrive import install_client_file
-            install_client_file(path)
-        except Exception as e:
-            QMessageBox.warning(self, "Google Drive", str(e))
+    def _choose_gdrive_client(self) -> bool:
+        """Set up the Google OAuth client (pasted ID + secret or a JSON file). True when one is set."""
+        d = GoogleClientDialog(self)
+        ok = d.exec() == QDialog.Accepted
         self._update_cloud_ui()
+        return ok
 
-    def _gdrive_sign_in_out(self) -> None:
-        d = self._drive()
-        if d.signed_in():
-            if QMessageBox.question(self, "Google Drive", "Sign out and remove PhraseForge's access to Google Drive?") \
+    def _gdrive_sign_in_out(self, quiet: bool = False) -> bool:
+        try:
+            d = self._drive()
+            signed_in = d.signed_in()
+        except Exception as e:
+            if not quiet:
+                QMessageBox.warning(self, "Google Drive", f"Google Drive is not available: {e}")
+            return False
+        if signed_in:
+            if quiet or QMessageBox.question(
+                    self, "Google Drive", "Sign out and remove PhraseForge's access to Google Drive?") \
                     == QMessageBox.Yes:
                 d.sign_out()
             self._update_cloud_ui()
-            return
+            return True
+        if not d.has_client() and (quiet or not self._choose_gdrive_client()):
+            return False
         ok, err = _run_with_wait(self, "Waiting for Google sign-in in your browser...", d.sign_in)
         if not ok:
-            QMessageBox.warning(self, "Google Drive", f"Sign-in did not complete.\n\n{err}")
+            if not quiet:
+                QMessageBox.warning(self, "Google Drive", f"Sign-in did not complete.\n\n{err}\n\n"
+                                    "If Google showed \"access blocked\" or \"app not verified\", check step 3 "
+                                    "of \"How to set up\" (test user or publishing status).")
         else:
-            email = d.email()
-            QMessageBox.information(self, "Google Drive", f"Signed in{(' as ' + email) if email else ''}.")
             self.cloud_radios["gdrive"].setChecked(True)
+            if not quiet:
+                email = d.email()
+                QMessageBox.information(self, "Google Drive", f"Signed in{(' as ' + email) if email else ''}.")
         self._update_cloud_ui()
+        return bool(ok)
 
     def _gdrive_help(self) -> None:
-        QMessageBox.information(self, "Set up Google sign-in", (
-            "Google asks every app that uses Drive for its own free \"OAuth client\". One-time setup:\n\n"
-            "1. Open console.cloud.google.com and create a project (any name).\n"
-            "2. APIs & Services > Library: enable \"Google Drive API\".\n"
-            "3. OAuth consent screen: User type External, add your own Google address as a test user.\n"
-            "4. Credentials > Create credentials > OAuth client ID > Application type \"Desktop app\".\n"
-            "5. Download the JSON file, then click \"OAuth client file...\" here and choose it.\n"
-            "6. Click \"Sign in with Google\".\n\n"
-            "PhraseForge only asks for access to files it creates itself (drive.file)."))
+        QMessageBox.information(self, "Set up Google sign-in", GDRIVE_SETUP_TEXT)
 
     def _browse_sync_folder(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "Sync folder", self.sync_folder.text())

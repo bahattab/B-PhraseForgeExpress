@@ -1232,4 +1232,18 @@ AR_EXTRA = {
     "Auto: PhraseForge reads the capture with each installed OCR language and keeps the one that fits, for example Arabic or English.": "تلقائي: يقرأ PhraseForge المنطقة الملتقطة بكل لغة تعرّف ضوئي مثبتة ويختار اللغة المناسبة، مثل العربية أو الإنجليزية.",
     "When you report a problem, attach phraseforge.log from the data folder and paste the diagnostic information.": "عند الإبلاغ عن مشكلة، أرفق الملف phraseforge.log من مجلد البيانات والصق معلومات التشخيص.",
     "Read the user guide, or report a problem on GitHub.": "اقرأ دليل المستخدم، أو أبلغ عن مشكلة في GitHub.",
+    # ---------------------------------------------------------------- Google sign-in setup
+    'Google asks every app that uses Drive for its own free "OAuth client". One-time setup:\n\n1. Open console.cloud.google.com and create a project (any name).\n2. APIs & Services > Library: enable "Google Drive API".\n3. Google Auth Platform (OAuth consent screen): User type External, app name "PhraseForge". Then either add your Google address under Audience > Test users, or click "Publish app" (in testing mode Google signs you out after 7 days).\n4. Clients (Credentials) > Create client > Application type "Desktop app".\n5. Copy the Client ID and Client secret into PhraseForge (or download the JSON file and choose it).\n6. Click "Sign in with Google" and approve in the browser.\n\nPhraseForge only asks for access to files it creates itself (drive.file).': 'تطلب Google من كل برنامج يستخدم Drive «عميل OAuth» مجانياً خاصاً به. إعداد لمرة واحدة:\n\n1. افتح console.cloud.google.com وأنشئ مشروعاً (بأي اسم).\n2. APIs & Services > Library: فعّل «Google Drive API».\n3. Google Auth Platform (شاشة موافقة OAuth): نوع المستخدم External واسم التطبيق «PhraseForge». ثم أضف بريدك في Google ضمن Audience > Test users، أو اضغط «Publish app» (في وضع الاختبار تسجّل Google خروجك بعد 7 أيام).\n4. Clients (Credentials) > Create client > نوع التطبيق «Desktop app».\n5. انسخ Client ID وClient secret إلى PhraseForge (أو نزّل ملف JSON واختره).\n6. اضغط «تسجيل الدخول بحساب Google» ووافق في المتصفح.\n\nلا يطلب PhraseForge إلا الوصول إلى الملفات التي ينشئها بنفسه (drive.file).',
+    'Google sign-in setup': 'إعداد تسجيل الدخول إلى Google',
+    'Enable Google Drive API': 'تفعيل Google Drive API',
+    'Open Google Cloud Console': 'فتح Google Cloud Console',
+    'Client ID:': 'معرّف العميل (Client ID):',
+    'Client secret:': 'سر العميل (Client secret):',
+    'Choose the downloaded JSON file instead...': 'أو اختر ملف JSON الذي نزّلته...',
+    'Remove my client': 'إزالة العميل الخاص بي',
+    'OAuth client...': 'عميل OAuth...',
+    'Your "Desktop app" OAuth client from Google Cloud Console': 'عميل OAuth من نوع «Desktop app» من Google Cloud Console',
+    'Click "Sign in with Google". The first time, PhraseForge helps you create the free Google sign-in client it needs (about 5 minutes).': 'اضغط «تسجيل الدخول بحساب Google». في المرة الأولى يساعدك PhraseForge على إنشاء عميل تسجيل الدخول المجاني الذي تحتاجه Google (نحو 5 دقائق).',
+    'Not signed in. Click "Sign in with Google": your browser opens Google\'s login page.': 'لم تسجّل الدخول. اضغط «تسجيل الدخول بحساب Google» لتفتح صفحة دخول Google في المتصفح.',
+    'Signed in to Google Drive. PhraseForge can only see the files it created.': 'تم تسجيل الدخول إلى Google Drive. لا يرى PhraseForge إلا الملفات التي أنشأها.',
 }
