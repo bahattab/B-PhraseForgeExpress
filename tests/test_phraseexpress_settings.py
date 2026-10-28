@@ -27,9 +27,12 @@ def store():
 
 def test_engine_lists_match_phraseexpress():
     from phraseforge.ui.settings_dialog import PROVIDERS, TRANSLATION_PROVIDERS
-    assert [t for t, _, _ in TRANSLATION_PROVIDERS] == ["Deepl", "OpenAI", "Anthropic (Claude)", "GPT4All",
-                                                        "Ollama", "OpenRouter"]
-    assert [t for t, _, _ in PROVIDERS] == ["OpenAI", "Anthropic (Claude)", "GPT4All", "Ollama", "OpenRouter"]
+    # PhraseForge adds a free engine first so translation works without a key
+    # PhraseExpress' engines, plus the free translator, Gemini, OpenCode Zen and Kilo Code
+    pe = ["OpenAI", "Anthropic (Claude)", "GPT4All", "Ollama", "Google Gemini", "OpenRouter", "OpenCode Zen",
+          "Kilo Code"]
+    assert [t for t, _, _ in PROVIDERS] == pe
+    assert [t for t, _, _ in TRANSLATION_PROVIDERS] == ["Free (MyMemory, no key)", "Deepl"] + pe
 
 
 def test_gpt4all_uses_local_openai_format(monkeypatch):
@@ -136,3 +139,36 @@ def test_sort_by_length_and_positions(app, store):
     store.set_setting("menu.position", "above")
     pop._load_settings()
     assert pop.placement(5, 5, (g.left() + 60, g.top() + 300))[0] == "above"
+
+
+def test_gemini_opencode_kilocode_use_openai_format(monkeypatch):
+    seen = []
+
+    def fake(url, headers, payload, timeout):
+        seen.append((url, headers.get("Authorization"), payload["model"]))
+        return {"choices": [{"message": {"content": "OK"}}]}
+    monkeypatch.setattr(ai, "_post", fake)
+    assert ai.complete({"ai.provider": "gemini", "ai.gemini_key": "g"}, "hi") == "OK"
+    assert seen[-1] == ("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+                        "Bearer g", "gemini-2.5-flash")
+    assert ai.complete({"ai.provider": "opencode", "ai.opencode_key": "o", "ai.model": "kimi-k2"}, "hi") == "OK"
+    assert seen[-1] == ("https://opencode.ai/zen/v1/chat/completions", "Bearer o", "kimi-k2")
+    ai.complete({"ai.provider": "kilocode", "ai.kilocode_key": "k", "ai.model": "x/y",
+                 "ai.kilocode_base_url": "https://example.test/v1/"}, "hi")
+    assert seen[-1] == ("https://example.test/v1/chat/completions", "Bearer k", "x/y")
+    with pytest.raises(ai.AIError, match="Enter the model"):
+        ai.complete({"ai.provider": "kilocode", "ai.kilocode_key": "k"}, "hi")
+    with pytest.raises(ai.AIError, match="Gemini API key is not set"):
+        ai.complete({"ai.provider": "gemini"}, "hi")
+
+
+def test_enhance_prompt():
+    got = {}
+
+    def fake(t):
+        got["t"] = t
+        return '"Summarize {#clipboard} in 3 bullet points, in Arabic."'
+    out = ai.enhance_prompt({}, "summarize {#clipboard}", complete_fn=fake)
+    assert out == "Summarize {#clipboard} in 3 bullet points, in Arabic." and got["t"] == "summarize {#clipboard}"
+    with pytest.raises(ai.AIError):
+        ai.enhance_prompt({}, "   ", complete_fn=fake)

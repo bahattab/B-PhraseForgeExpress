@@ -30,17 +30,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from phraseforge.db import Store
+from phraseforge.db import SECRET_SETTINGS, Store
 
 SYNC_NAME = "phraseforge-sync.db"
 BACKUP_PREFIX = "backup-"
 
 # settings that belong to this PC only; kept when pulling, removed when pushing
 LOCAL_SETTING_PREFIXES = ("sync.", "gdrive.", "backup.cloud_", "ocr.cli_path", "app.start_with_windows",
-                          "app.first_run_done", "ui.item_colors",
-                          # API keys: encrypted for this Windows account, never uploaded
-                          "ai.openai_key", "ai.anthropic_key", "ai.openrouter_key",
-                          "ai.deepl_key")
+                          "app.first_run_done", "ui.item_colors", "updates.last_check",
+                          "updates.notified_version",
+                          # API keys: encrypted for this Windows account, never uploaded. Taken
+                          # from db.SECRET_SETTINGS so a newly added key can never leak.
+                          *sorted(SECRET_SETTINGS))
 
 
 @dataclass

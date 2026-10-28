@@ -187,3 +187,52 @@ def test_main_window_shows_sticky_notes(app, store, columns):
         assert w.panel.select("note", b.id)
         assert w.editor.text.toPlainText() == "Call Ahmed"
     w.close()
+
+
+def test_edit_and_delete_note_in_main_window(app, store):
+    """A note could only be viewed in the main window; its menu had Delete greyed out."""
+    from phraseforge.ui.main_window import MainWindow, StickyNoteView
+    n = store.add_sticky_note("")
+    cmds = []
+    w = MainWindow(store, on_command=cmds.append)
+    w._quiet_updates = True
+    w.set_columns(3)
+    w.panel.select("sticky_notes", None)
+    lst = w.phrase_list.list
+    lst.setCurrentItem(lst.topLevelItem(0))
+    v = w.editor
+    assert isinstance(v, StickyNoteView) and not v.text.isReadOnly()
+    v.text.setPlainText("Buy milk\nand bread")
+    assert v.is_dirty()
+    v.save()
+    assert store.sticky_note(n.id).text == "Buy milk\nand bread" and v.caption.text() == "Buy milk"
+    menu = w.build_context_menu("note", n.id)
+    acts = {a.text(): a for a in menu.actions()}
+    assert acts["Delete"].isEnabled() and "Open note" in acts and "Copy" in acts
+    acts["Delete"].trigger()                      # the app deletes it (and closes its window)
+    assert cmds[-1] == f"delete_sticky_note:{n.id}"
+    w.on_command = None                            # without the app: deleted directly
+    m = store.add_sticky_note("second")
+    v.load(m.id)
+    assert v.delete_note() and store.sticky_note(m.id) is None
+    w.close()
+
+
+def test_translate_and_pin_to_desktop(app, store):
+    from phraseforge.models import Phrase
+    from phraseforge.ui.main_window import MainWindow
+    p = store.add_phrase(Phrase("Greeting", "Hello {#date} friend"))
+    cmds = []
+    w = MainWindow(store, on_command=cmds.append)
+    w._quiet_updates = True
+    menu = w.build_context_menu("phrase", p.id)
+    acts = {a.text(): a for a in menu.actions()}
+    assert "Translate [Demo]" not in acts and "Pin to desktop [Demo]" not in acts
+    assert acts["Pin to desktop"].isEnabled() and acts["Translate"].menu().isEnabled()
+    new = w.translate_phrase(p.id, "Arabic", translate=lambda t, lang: t.replace("Hello", "مرحبا"))
+    assert new.description == "Greeting (Arabic)" and new.content == "مرحبا {#date} friend"
+    assert new.folder_id == p.folder_id
+    assert w.translate_phrase(p.id, "Arabic", translate=lambda t, l: 1 / 0) is None   # error shown, no copy
+    note = w.pin_to_desktop(p.id)
+    assert note.text == "Greeting\nHello {#date} friend" and cmds[-1] == f"open_sticky_notes:{note.id}"
+    w.close()

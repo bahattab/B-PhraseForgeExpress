@@ -87,7 +87,8 @@ DEFAULT_SETTINGS = {
     "popup.hotkey": "ctrl+alt+space",
     "ocr.hotkey": "ctrl+alt+o",
     "clipboard_history.hotkey": "ctrl+alt+v",
-    "filesearch.hotkey": "ctrl+alt+f",     # Search files (Listary-style launcher)
+    "filesearch.hotkey": "ctrl+alt+f",
+    "promptboost.hotkey": "ctrl+alt+b",    # Boost prompt: improve the selected prompt in any program     # Search files (Listary-style launcher)
     "filesearch.enabled": "1",
     "filesearch.roots": "",               # one folder per line; empty = Start menu, Desktop, Documents, Downloads
     "filesearch.refresh_minutes": "30",
@@ -102,11 +103,15 @@ DEFAULT_SETTINGS = {
     "learning.enabled": "1",
     "learning.min_length": "12",
     "learning.min_count": "3",
-    "ai.provider": "openai",              # openai | anthropic | ollama | openrouter
+    "ai.provider": "openai",              # openai | anthropic | gemini | openrouter | opencode | kilocode | ollama | gpt4all
     "ai.model": "",
     "ai.openai_key": "",
     "ai.anthropic_key": "",
     "ai.openrouter_key": "",
+    "ai.gemini_key": "",
+    "ai.opencode_key": "",
+    "ai.kilocode_key": "",
+    "ai.mistral_key": "",                 # Mistral OCR (PDF/image to Markdown, optional screen OCR engine)
     "ai.ollama_url": "http://localhost:11434",
     "ai.gpt4all_url": "http://localhost:4891/v1",
     "ai.deepl_key": "",
@@ -134,7 +139,8 @@ def hash_password(pw: str) -> str:
 
 # API keys are encrypted with Windows DPAPI before they are written, so a copied
 # database file does not reveal them (other platforms: stored base64-encoded only).
-SECRET_SETTINGS = frozenset({"ai.openai_key", "ai.anthropic_key", "ai.openrouter_key", "ai.deepl_key"})
+SECRET_SETTINGS = frozenset({"ai.openai_key", "ai.anthropic_key", "ai.openrouter_key", "ai.deepl_key",
+                             "ai.gemini_key", "ai.opencode_key", "ai.kilocode_key", "ai.mistral_key"})
 _SEALED = "dpapi:"
 
 

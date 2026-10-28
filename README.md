@@ -22,7 +22,7 @@ Windows SmartScreen may warn because the files are not code-signed: click
 ## Build the EXE and installer yourself
 
 GitHub Actions builds everything on each push (`.github/workflows/windows-build.yml`);
-pushing a tag such as `v0.5.2` also publishes a GitHub Release. To build locally on Windows
+pushing a tag such as `v0.5.3` also publishes a GitHub Release. To build locally on Windows
 (needs Python 3.12 and [Inno Setup 6](https://jrsoftware.org/isinfo.php)):
 
 ```
@@ -30,7 +30,7 @@ python -m pip install -r requirements-build.txt
 python packaging\make_icon.py
 pyinstaller --noconfirm packaging\phraseforge.spec          # dist\B-PhraseForgeExpress\B-PhraseForgeExpress.exe
 set PF_ONEFILE=1 && pyinstaller --noconfirm packaging\phraseforge.spec   # dist\B-PhraseForgeExpress-portable.exe
-"%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" /DAppVersion=0.5.2 packaging\installer.iss
+"%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" /DAppVersion=0.5.3 packaging\installer.iss
 dist\B-PhraseForgeExpress\B-PhraseForgeExpress.exe --self-test               # writes selftest.txt in the data folder
 ```
 
@@ -63,6 +63,32 @@ C:\venvs\phraseforge\Scripts\python -m pytest -p no:cacheprovider  # full test s
   windows with seven colours, bold/italic/underline/strikethrough/bullets and "always on
   top"; they are saved as you type and reopen where they were. Tools > Sticky Notes lists,
   searches and deletes notes, and can import your Microsoft Sticky Notes file once.
+
+## Prompt Tower (AI context from project files)
+
+Tools > AI > **Prompt Tower** builds one prompt from many files of a project for ChatGPT, Claude,
+Gemini or coding agents. Tick files in a folder tree (`.gitignore`, `.towerignore` and folders
+like `node_modules` are skipped), add text before and after, and choose XML, Markdown or your own
+templates with a project tree. It shows a token estimate. You can copy the prompt, open it in a chat
+site, save it as a phrase, or save the whole set and insert it anywhere with
+`{#prompttower "name"}`. It is a clean-room rebuild of the workflow of the
+[Prompt Tower](https://github.com/backnotprop/prompt-tower) VS Code extension; see
+[docs/PROMPT_TOWER_SPEC.md](docs/PROMPT_TOWER_SPEC.md).
+
+## Prompt Optimizer, Boost prompt and Mistral OCR
+
+- **Prompt Optimizer** (Tools > AI): a chat that asks clarifying questions and ends with an
+  "Optimized Prompt:" you copy; templates with `{{fields}}`, your own templates, and project context
+  (languages and frameworks). Rebuilt from [AI Prompt Optimizer](https://github.com/mhemdan/ai-prompt-optimizer).
+- **Boost prompt**: select a prompt in any program and press Ctrl+Alt+B to replace it with a detailed,
+  structured prompt; also a button in the phrase editor and `{#promptboost text}`. Uses the instruction of
+  [PromptBoost](https://github.com/chrisdias/vscode-promptboost).
+- **Mistral OCR** (Tools > OCR PDF / image): PDF or image to Markdown with tables and images, saved in a
+  folder named after the file; optional cloud engine for screen OCR. Like
+  [Mistral OCR Unofficial](https://github.com/sldyns/mistral-ocr-unofficial), without the separate script.
+  The file is uploaded to Mistral.
+
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Default hotkeys
 

@@ -75,3 +75,42 @@ def test_main_window_help_and_updates(qtbot_free_app, tmp_path):
 def qtbot_free_app():
     from PySide6.QtWidgets import QApplication
     return QApplication.instance() or QApplication([])
+
+
+def test_release_setup_url_and_daily_check(monkeypatch, tmp_path):
+    import io
+    import json as _json
+    from datetime import datetime, timedelta
+    from phraseforge.app import PhraseForgeApp
+    from phraseforge.db import Store
+    data = {"tag_name": "v9.9.9", "html_url": "https://x/rel",
+            "assets": [{"name": "B-PhraseForgeExpress-portable.exe", "browser_download_url": "p"},
+                       {"name": "B-PhraseForgeExpress-Setup-9.9.9.exe", "browser_download_url": "https://x/setup.exe"}]}
+
+    class R(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+    rel = updates.latest_release(opener=lambda req, timeout: R(_json.dumps(data).encode()))
+    assert rel["setup_url"] == "https://x/setup.exe" and rel["version"] == "9.9.9"
+    assert updates.check_due("") and not updates.check_due(datetime.now().isoformat())
+    assert updates.check_due((datetime.now() - timedelta(hours=25)).isoformat())
+
+    store = Store(tmp_path / "u.db")
+    shown = []
+
+    class Fake:
+        pass
+    f = Fake()
+    f.store = store
+    f.poster = type("P", (), {"posted": type("S", (), {"emit": staticmethod(lambda fn: shown.append(fn))})()})()
+    assert PhraseForgeApp.auto_check_updates(f, latest=lambda: rel)["version"] == "9.9.9"
+    assert len(shown) == 1 and store.setting("updates.last_check")
+    assert PhraseForgeApp.auto_check_updates(f, latest=lambda: rel, force=True) is None   # announced once
+    assert PhraseForgeApp.auto_check_updates(f, latest=lambda: rel) is None              # not due yet
+    store.set_setting("updates.auto_check", "0")
+    store.set_setting("updates.notified_version", "")
+    assert PhraseForgeApp.auto_check_updates(f, latest=lambda: rel, force=True) is None  # turned off
+    store.close()

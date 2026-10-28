@@ -36,8 +36,12 @@ PROVIDERS = [("OpenAI", "openai", "https://platform.openai.com/api-keys"),
              ("Anthropic (Claude)", "anthropic", "https://console.anthropic.com/settings/keys"),
              ("GPT4All", "gpt4all", "https://www.nomic.ai/gpt4all"),
              ("Ollama", "ollama", "https://ollama.com/download"),
-             ("OpenRouter", "openrouter", "https://openrouter.ai/keys")]
-TRANSLATION_PROVIDERS = [("Deepl", "deepl", "https://www.deepl.com/your-account/keys")] + PROVIDERS
+             ("Google Gemini", "gemini", "https://aistudio.google.com/apikey"),
+             ("OpenRouter", "openrouter", "https://openrouter.ai/keys"),
+             ("OpenCode Zen", "opencode", "https://opencode.ai/zen"),
+             ("Kilo Code", "kilocode", "https://app.kilo.ai")]
+TRANSLATION_PROVIDERS = [("Free (MyMemory, no key)", "free", "https://mymemory.translated.net/"),
+                         ("Deepl", "deepl", "https://www.deepl.com/your-account/keys")] + PROVIDERS
 LOCAL_ENGINES = {"ollama": "Ollama server URL:", "gpt4all": "GPT4All server URL (Settings > Enable local API server):"}
 # PhraseExpress 18 "Phrase menu contents" (order of the columns in a phrase row)
 MENU_CONTENTS = [("Description - QuickKey", "description_quickkey"),
@@ -655,6 +659,8 @@ class SettingsDialog(QDialog):
         self.start_with_windows = self.bind("app.start_with_windows", QCheckBox(f"Start {APP} with Windows"))
         gl.addWidget(self.start_with_windows)
         gl.addWidget(self.bind("app.diagnostic_mode", QCheckBox("Diagnostic mode")))
+        gl.addWidget(self.bind("updates.auto_check",
+                               QCheckBox(f"Check GitHub for new versions of {APP} automatically (once a day)")))
         lay.addWidget(g)
         lay.addStretch(1)
         # values edited in the gear dialogs
@@ -894,6 +900,8 @@ class SettingsDialog(QDialog):
         lay.addWidget(_row(self.ai_key, self.ai_test, self.ai_status_icon))
         self.ai_status = QLabel()
         lay.addWidget(self.ai_status)
+        lay.addWidget(QLabel("Boost prompt hotkey (select a prompt in any program, then press it):"))
+        lay.addWidget(self.bind("promptboost.hotkey", Hotkey()))
         lay.addWidget(QLabel("Model (leave empty for the provider's default):"))
         self.ai_model = self.bind("ai.model", QLineEdit())
         self.ai_model.setFixedWidth(330)
@@ -1013,14 +1021,21 @@ class SettingsDialog(QDialog):
         d.prompt_edit = QPlainTextEdit(prompt)
         d.prompt_edit.setFixedHeight(60)
         gear = _icon_button("settings", "Model options", lambda: d.model_box.setVisible(not d.model_box.isVisible()))
-        v.addWidget(_row(d.prompt_edit, gear, stretch=False))
+
+        def _enhance():
+            from phraseforge.ui.ai_ui import enhance
+            out = enhance(self.store, d.prompt_edit.toPlainText(), parent=d)
+            if out:
+                d.prompt_edit.setPlainText(out)
+        d.enhance_btn = _icon_button("m_ai", "Enhance prompt (rewrite it with the AI engine)", _enhance)
+        v.addWidget(_row(d.prompt_edit, gear, d.enhance_btn, stretch=False))
         d.model_box = QWidget()
         mb = QVBoxLayout(d.model_box)
         mb.setContentsMargins(0, 0, 0, 0)
         mb.addWidget(QLabel("Model:"))
         d.model_combo = QComboBox()
         d.model_combo.setEditable(True)
-        d.model_combo.addItems(["Auto"] + sorted(set(DEFAULT_MODELS.values())))
+        d.model_combo.addItems(["Auto"] + sorted({m for m in DEFAULT_MODELS.values() if m}))
         d.model_combo.setCurrentText(model or "Auto")
         reset = QPushButton("Reset to defaults")
         reset.clicked.connect(lambda: d.model_combo.setCurrentText("Auto"))
@@ -1324,6 +1339,21 @@ class SettingsDialog(QDialog):
         self.ocr_blacklist = self.bind("ocr.blacklist", QLineEdit())
         gl.addWidget(self.ocr_blacklist)
         gl.addWidget(self.bind("ocr.keep_line_breaks", QCheckBox("Keep line breaks")))
+        lay.addWidget(g)
+        g, gl = _group("Mistral OCR (cloud)")
+        gl.addWidget(_wrap_label("Mistral AI's OCR reads PDF files and images into Markdown, with tables and "
+                                 "images (Tools > OCR PDF / image). It can also read screen captures. "
+                                 "The file or capture is uploaded to Mistral's servers, so use it only for "
+                                 "content you may share."))
+        self.ocr_engine = self.bind("ocr.engine", DataCombo(
+            [("Windows OCR (built in, offline)", "windows"), ("Mistral OCR (cloud)", "mistral")]))
+        gl.addWidget(_row("Engine for screen captures:", self.ocr_engine))
+        gl.addWidget(QLabel("Mistral API key:"))
+        self.mistral_key = self.bind("ai.mistral_key", QLineEdit())
+        self.mistral_key.setEchoMode(QLineEdit.Password)
+        visit = QPushButton("Get a key")
+        visit.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://console.mistral.ai/api-keys")))
+        gl.addWidget(_row(self.mistral_key, visit))
         lay.addWidget(g)
         g, gl = _group("Output")
         gl.addWidget(self.bind("ocr.save_to_clipboard", QCheckBox("Save to clipboard")))
