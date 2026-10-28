@@ -64,6 +64,17 @@ C:\venvs\phraseforge\Scripts\python -m pytest -p no:cacheprovider  # full test s
   top"; they are saved as you type and reopen where they were. Tools > Sticky Notes lists,
   searches and deletes notes, and can import your Microsoft Sticky Notes file once.
 
+## Prompt Tower (AI context from project files)
+
+Tools > AI > **Prompt Tower** builds one prompt from many files of a project for ChatGPT, Claude,
+Gemini or coding agents. Tick files in a folder tree (`.gitignore`, `.towerignore` and folders
+like `node_modules` are skipped), add text before and after, and choose XML, Markdown or your own
+templates with a project tree. It shows a token estimate. You can copy the prompt, open it in a chat
+site, save it as a phrase, or save the whole set and insert it anywhere with
+`{#prompttower "name"}`. It is a clean-room rebuild of the workflow of the
+[Prompt Tower](https://github.com/backnotprop/prompt-tower) VS Code extension; see
+[docs/PROMPT_TOWER_SPEC.md](docs/PROMPT_TOWER_SPEC.md).
+
 ## Default hotkeys
 
 | Hotkey | Action |

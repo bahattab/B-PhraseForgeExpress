@@ -655,6 +655,27 @@ def _truthy(v) -> bool:
 _register_field_aliases()
 
 
+# ---------------------------------------------------------------- Prompt Tower
+@macro("prompttower", "AI", '{#prompttower "Saved prompt name"}',
+       "Insert a prompt saved in Prompt Tower (Tools > Prompt Tower): its text before and after "
+       "and the current contents of its files, as a ready-to-paste AI prompt.")
+def _prompttower(rt, args, opts):
+    from phraseforge import prompttower as pt
+    name = _arg(args, 0)
+    if not name:
+        raise MacroError("prompttower: name of the saved prompt missing")
+    store = getattr(rt.host, "store", None)
+    if store is None:
+        raise MacroError("prompttower: not available here")
+    s = pt.TowerStore(store).get(name)
+    if s is None:
+        raise MacroError(f'prompttower: no saved prompt named "{name}"')
+    try:
+        return pt.build_from_set(s).text
+    except OSError as e:
+        raise MacroError(f"prompttower: {e}") from e
+
+
 # ---------------------------------------------------------------- Microsoft OneNote
 @macro("onenote", "External data", '{#onenote "Notebook/Section/Page" -title -ocr}',
        "Insert the text of a OneNote page (desktop OneNote, official API). -title adds the page title; "

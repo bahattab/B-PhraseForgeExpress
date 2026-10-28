@@ -556,6 +556,7 @@ class PhraseForgeApp(QObject):
             lambda: self._open_sticky_notes(int(arg) if arg.isdigit() else None)))
         reg("new_sticky_note", lambda arg, hwnd: post(self._new_sticky_note))
         reg("sync_now", lambda arg, hwnd: post(self.sync_now))
+        reg("prompt_tower", lambda arg, hwnd: post(lambda: self.show_prompt_tower(arg)))
         reg("delete_sticky_note", lambda arg, hwnd: post(
             lambda: self.sticky_notes().delete_note(int(arg)) if arg.isdigit() else None))
         # Search files (Listary-style launcher, phraseforge/filesearch.py)
@@ -742,7 +743,7 @@ class PhraseForgeApp(QObject):
         if hasattr(self.tray, "show_statistics"):
             self.tray.show_statistics.connect(self.show_statistics)
         for sig in ("onenote_send_clipboard", "onenote_clip", "open_sticky_notes", "new_sticky_note",
-                    "file_search", "quick_note",
+                    "file_search", "quick_note", "prompt_tower",
                     "new_phrase_from_clipboard", "edit_last_phrase"):   # OneNote / Sticky Notes items
             if hasattr(self.tray, sig):
                 getattr(self.tray, sig).connect(lambda _=None, c=sig: self.on_command(c))
@@ -1450,6 +1451,25 @@ class PhraseForgeApp(QObject):
         self._file_index_timer = QTimer(interval=minutes * 60_000)
         self._file_index_timer.timeout.connect(lambda: self.file_index.building or self.file_index.build_async())
         self._file_index_timer.start()
+
+    def show_prompt_tower(self, set_name: str = ""):
+        """Prompt Tower: build an AI prompt from project files (ui/prompt_tower.py)."""
+        from phraseforge.ui.prompt_tower import PromptTowerWindow
+        w = getattr(self, "prompt_tower", None)
+        if w is None:
+            w = self.prompt_tower = PromptTowerWindow(self.store)
+            w.save_as_phrase.connect(self._prompt_to_phrase)
+        if set_name:
+            w.load_set(set_name)
+        if w.isMinimized():
+            w.showNormal()
+        _bring_to_front(w)
+        return w
+
+    def _prompt_to_phrase(self, description: str, text: str):
+        from phraseforge.models import Phrase
+        p = self.store.add_phrase(Phrase(description[:80], text, tags=["prompttower"]))
+        self.tray.notify("Prompt Tower", f'Saved as the phrase "{p.description}".')
 
     def _show_file_search(self, hwnd):
         from phraseforge.ui.file_search import FileSearchWindow

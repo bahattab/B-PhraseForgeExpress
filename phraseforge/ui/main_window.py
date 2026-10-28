@@ -729,6 +729,7 @@ class MainWindow(QMainWindow):
         ("Sticky notes", (("New sticky\nnote", "sticky_notes", "new_sticky_note"),
                           ("Sticky\nNotes", "sticky_notes", "open_sticky_notes"))),
         ("Find", (("Search\nfiles", "file_search", "file_search"),)),
+        ("AI", (("Prompt\nTower", "m_ai", "prompt_tower"),)),
     )
 
     def _build_tools_tab(self) -> None:

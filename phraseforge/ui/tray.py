@@ -25,6 +25,7 @@ class Tray(QSystemTrayIcon):
     onenote_send_clipboard = Signal()   # "Send clipboard to OneNote"
     onenote_clip = Signal()             # "Screen clip to OneNote"
     file_search = Signal()              # "Search files"
+    prompt_tower = Signal()             # "Prompt Tower" (AI prompts from project files)
     ocr_language = Signal(str)          # picked in "OCR language" (like Capture2Text's tray menu)
     quick_note = Signal()               # "New quick note" (like ONENOTEM)
     new_sticky_note = Signal()          # "New sticky note" (built-in sticky notes)
@@ -55,6 +56,7 @@ class Tray(QSystemTrayIcon):
         self.ocr_lang_menu = m.addMenu(icon("languages"), tr("OCR language"))
         self.ocr_lang_menu.menuAction().setVisible(False)
         m.addAction(icon("file_search"), tr("Search files"), self.file_search.emit)
+        m.addAction(icon("m_ai"), tr("Prompt Tower"), self.prompt_tower.emit)
         m.addSeparator()
         self.onenote_send_action = m.addAction(icon("on_send"), tr("Send clipboard to OneNote"),
                                                self.onenote_send_clipboard.emit)
