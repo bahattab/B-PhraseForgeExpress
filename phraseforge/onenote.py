@@ -27,12 +27,55 @@ DEFAULT_EXE = r"C:\Program Files\Microsoft Office\root\Office16\ONENOTE.EXE"
 HS_PAGES = 4               # HierarchyScope.hsPages
 XS_2013 = 2                # XMLSchema.xs2013
 PI_BASIC = 0               # PageInfo.piBasic
-SL_UNFILED_NOTES = 2       # SpecialLocation.slUnfiledNotesSection
+SL_UNFILED_NOTES = 1       # SpecialLocation.slUnfiledNotesSection (2 is slDefaultNotebookFolder)
+CFT_NONE, CFT_SECTION = 0, 3   # CreateFileType for OpenHierarchy
+
+# OneNote error codes (OneNote 2013 developer reference, "Error codes")
+HRESULTS = {
+    0x80042000: "The XML is not well-formed.", 0x80042001: "The XML is invalid.",
+    0x80042002: "The section could not be created.", 0x80042003: "The section could not be opened.",
+    0x80042004: "The section does not exist.", 0x80042005: "The page does not exist.",
+    0x80042006: "The file does not exist.", 0x80042007: "The image could not be inserted.",
+    0x8004200B: "The section is read-only.", 0x8004200C: "The page is read-only.",
+    0x80042014: "The object does not exist.", 0x80042015: "The notebook does not exist.",
+    0x8004201B: "The section is encrypted and locked.", 0x8004201C: "The action is disabled by a policy.",
+    0x8004201D: "OneNote has not yet synchronized content.", 0x80042023: "The action timed out.",
+    0x80042030: "A OneNote dialog is open; close it and try again.",
+}
 NPS_DEFAULT = 0            # NewPageStyle.npsDefault
 
 
 class OneNoteError(RuntimeError):
     pass
+
+
+def explain(e: Exception) -> str:
+    """Readable text for a OneNote COM error such as (-2147213308, None, (...))."""
+    hr = getattr(e, "hresult", None)
+    if hr is None and e.args and isinstance(e.args[0], int):
+        hr = e.args[0]
+    if isinstance(hr, int):
+        code = hr & 0xFFFFFFFF
+        text = HRESULTS.get(code)
+        if text:
+            return f"OneNote: {text} (0x{code:08X})"
+        return f"OneNote error 0x{code:08X}"
+    return str(e)
+
+
+def _friendly(fn):
+    """OneNote methods raise OneNoteError with a readable message instead of raw COM errors."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(*a, **kw):
+        try:
+            return fn(*a, **kw)
+        except OneNoteError:
+            raise
+        except Exception as e:
+            raise OneNoteError(explain(e)) from e
+    return wrapper
 
 
 @dataclass
@@ -273,12 +316,14 @@ class OneNote:
             return False
 
     # ---- reading
+    @_friendly
     def notebooks(self) -> list[Node]:
         return parse_hierarchy(self.app.GetHierarchy("", HS_PAGES, XS_2013))
 
     def page_xml(self, page_id: str) -> str:
         return self.app.GetPageContent(page_id, PI_BASIC, XS_2013)
 
+    @_friendly
     def page_text(self, ref: str, include_title: bool = False, nodes: list[Node] | None = None,
                   include_ocr: bool = False) -> str:
         node = find(nodes or self.notebooks(), ref, "page")
@@ -287,10 +332,28 @@ class OneNote:
         return page_text_from_xml(self.page_xml(node.id), include_title, include_ocr)[1]
 
     # ---- writing
+    @_friendly
     def quick_notes_section(self) -> str:
-        """Section ID of OneNote's Quick Notes (GetSpecialLocation returns its file path)."""
-        path = self.app.GetSpecialLocation(SL_UNFILED_NOTES)
-        return self.app.OpenHierarchy(path, "", 0)          # CreateFileType.cftNone
+        """Section ID of OneNote's Quick Notes (GetSpecialLocation returns its file path).
+        The section is created when it does not exist yet; if OneNote still cannot open it
+        (for example notebooks that are only on OneDrive), the first section is used."""
+        path = str(self.app.GetSpecialLocation(SL_UNFILED_NOTES) or "")
+        if path and not path.lower().endswith(".one"):
+            sep = "/" if "://" in path else "\\"
+            path = path.rstrip("/\\") + sep + "Quick Notes.one"
+        first_error = None
+        if path:
+            try:
+                return self.app.OpenHierarchy(path, "", CFT_SECTION)
+            except Exception as e:      # noqa: BLE001
+                first_error = e
+        for nb in self.notebooks():
+            for n in nb.walk():
+                if n.kind == "section":
+                    return n.id
+        raise OneNoteError("No OneNote section to write to. Open OneNote and create a notebook, "
+                           "or choose a page or section in Settings > OneNote."
+                           + (f" ({explain(first_error)})" if first_error else ""))
 
     def create_page(self, section_id: str, title: str, text: str = "", image_png: bytes | None = None) -> str:
         page_id = self.app.CreateNewPage(section_id, NPS_DEFAULT)
@@ -300,6 +363,7 @@ class OneNote:
     def append(self, page_id: str, text: str = "", image_png: bytes | None = None) -> None:
         self.app.UpdatePageContent(page_update_xml(page_id, text, image_png), 0, XS_2013, False)
 
+    @_friendly
     def send(self, text: str = "", image_png: bytes | None = None, target: str = "", title: str = "") -> str:
         """Send text/image to OneNote. target: page path/ID (append), section path/ID (new page),
         or "" for a new page in Quick Notes. Returns the page ID."""
@@ -316,6 +380,7 @@ class OneNote:
             raise OneNoteError("Choose a OneNote page or section (not a notebook or group).")
         return self.create_page(self.quick_notes_section(), title or _title_from(text), text, image_png)
 
+    @_friendly
     def navigate(self, object_id: str) -> None:
         self.app.NavigateTo(object_id, "", False)
 

@@ -260,3 +260,44 @@ def test_windows_auto_language():
         assert eng.last_language == "Arabic" and "مرحبا" in ar, (ar, eng.last_language)
         en = eng.ocr_png(_text_png("Hello PhraseForge 2026"), language="Auto")
         assert "Hello" in en, (en, eng.last_language)
+
+
+def test_run_in_mta_returns_results_errors_and_times_out():
+    import asyncio
+
+    async def ok():
+        return 42
+
+    async def bad():
+        raise ValueError("boom")
+
+    async def stuck():
+        await asyncio.sleep(5)
+
+    assert ocr._run_in_mta(ok) == 42
+    assert isinstance(ocr._run_in_mta(bad), ValueError)
+    err = ocr._run_in_mta(stuck, timeout=0.2)
+    assert isinstance(err, ocr.OCRError) and "did not answer" in str(err)
+
+
+@windows_ocr
+def test_windows_ocr_from_single_threaded_apartment():
+    """The worker thread becomes a single-threaded COM apartment after a OneNote call;
+    OCR on it used to hang forever (and block every later OCR / OneNote job)."""
+    import ctypes
+    import threading
+    png = _text_png("Hello PhraseForge 2026")
+    out = {}
+
+    def work():
+        ctypes.WinDLL("ole32").CoInitializeEx(None, 2)     # COINIT_APARTMENTTHREADED, like comtypes
+        try:
+            out["text"] = ocr.WindowsOCR().ocr_png(png, language="Auto")
+        except Exception as e:      # noqa: BLE001
+            out["error"] = e
+    t = threading.Thread(target=work, daemon=True)
+    t.start()
+    t.join(120)
+    assert not t.is_alive(), "OCR hung on a single-threaded apartment thread"
+    assert "error" not in out, out
+    assert "Hello" in out["text"] and "2026" in out["text"], out
