@@ -299,7 +299,7 @@ Priority: **M** must-have (core parity, or a security defect), **S** should-have
 | G-29 | Auto-update | N | M | FR-APP-05 | partial: GitHub release check + setup link | partial |
 | G-30 | SAPI, layout conversion, mouse/sound macros | N | S | FR-MAC-05 | open | open |
 | G-31 | Full UI localisation | S | M | FR-UI-02 | partial: ~1000-string Arabic table, RTL | partial |
-| G-32 | Full test suite hangs in one run (order-dependent Qt state) | M (quality) | S | FR-QA-01 | open: stalls at `test_ui.py::test_theme_icons_tray` | closed: leftover windows deleted after each test |
+| G-32 | Full test suite hangs in one run (order-dependent Qt state) | M (quality) | S | FR-QA-01 | open: stalls at `test_ui.py::test_theme_icons_tray` | partial: theme re-apply no longer re-polishes every window when nothing changed; deleting leftover windows per test was tried and reverted (it crashed the GitHub runner). On CI a single run passes (slowly); locally run it in two parts |
 | G-33 | Session awareness (lock, RDP) | N | S | FR-INP-06 | open | open |
 | G-34 | `{#http}` can reach localhost/LAN/metadata addresses (incl. via redirect) | M (sec) | S | FR-SEC-06 | open | closed: blocked by default, setting to allow |
 

@@ -54,51 +54,5 @@ def _relock_folders():
     LOCKS.clear()
 
 
-@pytest.fixture(autouse=True)
-def _destroy_leftover_widgets():
-    """Delete top-level widgets a test left behind.
-
-    Without this, hundreds of windows from earlier test files stay alive, and the
-    next app.setPalette() (theme switch) re-polishes all of them: the full suite
-    then stalls in test_ui.py::test_theme_icons_tray.
-
-    Only windows created during this test are deleted (module-scoped fixtures keep
-    theirs), and never one that still owns a running QThread: Qt aborts the whole
-    process when a running thread is destroyed."""
-    before = _top_level_ids()
-    yield
-    if before is None:
-        return
-    from PySide6.QtCore import QCoreApplication, QEvent, QThread
-    from PySide6.QtWidgets import QApplication
-    deleted = False
-    for w in QApplication.topLevelWidgets():
-        if _cpp_id(w) in before:
-            continue
-        if any(t.isRunning() for t in w.findChildren(QThread)):
-            w.hide()
-            continue
-        w.hide()
-        w.deleteLater()
-        deleted = True
-    if deleted:
-        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
-
-
-def _cpp_id(obj) -> int:
-    import shiboken6
-    return shiboken6.getCppPointer(obj)[0]
-
-
-def _top_level_ids():
-    """C++ addresses of the current top-level widgets, or None without a QApplication."""
-    if "PySide6.QtWidgets" not in sys.modules:
-        return None
-    from PySide6.QtWidgets import QApplication
-    if QApplication.instance() is None:
-        return None
-    return {_cpp_id(w) for w in QApplication.topLevelWidgets()}
-
-
 def pytest_configure(config):
     config.addinivalue_line("markers", "real_layout_default: use the app's own default layout")
