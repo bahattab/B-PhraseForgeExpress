@@ -1144,11 +1144,15 @@ class PhraseForgeApp(QObject):
         p = self.store.get_phrase(req.phrase_id)
         if not p:
             return
+        if not unlocked_for(self, p, req):
+            return
         ctx = req.context
         ctx.phrase_id, ctx.phrase_description = p.id, p.description
         # language version: chosen in the phrase menu, else the active language (Settings)
         lang = getattr(req, "language", "") or self.store.setting("phrase.active_language", "")
         p.content, p.content_format = self.store.phrase_text(p, lang)
+        if not approved_for(self, p, req):
+            return
         if "{#selection" in p.content and not ctx.selected_text:
             from phraseforge.platform import windows
             ctx.selected_text = windows.get_selected_text() or ""
@@ -1642,6 +1646,53 @@ class PhraseForgeApp(QObject):
             self.qapp.quit()
 
 
+# ---------------------------------------------------------- protection (security.py)
+# Module functions (not methods) so tests can drive _expand with a stand-in app.
+def _skipped_phrase(app, p, why: str) -> None:
+    from phraseforge.ui.i18n import tr
+    log.warning("phrase %s (%r) not run: %s", p.id, p.description, why)
+    text = tr('"{name}" was skipped: it is not approved on this PC and was started automatically.')
+    app.poster.posted.emit(lambda: app.tray.notify(tr("Phrase not run"), text.format(name=p.description)))
+
+
+def unlocked_for(app, p, req: ExpansionRequest) -> bool:
+    """A phrase in a password folder needs the password first (once per session).
+    Nothing has been typed or erased yet, so a refused unlock leaves the abbreviation."""
+    from phraseforge.security import LOCKS
+    while (locked := LOCKS.locked_folder(app.store, p.folder_id)) is not None:
+        if req.automatic:
+            log.info("phrase %s not run: folder %r is locked", p.id, locked.name)
+            return False
+        from phraseforge.ui.dialogs import ask_folder_password
+        if not app.host._ui(lambda f=locked: ask_folder_password(app.store, f)):
+            return False
+    return True
+
+
+def approved_for(app, p, req: ExpansionRequest) -> bool:
+    """Imported or synced phrases that use privileged macros need the user's OK.
+    Sets req.context.allow_privileged for the engine's run-time check."""
+    origin = app.store.quarantine_origin(p.id)
+    if not origin:
+        return True
+    from phraseforge.security import scan_privileged
+    reasons = scan_privileged(p.content)
+    req.context.allow_privileged = False
+    if not reasons:
+        return True                       # nothing privileged to block; the engine still guards
+    if req.automatic:
+        _skipped_phrase(app, p, f"unapproved {origin} phrase wants to: {', '.join(reasons)}")
+        return False
+    from phraseforge.ui import dialogs
+    answer = app.host._ui(lambda: dialogs.approve_phrase(p.description, origin, reasons))
+    if answer == dialogs.ALLOW_ALWAYS:
+        app.store.release_quarantine(p.id)
+    if answer in (dialogs.ALLOW_ONCE, dialogs.ALLOW_ALWAYS):
+        req.context.allow_privileged = True
+        return True
+    return False
+
+
 def main(argv: list[str] | None = None) -> int:
     if "--self-test" in (argv if argv is not None else sys.argv):
         from phraseforge.selftest import run
@@ -1653,6 +1704,13 @@ def main(argv: list[str] | None = None) -> int:
     qapp = QApplication(argv if argv is not None else sys.argv)
     qapp.setApplicationName("PhraseForge")
     qapp.setQuitOnLastWindowClosed(False)
+    from phraseforge.single_instance import SingleInstance, instance_name
+    argv_list = list(argv if argv is not None else sys.argv)
+    instance = SingleInstance(instance_name(str(paths.data_dir().resolve())))
+    if not instance.acquire():
+        log.info("PhraseForge is already running; handing over %s", argv_list[1:])
+        instance.forward(argv_list[1:])
+        return 0
     store = Store(paths.db_path())
     configure_logging(store)          # diagnostic mode from the start
     from phraseforge.ui.theme import apply_theme
@@ -1677,6 +1735,11 @@ def main(argv: list[str] | None = None) -> int:
     if store.setting("app.first_run_done", "0") != "1":
         from phraseforge.ui.wizard import FirstRunWizard
         FirstRunWizard(store).exec()
-    if "--minimized" not in (argv or sys.argv):
+    # a second launch (e.g. the Start-menu shortcut) brings this window to the front
+    instance.message.connect(lambda args: None if "--minimized" in args else app.show_main())
+    if "--minimized" not in argv_list:
         app.show_main()
-    return qapp.exec()
+    try:
+        return qapp.exec()
+    finally:
+        instance.release()

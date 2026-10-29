@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
 )
 
 from phraseforge.db import Store
+from phraseforge.security import LOCKS
 from phraseforge.ui.i18n import tr
 from phraseforge.ui.iconset import icon
 
@@ -1010,10 +1011,14 @@ class PhrasePopup(_Panel):
             chain = self.store.folder_chain(p.folder_id)
             if any(not f.enabled or not f.show_in_popup for f in chain):
                 return False
+            if LOCKS.is_locked(self.store, p.folder_id):     # password folder not unlocked yet
+                return False
         return self._app_ok(p)
 
     def _folder_visible(self, f) -> bool:
         if not (f.enabled and f.show_in_popup):
+            return False
+        if f.password_hash and f.id not in LOCKS:              # unlock it in the main window first
             return False
         if self.app_exe and self.hide_restricted:
             exe = self.app_exe.lower()

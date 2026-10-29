@@ -7,10 +7,14 @@ check_same_thread=False plus an RLock so the hook thread can read safely.
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
+import hmac
 import json
+import os
 import sqlite3
 import threading
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
@@ -75,6 +79,9 @@ CREATE TABLE IF NOT EXISTS phrase_versions (
   phrase_id INTEGER REFERENCES phrases(id) ON DELETE CASCADE, lang TEXT NOT NULL,
   content TEXT DEFAULT '', content_format TEXT DEFAULT 'text', modified TEXT,
   PRIMARY KEY (phrase_id, lang));
+CREATE TABLE IF NOT EXISTS phrase_quarantine (
+  phrase_id INTEGER PRIMARY KEY REFERENCES phrases(id) ON DELETE CASCADE,
+  origin TEXT DEFAULT 'imported', added TEXT);
 CREATE TABLE IF NOT EXISTS sticky_notes (
   id INTEGER PRIMARY KEY, text TEXT DEFAULT '', html TEXT DEFAULT '', color TEXT DEFAULT 'yellow',
   x INTEGER, y INTEGER, w INTEGER DEFAULT 300, h INTEGER DEFAULT 300,
@@ -133,14 +140,48 @@ def _parse_dt(v):
         return None
 
 
+# Folder passwords: salted scrypt (stdlib). Stored as "scrypt$n$r$p$salt$hash" (base64).
+# Older unsalted SHA-256 hashes (64 hex chars) still verify and are replaced with
+# scrypt on the next successful unlock (see needs_rehash).
+_SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2 ** 15, 8, 1
+
+
+def _scrypt(pw: str, salt: bytes, n: int, r: int, p: int) -> bytes:
+    return hashlib.scrypt(pw.encode("utf-8"), salt=salt, n=n, r=r, p=p, maxmem=128 * 1024 * 1024, dklen=32)
+
+
 def hash_password(pw: str) -> str:
-    return hashlib.sha256(("phraseforge:" + pw).encode()).hexdigest() if pw else ""
+    if not pw:
+        return ""
+    salt = os.urandom(16)
+    h = _scrypt(pw, salt, _SCRYPT_N, _SCRYPT_R, _SCRYPT_P)
+    b64 = lambda b: base64.b64encode(b).decode("ascii")  # noqa: E731
+    return f"scrypt${_SCRYPT_N}${_SCRYPT_R}${_SCRYPT_P}${b64(salt)}${b64(h)}"
+
+
+def verify_password(pw: str, stored: str) -> bool:
+    if not stored:
+        return True
+    if stored.startswith("scrypt$"):
+        try:
+            _, n, r, p, salt, h = stored.split("$")
+            got = _scrypt(pw, base64.b64decode(salt), int(n), int(r), int(p))
+        except (ValueError, TypeError):
+            return False
+        return hmac.compare_digest(got, base64.b64decode(h))
+    legacy = hashlib.sha256(("phraseforge:" + pw).encode()).hexdigest()
+    return hmac.compare_digest(legacy, stored)
+
+
+def needs_rehash(stored: str) -> bool:
+    return bool(stored) and not stored.startswith(f"scrypt${_SCRYPT_N}${_SCRYPT_R}${_SCRYPT_P}$")
 
 
 # API keys are encrypted with Windows DPAPI before they are written, so a copied
 # database file does not reveal them (other platforms: stored base64-encoded only).
 SECRET_SETTINGS = frozenset({"ai.openai_key", "ai.anthropic_key", "ai.openrouter_key", "ai.deepl_key",
-                             "ai.gemini_key", "ai.opencode_key", "ai.kilocode_key", "ai.mistral_key"})
+                             "ai.gemini_key", "ai.opencode_key", "ai.kilocode_key", "ai.mistral_key",
+                             "net.proxy_password"})
 _SEALED = "dpapi:"
 
 
@@ -161,10 +202,24 @@ def _unseal(value: str) -> str:
         return ""                         # sealed by another Windows user or PC
 
 
+def untrusted_import(fn):
+    """Decorator for importer entry points fn(store, ...): every phrase they create or
+    change is quarantined as "imported" (see security.py)."""
+    @functools.wraps(fn)
+    def wrapper(store, *args, **kwargs):
+        cm = getattr(store, "quarantine_writes", None)
+        if cm is None:
+            return fn(store, *args, **kwargs)
+        with cm("imported"):
+            return fn(store, *args, **kwargs)
+    return wrapper
+
+
 class Store:
     def __init__(self, path: str | Path = ":memory:"):
         self.path = str(path)
         self.lock = threading.RLock()
+        self._qlocal = threading.local()     # quarantine_writes() context, per thread
         self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
@@ -176,15 +231,29 @@ class Store:
             self.conn.execute("INSERT OR IGNORE INTO meta VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
             for k, v in DEFAULT_SETTINGS.items():
                 self.conn.execute("INSERT OR IGNORE INTO settings VALUES (?, ?)", (k, v))
-            for k in SECRET_SETTINGS:         # encrypt keys saved by older versions
-                r = self.conn.execute("SELECT value FROM settings WHERE key=?", (k,)).fetchone()
-                if r and r[0] and not r[0].startswith(_SEALED):
-                    self.conn.execute("UPDATE settings SET value=? WHERE key=?", (_seal(r[0]), k))
+        self._seal_plain_secrets()           # keys saved by older versions
         self._listeners: list = []
         self._migrate_extras()
         self._migrate_ocr_auto()
 
     # ------------------------------------------------------------ migrations
+    def _seal_plain_secrets(self) -> None:
+        """Encrypt secrets stored in plain text (older versions, or an old backup that was
+        restored), then overwrite the freed pages so the old values are gone from the file."""
+        with self.lock:
+            rows = [(k, v) for k, v in self.conn.execute("SELECT key, value FROM settings")
+                    if k in SECRET_SETTINGS and v and not v.startswith(_SEALED)]
+            if not rows:
+                return
+            self.conn.execute("PRAGMA secure_delete = ON")
+            with self.conn:
+                for k, v in rows:
+                    self.conn.execute("UPDATE settings SET value=? WHERE key=?", (_seal(v), k))
+            if self.path != ":memory:":
+                self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                self.conn.execute("VACUUM")
+                self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
     def _columns(self, table: str) -> set[str]:
         return {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
 
@@ -403,6 +472,7 @@ class Store:
             p.id = cur.lastrowid
             self._write_triggers(p)
             self._write_tags(p)
+            self._quarantine_if_untrusted(p.id)
         self._changed("phrase", p.id)
         return p
 
@@ -424,7 +494,61 @@ class Store:
                  p.output_target or "current", p.output_target_arg or "", p.id))
             self._write_triggers(p)
             self._write_tags(p)
+            self._quarantine_if_untrusted(p.id)
         self._changed("phrase", p.id)
+
+    # ------------------------------------------------------------ untrusted phrases (security.py)
+    @contextmanager
+    def quarantine_writes(self, origin: str = "imported"):
+        """Phrases created or changed on this thread inside the block are quarantined."""
+        stack = self._qlocal.__dict__.setdefault("stack", [])
+        stack.append(origin)
+        try:
+            yield
+        finally:
+            stack.pop()
+
+    def _quarantine_if_untrusted(self, phrase_id: int) -> None:
+        """Caller holds the lock (inside the write transaction)."""
+        stack = getattr(self._qlocal, "stack", None)
+        if stack and phrase_id is not None:
+            self.conn.execute("INSERT OR REPLACE INTO phrase_quarantine VALUES (?,?,?)",
+                              (phrase_id, stack[-1], _now()))
+
+    def quarantine(self, phrase_id: int, origin: str = "imported") -> None:
+        with self.lock, self.conn:
+            self.conn.execute("INSERT OR REPLACE INTO phrase_quarantine VALUES (?,?,?)", (phrase_id, origin, _now()))
+
+    def release_quarantine(self, phrase_id: int) -> None:
+        """The user approved this phrase (or edited it themselves)."""
+        with self.lock, self.conn:
+            self.conn.execute("DELETE FROM phrase_quarantine WHERE phrase_id=?", (phrase_id,))
+
+    def quarantine_origin(self, phrase_id: int | None) -> str | None:
+        """"imported" / "synced" if the phrase is not approved on this PC, else None."""
+        if phrase_id is None:
+            return None
+        with self.lock:
+            r = self.conn.execute("SELECT origin FROM phrase_quarantine WHERE phrase_id=?", (phrase_id,)).fetchone()
+        return r[0] if r else None
+
+    def quarantined(self) -> dict[int, str]:
+        with self.lock:
+            return {r[0]: r[1] for r in self.conn.execute("SELECT phrase_id, origin FROM phrase_quarantine")}
+
+    def phrase_fingerprints(self) -> dict[int, str]:
+        """phrase id -> hash of everything that runs (content of every language version)."""
+        with self.lock:
+            rows = self.conn.execute("SELECT id, content, content_format FROM phrases").fetchall()
+            versions: dict[int, list] = {}
+            for r in self.conn.execute(
+                    "SELECT phrase_id, lang, content, content_format FROM phrase_versions ORDER BY phrase_id, lang"):
+                versions.setdefault(r[0], []).append((r[1], r[2], r[3]))
+        out = {}
+        for r in rows:
+            blob = json.dumps([r[1], r[2], versions.get(r[0], [])], ensure_ascii=False)
+            out[r[0]] = hashlib.sha256(blob.encode("utf-8")).hexdigest()
+        return out
 
     def delete_phrase(self, phrase_id: int) -> None:
         with self.lock, self.conn:
@@ -670,6 +794,7 @@ class Store:
         with self.lock, self.conn:
             self.conn.execute("INSERT OR REPLACE INTO phrase_versions VALUES (?,?,?,?,?)",
                               (phrase_id, lang, content, content_format or "text", _now()))
+            self._quarantine_if_untrusted(phrase_id)
         self._changed("phrase", phrase_id)
 
     def delete_phrase_version(self, phrase_id: int, lang: str) -> None:
@@ -832,8 +957,15 @@ class Store:
             "excluded_apps": sorted(self.excluded_apps()),
         }
 
-    def restore_from(self, path: str | Path) -> None:
-        """Replace all data with a backup file, in place on the open connection."""
+    def restore_from(self, path: str | Path, untrusted: str | None = None) -> None:
+        """Replace all data with a backup file, in place on the open connection.
+
+        untrusted="synced"/"imported": the file came from elsewhere (cloud pull, a phrase file
+        the user opened). This PC's quarantine list is kept, the file's own list is ignored,
+        and every phrase the file adds or changes is quarantined (security.py). Without it
+        (restoring this PC's own backup) the backup's list is used as it is."""
+        before = self.phrase_fingerprints() if untrusted else {}
+        keep_q = self.quarantined() if untrusted else {}
         with self.lock:
             src = sqlite3.connect(str(path))
             src.backup(self.conn)
@@ -841,7 +973,16 @@ class Store:
             self.conn.execute("PRAGMA foreign_keys = ON")
             self._migrate_schema()        # a backup/sync copy may come from an older version
             self.conn.executescript(SCHEMA)
+        if untrusted:
+            after = self.phrase_fingerprints()
+            with self.lock, self.conn:
+                self.conn.execute("DELETE FROM phrase_quarantine")
+                for pid, fp in after.items():
+                    origin = keep_q.get(pid) or (untrusted if before.get(pid) != fp else None)
+                    if origin:
+                        self.conn.execute("INSERT INTO phrase_quarantine VALUES (?,?,?)", (pid, origin, _now()))
         self._migrate_extras()
+        self._seal_plain_secrets()        # an old backup may hold plain-text keys
         for kind in ("folder", "phrase", "setting", "var", "clipboard", "sticky"):
             self._changed(kind)
 

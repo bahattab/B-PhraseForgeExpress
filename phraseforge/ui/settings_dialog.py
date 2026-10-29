@@ -1390,6 +1390,8 @@ class SettingsDialog(QDialog):
         gl_note = _wrap_label("Used for AI, translation, HTTP macros and Google Drive sync. "
                               "Leave Server empty to connect directly.")
         lay.addWidget(gl_note)
+        lay.addWidget(self.bind("net.allow_private_hosts", QCheckBox(
+            "Allow HTTP macros to reach this PC and the local network (localhost, 192.168.x.x, ...)")))
         lay.addStretch(1)
         return w
 

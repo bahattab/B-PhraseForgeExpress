@@ -134,7 +134,8 @@ class TreePanel(QWidget):
     def __init__(self, store: Store, parent=None):
         super().__init__(parent)
         self.store = store
-        self.unlocked: set[int] = set()
+        from phraseforge.security import LOCKS
+        self.unlocked = LOCKS        # shared with the phrase menu and expansion (security.py)
         self.folders_only = False
         self.notes_by_id: dict = {}          # Sticky Notes shown in the tree, by note id
         self.flat = False

@@ -142,17 +142,24 @@ def apply(app: QApplication) -> None:
     # Western digits in number/date fields even on an Arabic Windows locale;
     # text itself (Arabic phrases, RTL) is unaffected.
     QLocale.setDefault(QLocale(QLocale.English, QLocale.UnitedStates))
-    app.setStyle("Fusion")
+    # Each setter below re-polishes every open window, so only call it when the value
+    # really changes (applying the theme again, e.g. after Settings, is then cheap).
+    if app.style().name().lower() != "fusion":
+        app.setStyle("Fusion")
     pal = app.palette()
     pal.setColor(QPalette.Window, QColor(PANEL))
     pal.setColor(QPalette.Base, QColor("white"))
     pal.setColor(QPalette.Highlight, QColor("#0078d7"))
     pal.setColor(QPalette.HighlightedText, QColor("white"))
     pal.setColor(QPalette.Link, QColor("#0066cc"))
-    app.setPalette(pal)
+    if pal != app.palette():
+        app.setPalette(pal)
     f = QFont("Segoe UI", 9)
-    app.setFont(f)
-    app.setStyleSheet(QSS + _arrow_images())
+    if f != app.font():
+        app.setFont(f)
+    qss = QSS + _arrow_images()
+    if qss != app.styleSheet():
+        app.setStyleSheet(qss)
 
 
 def caption(text: str):
