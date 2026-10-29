@@ -44,5 +44,25 @@ def _two_column_default(request, monkeypatch):
     monkeypatch.setattr(main_window, "DEFAULT_LAYOUT", "two")
 
 
+@pytest.fixture(autouse=True)
+def _destroy_leftover_widgets():
+    """Delete top-level widgets a test left behind.
+
+    Without this, hundreds of windows from earlier test files stay alive, and the
+    next app.setPalette() (theme switch) re-polishes all of them: the full suite
+    then stalls in test_ui.py::test_theme_icons_tray."""
+    yield
+    if "PySide6.QtWidgets" not in sys.modules:
+        return
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from PySide6.QtWidgets import QApplication
+    if QApplication.instance() is None:
+        return
+    for w in QApplication.topLevelWidgets():
+        w.hide()
+        w.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+
 def pytest_configure(config):
     config.addinivalue_line("markers", "real_layout_default: use the app's own default layout")
