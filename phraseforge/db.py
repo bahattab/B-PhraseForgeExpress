@@ -277,7 +277,8 @@ class Store:
     # ------------------------------------------------------------ change events
     def on_change(self, callback) -> None:
         """callback(kind: str, id: int|None) after any write. kind in
-        folder|phrase|setting|var|clipboard|suggestion."""
+        folder|phrase|setting|var|clipboard|suggestion|sticky|usage. May be called on any
+        thread (usage comes from the expansion thread)."""
         self._listeners.append(callback)
 
     def _changed(self, kind: str, id_: int | None = None) -> None:
@@ -586,6 +587,7 @@ class Store:
             self.conn.execute("UPDATE phrases SET use_count=use_count+1, last_used=? WHERE id=?", (now, phrase_id))
             self.conn.execute("INSERT INTO usage_log (phrase_id,used,app,chars,trigger) VALUES (?,?,?,?,?)",
                               (phrase_id, now, app, chars, trigger))
+        self._changed("usage", phrase_id)       # e.g. the main window's Last Used folder
 
     def stats(self) -> dict:
         with self.lock:

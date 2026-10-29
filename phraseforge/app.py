@@ -1607,7 +1607,7 @@ class PhraseForgeApp(QObject):
         from phraseforge.ui.main_window import MainWindow
         if self.main_window is None:
             self.main_window = MainWindow(self.store, on_test_phrase=self.test_phrase,
-                                          on_command=self.on_command)
+                                          on_command=self.on_command, tray=getattr(self, "tray", None))
         if self.main_window.isMinimized():
             self.main_window.showNormal()
         _bring_to_front(self.main_window)
