@@ -1,6 +1,6 @@
 # TEMPORARY: find which test leaves Qt in a state that crashes a later test on Windows
 # (access violation in test_sticky_notes_ui.py::test_main_window_shows_sticky_notes since #15).
-# Remove before merging.
+# Run 1 found it: test_single_instance_forwards_argv. This run checks the fix. Remove before merging.
 name: Diagnose test crash
 
 on:
@@ -14,8 +14,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [full, no_single_instance, no_locked_popup, neither, subset]
-        rep: [1, 2]
+        variant: [full, subset]
+        rep: [1, 2, 3]
     defaults:
       run:
         shell: pwsh

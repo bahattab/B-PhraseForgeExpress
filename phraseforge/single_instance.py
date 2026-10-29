@@ -15,6 +15,7 @@ import json
 import sys
 import time
 
+import shiboken6
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
@@ -27,6 +28,14 @@ def instance_name(data_dir: str) -> str:
     return "PhraseForge-" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
 
 
+def _disconnect(*signals) -> None:
+    for sig in signals:
+        try:
+            sig.disconnect()
+        except (RuntimeError, TypeError):        # nothing connected
+            pass
+
+
 class SingleInstance(QObject):
     """acquire() -> True in the first process. In a later one, forward(argv) hands over."""
     message = Signal(list)          # argv sent by a later launch
@@ -36,6 +45,7 @@ class SingleInstance(QObject):
         self.name = name
         self._mutex = None
         self._server: QLocalServer | None = None
+        self._sockets: list[QLocalSocket] = []      # connections from later launches
 
     def acquire(self) -> bool:
         if sys.platform == "win32":
@@ -47,15 +57,24 @@ class SingleInstance(QObject):
                 k32.CloseHandle(ctypes.c_void_p(self._mutex))
                 self._mutex = None
                 return False
+        if sys.platform != "win32" and self._server_alive():
+            return False                                # no mutex here: a live server means another instance
         server = QLocalServer(self)
         server.setSocketOptions(QLocalServer.UserAccessOption)
         if not server.listen(self.name):
-            QLocalServer.removeServer(self.name)        # stale socket file (non-Windows)
+            QLocalServer.removeServer(self.name)        # stale socket file (non-Windows), nobody listens
             if not server.listen(self.name):
                 return sys.platform == "win32"          # mutex is ours; run without the pipe
         server.newConnection.connect(self._on_connection)
         self._server = server
         return True
+
+    def _server_alive(self) -> bool:
+        sock = QLocalSocket()
+        sock.connectToServer(self.name)
+        alive = sock.waitForConnected(300)
+        sock.abort()
+        return alive
 
     def forward(self, argv: list[str], timeout_s: float = 3.0) -> bool:
         """Send argv to the running instance. Retries while it is still starting up."""
@@ -77,27 +96,47 @@ class SingleInstance(QObject):
 
     def _on_connection(self) -> None:
         while self._server is not None and (sock := self._server.nextPendingConnection()) is not None:
+            self._sockets.append(sock)
             buf = bytearray()
-
-            def read(s=sock, b=buf):
-                b.extend(bytes(s.readAll()))
-                if b.endswith(b"\n"):
-                    try:
-                        argv = json.loads(b.decode("utf-8"))
-                    except ValueError:
-                        argv = None
-                    if isinstance(argv, list):
-                        self.message.emit([str(a) for a in argv])
-                    s.disconnectFromServer()
-
-            sock.readyRead.connect(read)
-            sock.disconnected.connect(sock.deleteLater)
+            sock.readyRead.connect(lambda s=sock, b=buf: self._read(s, b))
+            sock.disconnected.connect(lambda s=sock: self._drop(s))
             if sock.bytesAvailable():
-                read()
+                self._read(sock, buf)
+
+    def _read(self, sock: QLocalSocket, buf: bytearray) -> None:
+        buf.extend(bytes(sock.readAll()))
+        if not buf.endswith(b"\n"):
+            return
+        try:
+            argv = json.loads(buf.decode("utf-8"))
+        except ValueError:
+            argv = None
+        if isinstance(argv, list):
+            self.message.emit([str(a) for a in argv])
+        sock.disconnectFromServer()
+
+    # A socket must not keep Python slots once it goes away: if this object is destroyed
+    # while a socket's deferred delete is still queued, the next event loop pass crashed
+    # the process (access violation on Windows, segfault on Linux).
+    def _drop(self, sock: QLocalSocket) -> None:
+        if sock in self._sockets:
+            self._sockets.remove(sock)
+            _disconnect(sock.readyRead, sock.disconnected)
+            sock.deleteLater()
 
     def release(self) -> None:
+        """Close the pipe and delete its sockets now, leaving nothing queued behind."""
+        for sock in self._sockets:
+            if shiboken6.isValid(sock):
+                _disconnect(sock.readyRead, sock.disconnected)
+                sock.abort()
+                shiboken6.delete(sock)
+        self._sockets.clear()
         if self._server is not None:
-            self._server.close()
+            if shiboken6.isValid(self._server):
+                _disconnect(self._server.newConnection)
+                self._server.close()
+                shiboken6.delete(self._server)
             self._server = None
         if self._mutex and sys.platform == "win32":
             ctypes.windll.kernel32.CloseHandle(ctypes.c_void_p(self._mutex))
