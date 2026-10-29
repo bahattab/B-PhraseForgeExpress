@@ -540,6 +540,8 @@ AR_EXTRA = {
     "Password:": "كلمة المرور:",
     "Used for AI, translation, HTTP macros and Google Drive sync. Leave Server empty to connect directly.":
         "يُستخدم للذكاء الاصطناعي والترجمة وماكرو HTTP ومزامنة Google Drive. اترك الخادم فارغًا للاتصال المباشر.",
+    "Allow HTTP macros to reach this PC and the local network (localhost, 192.168.x.x, ...)":
+        "السماح لماكرو HTTP بالوصول إلى هذا الجهاز والشبكة المحلية (localhost و192.168.x.x ...)",
 
     # Screen OCR
     "Capture2Text_CLI.exe location:": "موقع Capture2Text_CLI.exe:",

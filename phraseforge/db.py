@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
+import os
 import sqlite3
 import threading
 from datetime import datetime
@@ -133,14 +135,48 @@ def _parse_dt(v):
         return None
 
 
+# Folder passwords: salted scrypt (stdlib). Stored as "scrypt$n$r$p$salt$hash" (base64).
+# Older unsalted SHA-256 hashes (64 hex chars) still verify and are replaced with
+# scrypt on the next successful unlock (see needs_rehash).
+_SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2 ** 15, 8, 1
+
+
+def _scrypt(pw: str, salt: bytes, n: int, r: int, p: int) -> bytes:
+    return hashlib.scrypt(pw.encode("utf-8"), salt=salt, n=n, r=r, p=p, maxmem=128 * 1024 * 1024, dklen=32)
+
+
 def hash_password(pw: str) -> str:
-    return hashlib.sha256(("phraseforge:" + pw).encode()).hexdigest() if pw else ""
+    if not pw:
+        return ""
+    salt = os.urandom(16)
+    h = _scrypt(pw, salt, _SCRYPT_N, _SCRYPT_R, _SCRYPT_P)
+    b64 = lambda b: base64.b64encode(b).decode("ascii")  # noqa: E731
+    return f"scrypt${_SCRYPT_N}${_SCRYPT_R}${_SCRYPT_P}${b64(salt)}${b64(h)}"
+
+
+def verify_password(pw: str, stored: str) -> bool:
+    if not stored:
+        return True
+    if stored.startswith("scrypt$"):
+        try:
+            _, n, r, p, salt, h = stored.split("$")
+            got = _scrypt(pw, base64.b64decode(salt), int(n), int(r), int(p))
+        except (ValueError, TypeError):
+            return False
+        return hmac.compare_digest(got, base64.b64decode(h))
+    legacy = hashlib.sha256(("phraseforge:" + pw).encode()).hexdigest()
+    return hmac.compare_digest(legacy, stored)
+
+
+def needs_rehash(stored: str) -> bool:
+    return bool(stored) and not stored.startswith(f"scrypt${_SCRYPT_N}${_SCRYPT_R}${_SCRYPT_P}$")
 
 
 # API keys are encrypted with Windows DPAPI before they are written, so a copied
 # database file does not reveal them (other platforms: stored base64-encoded only).
 SECRET_SETTINGS = frozenset({"ai.openai_key", "ai.anthropic_key", "ai.openrouter_key", "ai.deepl_key",
-                             "ai.gemini_key", "ai.opencode_key", "ai.kilocode_key", "ai.mistral_key"})
+                             "ai.gemini_key", "ai.opencode_key", "ai.kilocode_key", "ai.mistral_key",
+                             "net.proxy_password"})
 _SEALED = "dpapi:"
 
 
@@ -176,15 +212,29 @@ class Store:
             self.conn.execute("INSERT OR IGNORE INTO meta VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
             for k, v in DEFAULT_SETTINGS.items():
                 self.conn.execute("INSERT OR IGNORE INTO settings VALUES (?, ?)", (k, v))
-            for k in SECRET_SETTINGS:         # encrypt keys saved by older versions
-                r = self.conn.execute("SELECT value FROM settings WHERE key=?", (k,)).fetchone()
-                if r and r[0] and not r[0].startswith(_SEALED):
-                    self.conn.execute("UPDATE settings SET value=? WHERE key=?", (_seal(r[0]), k))
+        self._seal_plain_secrets()           # keys saved by older versions
         self._listeners: list = []
         self._migrate_extras()
         self._migrate_ocr_auto()
 
     # ------------------------------------------------------------ migrations
+    def _seal_plain_secrets(self) -> None:
+        """Encrypt secrets stored in plain text (older versions, or an old backup that was
+        restored), then overwrite the freed pages so the old values are gone from the file."""
+        with self.lock:
+            rows = [(k, v) for k, v in self.conn.execute("SELECT key, value FROM settings")
+                    if k in SECRET_SETTINGS and v and not v.startswith(_SEALED)]
+            if not rows:
+                return
+            self.conn.execute("PRAGMA secure_delete = ON")
+            with self.conn:
+                for k, v in rows:
+                    self.conn.execute("UPDATE settings SET value=? WHERE key=?", (_seal(v), k))
+            if self.path != ":memory:":
+                self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                self.conn.execute("VACUUM")
+                self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
     def _columns(self, table: str) -> set[str]:
         return {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
 
@@ -842,6 +892,7 @@ class Store:
             self._migrate_schema()        # a backup/sync copy may come from an older version
             self.conn.executescript(SCHEMA)
         self._migrate_extras()
+        self._seal_plain_secrets()        # an old backup may hold plain-text keys
         for kind in ("folder", "phrase", "setting", "var", "clipboard", "sticky"):
             self._changed(kind)
 

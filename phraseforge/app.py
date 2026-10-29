@@ -1653,6 +1653,13 @@ def main(argv: list[str] | None = None) -> int:
     qapp = QApplication(argv if argv is not None else sys.argv)
     qapp.setApplicationName("PhraseForge")
     qapp.setQuitOnLastWindowClosed(False)
+    from phraseforge.single_instance import SingleInstance, instance_name
+    argv_list = list(argv if argv is not None else sys.argv)
+    instance = SingleInstance(instance_name(str(paths.data_dir().resolve())))
+    if not instance.acquire():
+        log.info("PhraseForge is already running; handing over %s", argv_list[1:])
+        instance.forward(argv_list[1:])
+        return 0
     store = Store(paths.db_path())
     configure_logging(store)          # diagnostic mode from the start
     from phraseforge.ui.theme import apply_theme
@@ -1677,6 +1684,11 @@ def main(argv: list[str] | None = None) -> int:
     if store.setting("app.first_run_done", "0") != "1":
         from phraseforge.ui.wizard import FirstRunWizard
         FirstRunWizard(store).exec()
-    if "--minimized" not in (argv or sys.argv):
+    # a second launch (e.g. the Start-menu shortcut) brings this window to the front
+    instance.message.connect(lambda args: None if "--minimized" in args else app.show_main())
+    if "--minimized" not in argv_list:
         app.show_main()
-    return qapp.exec()
+    try:
+        return qapp.exec()
+    finally:
+        instance.release()

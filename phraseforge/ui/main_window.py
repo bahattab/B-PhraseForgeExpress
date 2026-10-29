@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from phraseforge.db import Store, hash_password
+from phraseforge.db import Store, hash_password, needs_rehash, verify_password
 from phraseforge.host import Cancelled, ExpansionContext, FormField
 from phraseforge.models import Folder, Phrase, Trigger
 from phraseforge.ui import pe_style
@@ -1031,7 +1031,10 @@ class MainWindow(QMainWindow):
 
     def unlock_folder(self, f: Folder) -> bool:
         pw, ok = QInputDialog.getText(self, "Password", f'Password for "{f.name}":', QLineEdit.Password)
-        if ok and hash_password(pw) == f.password_hash:
+        if ok and verify_password(pw, f.password_hash):
+            if needs_rehash(f.password_hash):        # upgrade old SHA-256 hashes to scrypt
+                f.password_hash = hash_password(pw)
+                self.store.update_folder(f)
             self.unlocked.add(f.id)
             QTimer.singleShot(0, self.refresh_tree)
             return True
