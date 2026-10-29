@@ -1271,4 +1271,8 @@ AR_EXTRA = {
     'Click "Sign in with Google". The first time, PhraseForge helps you create the free Google sign-in client it needs (about 5 minutes).': 'اضغط «تسجيل الدخول بحساب Google». في المرة الأولى يساعدك PhraseForge على إنشاء عميل تسجيل الدخول المجاني الذي تحتاجه Google (نحو 5 دقائق).',
     'Not signed in. Click "Sign in with Google": your browser opens Google\'s login page.': 'لم تسجّل الدخول. اضغط «تسجيل الدخول بحساب Google» لتفتح صفحة دخول Google في المتصفح.',
     'Signed in to Google Drive. PhraseForge can only see the files it created.': 'تم تسجيل الدخول إلى Google Drive. لا يرى PhraseForge إلا الملفات التي أنشأها.',
+    # ---------------------------------------------------------------- Tools tab (tray items)
+    "OneNote and notes": "OneNote والملاحظات",
+    "OCR PDF / image": "قراءة نص PDF / صورة",
+    "Enabled in program": "مفعّل في البرنامج",
 }

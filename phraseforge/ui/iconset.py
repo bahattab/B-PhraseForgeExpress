@@ -66,6 +66,8 @@ ICONS: dict[str, tuple[str, str]] = {
     "settings": ("mdi6.tune-variant", GREY),
     "migration": ("mdi6.package-variant", GREY),
     "exit": ("mdi6.power", RED),
+    "pause": ("mdi6.pause-circle-outline", GREY),
+    "app_toggle": ("mdi6.application-edit-outline", GREEN),
     "database": ("mdi6.database-outline", ORANGE),
     # content tab
     "bold": ("mdi6.format-bold", GREY), "italic": ("mdi6.format-italic", GREY),

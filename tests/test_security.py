@@ -2,6 +2,7 @@
 wiped from the file, salted folder passwords, {#http} blocked from private hosts,
 single instance."""
 import hashlib
+import os
 import sqlite3
 import subprocess
 import sys
@@ -187,3 +188,48 @@ def test_single_instance_forwards_argv(tmp_path):
     again = SingleInstance(name)          # released: a new process may start
     assert again.acquire()
     again.release()
+
+
+_DESTROY_SCENARIO = r'''
+import os, subprocess, sys, time
+from PySide6.QtCore import QCoreApplication, QDeadlineTimer
+app = QCoreApplication([])
+from phraseforge.single_instance import SingleInstance
+
+def run(name, release):
+    first = SingleInstance(name)
+    assert first.acquire()
+    got = []
+    first.message.connect(got.append)
+    code = ("import sys; from PySide6.QtCore import QCoreApplication; app = QCoreApplication([]);"
+            "from phraseforge.single_instance import SingleInstance; s = SingleInstance(sys.argv[1]);"
+            "sys.exit(10 if s.acquire() else (0 if s.forward(['x']) else 11))")
+    child = subprocess.Popen([sys.executable, "-c", code, name])
+    t = QDeadlineTimer(15000)
+    while (not got or child.poll() is None) and not t.hasExpired():
+        QCoreApplication.processEvents()
+        time.sleep(0.01)
+    assert child.wait(5) == 0 and got == [["x"]], (child.returncode, got)
+    if release:
+        first.release()
+
+for i, release in enumerate((False, True)):
+    run(sys.argv[1] + str(i), release)          # the instance object is gone after this call
+    for _ in range(20):
+        QCoreApplication.processEvents()        # crashed here before the fix
+        time.sleep(0.01)
+print("ok")
+'''
+
+
+def test_destroyed_single_instance_leaves_nothing_that_crashes_later(tmp_path):
+    """Regression: after a later launch connected, deleting the SingleInstance (with or
+    without release()) left a queued socket delete with Python slots attached; the next
+    event-loop pass crashed the process. In the test suite that was an access violation
+    in an unrelated later test (test_sticky_notes_ui) on the Windows runner."""
+    from phraseforge.single_instance import instance_name
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen")
+    r = subprocess.run([sys.executable, "-c", _DESTROY_SCENARIO, instance_name(str(tmp_path))],
+                       cwd=str(Path(__file__).parent.parent), env=env, capture_output=True, text=True,
+                       timeout=90)
+    assert r.returncode == 0 and r.stdout.strip().endswith("ok"), (r.returncode, r.stdout[-500:], r.stderr[-2000:])

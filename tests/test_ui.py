@@ -407,22 +407,21 @@ def test_arabic_translation():
         i18n.set_language("en")
 
 
-def test_tools_tab_runs_app_commands(app, store):
+def test_tools_tab_without_tray_runs_app_commands(app, store):
     from phraseforge.ui.main_window import MainWindow
     sent = []
     w = MainWindow(store, on_command=sent.append)
     assert "tools" in w.ribbon.tabs
-    assert set(w.tool_buttons) == {"onenote_send_clipboard", "onenote_clip", "quick_note", "new_sticky_note",
-                                   "ocr", "open_sticky_notes", "file_search", "prompt_tower", "ocr_file",
-                                   "prompt_optimizer"}
-    for cmd, b in w.tool_buttons.items():
-        assert b.isEnabled()
-        b.click()
-    assert sent == list(w.tool_buttons)
+    w.run_tool("onenote_send_clipboard")
+    w.run_tool("settings")
+    w.run_tool("ocr_file")
+    assert sent == ["onenote_send_clipboard", "open_settings", "ocr_file"]
+    # tray-only items (sub-menus, toggles, Quit) need the tray
+    assert not w.tool_buttons["quit"].isEnabled() and not w.tool_buttons["pause"].isEnabled()
     w.close()
-    # without an app to run them (e.g. opened alone) the buttons are disabled
-    w2 = MainWindow(store)
-    assert not any(b.isEnabled() for b in w2.tool_buttons.values())
+    w2 = MainWindow(store)                       # opened alone: nothing to run commands
+    assert not w2.tool_buttons["onenote_clip"].isEnabled()
+    assert w2.tool_buttons["about"].isEnabled()  # the window's own dialog
     w2.close()
 
 

@@ -17,7 +17,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QDesktopServices, QFont, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow,
@@ -417,13 +417,15 @@ def initials_avatar(name: str) -> QPixmap:
 
 # ======================================================================= main window
 class MainWindow(QMainWindow):
+    usage_changed = Signal()          # a phrase was used (any thread) -> refresh Last Used
     SEARCH_SCOPES = (("all", "Search everywhere"), ("description", "Search in Description"),
                      ("content", "Search in Phrase content"), ("autotext", "Search in Autotext"))
 
     def __init__(self, store: Store, on_test_phrase: Callable[[int], None] | None = None,
-                 on_command: Callable[[str], None] | None = None):
+                 on_command: Callable[[str], None] | None = None, tray=None):
         super().__init__()
         self.store = store
+        self.tray = tray                    # the tray icon: the Tools tab runs its menu items
         self.on_test_phrase = on_test_phrase
         self.on_command = on_command        # app-level commands (OneNote, OCR, Search files)
         from phraseforge import __version__
@@ -506,6 +508,7 @@ class MainWindow(QMainWindow):
         self._refresh_timer.setSingleShot(True)
         self._refresh_timer.setInterval(150)
         self._refresh_timer.timeout.connect(self.refresh_tree)
+        self.usage_changed.connect(self._on_usage_changed)     # queued to the UI thread
         self._last_tree_settings = self._tree_settings()
         self.store.on_change(self._on_store_change)
 
@@ -719,32 +722,121 @@ class MainWindow(QMainWindow):
         g.add_widget(box)
         g.caption.setText("")
 
-    # (label, icon, command) per group. Grouped like OneNote's Insert tab and the
-    # ONENOTEM / onenotecapture tray tools; layout not yet checked against screenshots.
+    # The Tools tab holds the tray menu's items, grouped like the tray's sections:
+    # (group, columns of (key, label, icon)). A key is a Tray.items key; COMMANDS
+    # says how to run it when the window has no tray (opened alone, tests).
     TOOLS_TAB = (
-        ("OneNote", (("Send clipboard\nto OneNote", "on_send", "onenote_send_clipboard"),
-                     ("Screen\nclipping", "on_clip", "onenote_clip"),
-                     ("New quick\nnote", "sticky_notes", "quick_note"))),
-        ("Capture", (("Screen\nOCR", "m_ocr", "ocr"), ("OCR PDF /\nimage", "m_ocr", "ocr_file"))),
-        ("Sticky notes", (("New sticky\nnote", "sticky_notes", "new_sticky_note"),
-                          ("Sticky\nNotes", "sticky_notes", "open_sticky_notes"))),
-        ("Find", (("Search\nfiles", "file_search", "file_search"),)),
-        ("AI", (("Prompt\nTower", "m_ai", "prompt_tower"), ("Prompt\nOptimizer", "m_ai", "prompt_optimizer"))),
+        ("PhraseForge", ((("open_main", "Open PhraseForge", "phrase"),
+                          ("new_phrase_from_clipboard", "New phrase from clipboard", "new_phrase"),
+                          ("edit_last_phrase", "Edit last used phrase", "pencil")),)),
+        ("Tools", ((("popup", "Phrase menu", "search"),
+                    ("clipboard_history", "Clipboard history", "clipboard_cache"),
+                    ("ocr", "OCR to clipboard", "m_ocr")),
+                   (("ocr_language", "OCR language", "languages"),
+                    ("file_search", "Search files", "file_search"),
+                    ("prompt_tower", "Prompt Tower", "m_ai")),
+                   (("prompt_optimizer", "Prompt Optimizer", "m_ai"),
+                    ("ocr_file", "OCR PDF / image", "m_ocr")))),
+        ("OneNote and notes", ((("onenote_send_clipboard", "Send clipboard to OneNote", "on_send"),
+                                ("onenote_clip", "Screen clip to OneNote", "on_clip"),
+                                ("quick_note", "New quick note", "sticky_notes")),
+                               (("new_sticky_note", "New sticky note", "sticky_notes"),
+                                ("open_sticky_notes", "Sticky notes", "sticky_notes")))),
+        ("Program", ((("statistics", "Statistics", "statistics"),
+                      ("settings", "Settings", "settings"),
+                      ("about", "About PhraseForge", "about")),)),
+        ("Options", ((("language", "Language selection", "languages"),
+                      ("app_enabled", "Enabled in program", "app_toggle"),
+                      ("pause", "Pause", "pause")),
+                     (("quit", "Quit", "exit"),))),
     )
+    # app command for each key (used without a tray); "" = handled by the window itself
+    TOOL_COMMANDS = {
+        "open_main": "open_main", "new_phrase_from_clipboard": "new_phrase_from_clipboard",
+        "edit_last_phrase": "edit_last_phrase", "popup": "popup", "clipboard_history": "clipboard_history",
+        "ocr": "ocr", "file_search": "file_search", "prompt_tower": "prompt_tower",
+        "prompt_optimizer": "prompt_optimizer", "ocr_file": "ocr_file",
+        "onenote_send_clipboard": "onenote_send_clipboard", "onenote_clip": "onenote_clip",
+        "quick_note": "quick_note", "new_sticky_note": "new_sticky_note", "open_sticky_notes": "open_sticky_notes",
+        "settings": "open_settings", "statistics": "", "about": "",
+    }
+    TOOL_MENUS = ("ocr_language", "language")          # open the tray's sub-menu
+    TOOL_TOGGLES = ("app_enabled", "pause")            # checkable, mirror the tray item
 
     def _build_tools_tab(self) -> None:
         t = self.ribbon.add_tab("tools", "Tools")
         self.tool_buttons: dict[str, QToolButton] = {}
-        for group, items in self.TOOLS_TAB:
+        tray_items = getattr(self.tray, "items", {}) if self.tray is not None else {}
+        for group, columns in self.TOOLS_TAB:
             g = t.add_group(group)
-            for label, icon_name, cmd in items:
-                b = g.add_large(label, icon_name, lambda c=cmd: self.run_tool(c))
-                b.setEnabled(self.on_command is not None)
-                self.tool_buttons[cmd] = b
+            for column in columns:
+                col = g.add_column()
+                for key, label, icon_name in column:
+                    act = tray_items.get(key)
+                    if key in self.TOOL_MENUS:
+                        menu = act.menu() if act is not None else None
+                        b = col.add_small(label, icon_name, menu=menu, split=False)
+                        b.setEnabled(menu is not None)
+                    else:
+                        b = col.add_small(label, icon_name, lambda k=key: self.run_tool(k))
+                        if key in self.TOOL_TOGGLES:
+                            b.setCheckable(True)
+                            if act is not None:
+                                b.setChecked(act.isChecked())
+                                act.toggled.connect(b.setChecked)
+                        b.setEnabled(self._tool_available(key))
+                    self.tool_buttons[key] = b
+        self.ribbon.tab_changed.connect(lambda k: k == "tools" and self.refresh_tools())
+        self.refresh_tools()
 
-    def run_tool(self, cmd: str) -> None:
-        if self.on_command is not None:
+    def _tool_available(self, key: str) -> bool:
+        if self.tray is not None and key in getattr(self.tray, "items", {}):
+            return True
+        cmd = self.TOOL_COMMANDS.get(key)
+        if cmd == "":
+            return True                                     # Statistics / About: the window's own
+        return bool(cmd) and self.on_command is not None
+
+    def run_tool(self, key: str) -> None:
+        """Run a Tools tab item exactly like the same item in the tray menu."""
+        act = getattr(self.tray, "items", {}).get(key) if self.tray is not None else None
+        if act is not None:
+            if key in self.TOOL_TOGGLES and not act.isEnabled():
+                return
+            act.trigger()
+            if key in self.TOOL_TOGGLES:       # keep the button in step even if nothing changed
+                self.tool_buttons[key].setChecked(act.isChecked())
+            return
+        cmd = self.TOOL_COMMANDS.get(key)
+        if cmd == "" and key == "statistics":
+            self.show_stats()
+        elif cmd == "" and key == "about":
+            self.about()
+        elif cmd and self.on_command is not None:
             self.on_command(cmd)
+
+    def refresh_tools(self) -> None:
+        """Update the items that change: "Enabled in <program>", OCR languages, Statistics."""
+        tray = self.tray
+        if tray is None or not hasattr(self, "tool_buttons"):
+            return
+        try:
+            tray.refresh()
+        except Exception:
+            return
+        items = tray.items
+        b = self.tool_buttons.get("app_enabled")
+        act = items.get("app_enabled")
+        if b is not None and act is not None:
+            label = act.text() if act.isVisible() and act.text() else tr("Enabled in program")
+            b.setText(label)
+            b.setEnabled(act.isVisible())
+            b.setChecked(act.isChecked())
+        for key in ("ocr_language", "statistics", "onenote_send_clipboard", "onenote_clip"):
+            if key in items and key in self.tool_buttons:
+                self.tool_buttons[key].setEnabled(items[key].isVisible())
+        if "pause" in items and "pause" in self.tool_buttons:
+            self.tool_buttons["pause"].setChecked(items["pause"].isChecked())
 
     def _build_help_tab(self) -> None:
         t = self.ribbon.add_tab("help", "Help")
@@ -926,6 +1018,10 @@ class MainWindow(QMainWindow):
         return tuple(self.store.setting(k, "") for k in self.TREE_SETTINGS)
 
     def _on_store_change(self, kind: str, _id) -> None:
+        if kind == "usage":
+            # recorded on the expansion thread: a signal brings it to the UI thread
+            self.usage_changed.emit()
+            return
         if kind in ("folder", "phrase", "clipboard", "sticky"):
             self._refresh_timer.start()
         elif kind == "setting":
@@ -934,6 +1030,12 @@ class MainWindow(QMainWindow):
             if cur != getattr(self, "_last_tree_settings", None):
                 self._last_tree_settings = cur
                 self._refresh_timer.start()
+
+    def _on_usage_changed(self) -> None:
+        """A phrase was used: Last Used (and use counts) changed. Rebuild unless the user
+        is editing a phrase, so a refresh never takes the selection away while typing."""
+        if self.store.setting("features.last_used_folder", "1") == "1":
+            self._refresh_timer.start()
 
     def refresh_tree(self) -> None:
         if getattr(self.store, "closed", False):   # a queued refresh after the store was closed
@@ -2268,6 +2370,12 @@ class MainWindow(QMainWindow):
                 t.setItem(i, j, QTableWidgetItem(str(v)))
         lay.addWidget(t)
         dlg.exec()
+
+    def changeEvent(self, e):  # noqa: N802
+        super().changeEvent(e)
+        # coming back from another program: "Enabled in <program>" names that program
+        if e.type() == QEvent.ActivationChange and self.isActiveWindow():
+            self.refresh_tools()
 
     def closeEvent(self, e):  # noqa: N802
         if not self.save_current():
