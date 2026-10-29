@@ -1,6 +1,6 @@
 ; Inno Setup 6 script for PhraseForge.
 ; Build the PyInstaller folder first (dist\B-PhraseForgeExpress), then:
-;   iscc /DAppVersion=0.5.4 packaging\installer.iss
+;   iscc /DAppVersion=0.5.5 packaging\installer.iss
 ; Output: dist\B-PhraseForgeExpress-Setup-<version>.exe
 
 #ifndef AppVersion
