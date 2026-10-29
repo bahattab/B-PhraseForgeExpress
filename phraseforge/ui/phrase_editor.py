@@ -725,6 +725,8 @@ class PhraseEditor(QWidget):
                 if old.get(lang) != (text, fmt):
                     self.store.set_phrase_version(p.id, lang, text, fmt)
             self._deleted_versions = set()
+        if hasattr(self.store, "release_quarantine"):
+            self.store.release_quarantine(p.id)   # edited and saved here: the user has seen it
         self.dirty = False
         self.saved.emit(p.id)
         return True

@@ -7,12 +7,14 @@ check_same_thread=False plus an RLock so the hook thread can read safely.
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
 import hmac
 import json
 import os
 import sqlite3
 import threading
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
@@ -77,6 +79,9 @@ CREATE TABLE IF NOT EXISTS phrase_versions (
   phrase_id INTEGER REFERENCES phrases(id) ON DELETE CASCADE, lang TEXT NOT NULL,
   content TEXT DEFAULT '', content_format TEXT DEFAULT 'text', modified TEXT,
   PRIMARY KEY (phrase_id, lang));
+CREATE TABLE IF NOT EXISTS phrase_quarantine (
+  phrase_id INTEGER PRIMARY KEY REFERENCES phrases(id) ON DELETE CASCADE,
+  origin TEXT DEFAULT 'imported', added TEXT);
 CREATE TABLE IF NOT EXISTS sticky_notes (
   id INTEGER PRIMARY KEY, text TEXT DEFAULT '', html TEXT DEFAULT '', color TEXT DEFAULT 'yellow',
   x INTEGER, y INTEGER, w INTEGER DEFAULT 300, h INTEGER DEFAULT 300,
@@ -197,10 +202,24 @@ def _unseal(value: str) -> str:
         return ""                         # sealed by another Windows user or PC
 
 
+def untrusted_import(fn):
+    """Decorator for importer entry points fn(store, ...): every phrase they create or
+    change is quarantined as "imported" (see security.py)."""
+    @functools.wraps(fn)
+    def wrapper(store, *args, **kwargs):
+        cm = getattr(store, "quarantine_writes", None)
+        if cm is None:
+            return fn(store, *args, **kwargs)
+        with cm("imported"):
+            return fn(store, *args, **kwargs)
+    return wrapper
+
+
 class Store:
     def __init__(self, path: str | Path = ":memory:"):
         self.path = str(path)
         self.lock = threading.RLock()
+        self._qlocal = threading.local()     # quarantine_writes() context, per thread
         self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
@@ -453,6 +472,7 @@ class Store:
             p.id = cur.lastrowid
             self._write_triggers(p)
             self._write_tags(p)
+            self._quarantine_if_untrusted(p.id)
         self._changed("phrase", p.id)
         return p
 
@@ -474,7 +494,61 @@ class Store:
                  p.output_target or "current", p.output_target_arg or "", p.id))
             self._write_triggers(p)
             self._write_tags(p)
+            self._quarantine_if_untrusted(p.id)
         self._changed("phrase", p.id)
+
+    # ------------------------------------------------------------ untrusted phrases (security.py)
+    @contextmanager
+    def quarantine_writes(self, origin: str = "imported"):
+        """Phrases created or changed on this thread inside the block are quarantined."""
+        stack = self._qlocal.__dict__.setdefault("stack", [])
+        stack.append(origin)
+        try:
+            yield
+        finally:
+            stack.pop()
+
+    def _quarantine_if_untrusted(self, phrase_id: int) -> None:
+        """Caller holds the lock (inside the write transaction)."""
+        stack = getattr(self._qlocal, "stack", None)
+        if stack and phrase_id is not None:
+            self.conn.execute("INSERT OR REPLACE INTO phrase_quarantine VALUES (?,?,?)",
+                              (phrase_id, stack[-1], _now()))
+
+    def quarantine(self, phrase_id: int, origin: str = "imported") -> None:
+        with self.lock, self.conn:
+            self.conn.execute("INSERT OR REPLACE INTO phrase_quarantine VALUES (?,?,?)", (phrase_id, origin, _now()))
+
+    def release_quarantine(self, phrase_id: int) -> None:
+        """The user approved this phrase (or edited it themselves)."""
+        with self.lock, self.conn:
+            self.conn.execute("DELETE FROM phrase_quarantine WHERE phrase_id=?", (phrase_id,))
+
+    def quarantine_origin(self, phrase_id: int | None) -> str | None:
+        """"imported" / "synced" if the phrase is not approved on this PC, else None."""
+        if phrase_id is None:
+            return None
+        with self.lock:
+            r = self.conn.execute("SELECT origin FROM phrase_quarantine WHERE phrase_id=?", (phrase_id,)).fetchone()
+        return r[0] if r else None
+
+    def quarantined(self) -> dict[int, str]:
+        with self.lock:
+            return {r[0]: r[1] for r in self.conn.execute("SELECT phrase_id, origin FROM phrase_quarantine")}
+
+    def phrase_fingerprints(self) -> dict[int, str]:
+        """phrase id -> hash of everything that runs (content of every language version)."""
+        with self.lock:
+            rows = self.conn.execute("SELECT id, content, content_format FROM phrases").fetchall()
+            versions: dict[int, list] = {}
+            for r in self.conn.execute(
+                    "SELECT phrase_id, lang, content, content_format FROM phrase_versions ORDER BY phrase_id, lang"):
+                versions.setdefault(r[0], []).append((r[1], r[2], r[3]))
+        out = {}
+        for r in rows:
+            blob = json.dumps([r[1], r[2], versions.get(r[0], [])], ensure_ascii=False)
+            out[r[0]] = hashlib.sha256(blob.encode("utf-8")).hexdigest()
+        return out
 
     def delete_phrase(self, phrase_id: int) -> None:
         with self.lock, self.conn:
@@ -720,6 +794,7 @@ class Store:
         with self.lock, self.conn:
             self.conn.execute("INSERT OR REPLACE INTO phrase_versions VALUES (?,?,?,?,?)",
                               (phrase_id, lang, content, content_format or "text", _now()))
+            self._quarantine_if_untrusted(phrase_id)
         self._changed("phrase", phrase_id)
 
     def delete_phrase_version(self, phrase_id: int, lang: str) -> None:
@@ -882,8 +957,15 @@ class Store:
             "excluded_apps": sorted(self.excluded_apps()),
         }
 
-    def restore_from(self, path: str | Path) -> None:
-        """Replace all data with a backup file, in place on the open connection."""
+    def restore_from(self, path: str | Path, untrusted: str | None = None) -> None:
+        """Replace all data with a backup file, in place on the open connection.
+
+        untrusted="synced"/"imported": the file came from elsewhere (cloud pull, a phrase file
+        the user opened). This PC's quarantine list is kept, the file's own list is ignored,
+        and every phrase the file adds or changes is quarantined (security.py). Without it
+        (restoring this PC's own backup) the backup's list is used as it is."""
+        before = self.phrase_fingerprints() if untrusted else {}
+        keep_q = self.quarantined() if untrusted else {}
         with self.lock:
             src = sqlite3.connect(str(path))
             src.backup(self.conn)
@@ -891,6 +973,14 @@ class Store:
             self.conn.execute("PRAGMA foreign_keys = ON")
             self._migrate_schema()        # a backup/sync copy may come from an older version
             self.conn.executescript(SCHEMA)
+        if untrusted:
+            after = self.phrase_fingerprints()
+            with self.lock, self.conn:
+                self.conn.execute("DELETE FROM phrase_quarantine")
+                for pid, fp in after.items():
+                    origin = keep_q.get(pid) or (untrusted if before.get(pid) != fp else None)
+                    if origin:
+                        self.conn.execute("INSERT INTO phrase_quarantine VALUES (?,?,?)", (pid, origin, _now()))
         self._migrate_extras()
         self._seal_plain_secrets()        # an old backup may hold plain-text keys
         for kind in ("folder", "phrase", "setting", "var", "clipboard", "sticky"):

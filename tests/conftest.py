@@ -45,6 +45,16 @@ def _two_column_default(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _relock_folders():
+    """Folders unlocked in one test must not stay unlocked in the next (security.LOCKS
+    is process-wide, and in-memory stores reuse folder ids)."""
+    from phraseforge.security import LOCKS
+    LOCKS.clear()
+    yield
+    LOCKS.clear()
+
+
+@pytest.fixture(autouse=True)
 def _destroy_leftover_widgets():
     """Delete top-level widgets a test left behind.
 

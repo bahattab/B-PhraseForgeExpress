@@ -309,8 +309,12 @@ class TriggerManager:
         self._time_triggers = tt
         self._focus_triggers = st.triggers(TriggerKind.APP_FOCUS)
         smart = []
+        from phraseforge.security import protected
         for t in st.triggers(TriggerKind.SMARTCOMPLETE):
-            target = smart_target(t, st.get_phrase(t.phrase_id))
+            p = st.get_phrase(t.phrase_id)
+            if p is not None and protected(st, p.folder_id):
+                continue     # the tip would show text from a password-protected folder
+            target = smart_target(t, p)
             if len(target) > self._opt["min_chars"]:
                 smart.append((t, target))
         self._smart = smart
@@ -391,6 +395,12 @@ class TriggerManager:
             phrase_id=phrase_id, erase_chars=erase, trailing_delimiter=trailing,
             context=ExpansionContext(phrase_id=phrase_id, typed_abbreviation=typed, app_exe=exe,
                                      window_title=title, regex_groups=groups))
+
+    def _automatic(self, phrase_id: int, exe: str, title: str) -> ExpansionRequest:
+        """Request for a trigger that fires on its own (time, window focus)."""
+        req = self._request(phrase_id, exe=exe, title=title)
+        req.automatic = True
+        return req
 
     def _restricted(self, exe: str) -> bool:
         """Expert Options: "Execute only in specific programs"."""
@@ -685,6 +695,7 @@ class TriggerManager:
             if hit and self.store.phrase_allowed_in_app(t.phrase_id, exe):
                 req = self._request(t.phrase_id, groups=groups, exe=exe, title=title)
                 req.context.selected_text = text
+                req.automatic = True
                 self._emit(self.on_expand, req)
                 break
 
@@ -732,10 +743,10 @@ class TriggerManager:
                 exe, title = self._fg()
                 for pid in self.check_time(datetime.now()):
                     if self.store.phrase_allowed_in_app(pid, exe):
-                        self._emit(self.on_expand, self._request(pid, exe=exe, title=title))
+                        self._emit(self.on_expand, self._automatic(pid, exe, title))
                 if self._focus_triggers:
                     for pid in self.check_focus(exe, title):
                         if not self._restricted(exe):
-                            self._emit(self.on_expand, self._request(pid, exe=exe, title=title))
+                            self._emit(self.on_expand, self._automatic(pid, exe, title))
             except Exception:
                 log.exception("trigger poll failed")

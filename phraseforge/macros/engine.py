@@ -292,6 +292,10 @@ class MacroEngine:
         fn = entry[1]
         args = [self.eval_token(t, rt) for t in call.args]
         opts = {k: self.eval_token(v, rt) for k, v in call.opts.items()}
+        if not getattr(rt.ctx, "allow_privileged", True):
+            from phraseforge.security import privileged_reason
+            if privileged_reason(entry[0].name, args, opts):
+                return [TextAction(f"[{call.name}: blocked, phrase not approved on this PC]")]
         try:
             res = fn(rt, args, opts)
         except Cancelled:

@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
-from phraseforge.db import Store
+from phraseforge.db import Store, untrusted_import
 from phraseforge.models import Folder, Phrase
 from phraseforge.onenote import Node, OneNote, find, page_text_from_xml
 
@@ -29,6 +29,7 @@ def _count_pages(node: Node) -> int:
     return sum(1 for n in node.walk() if n.kind == "page")
 
 
+@untrusted_import
 def import_nodes(store: Store, client: OneNote, refs: list[str], include_ocr: bool = False,
                  progress: Callable[[int, int, str], bool | None] | None = None,
                  skip_empty: bool = True, into_folder_id: int | None = None) -> OneNoteImportReport:

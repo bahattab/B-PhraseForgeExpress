@@ -269,8 +269,8 @@ Priority: **M** must-have (core parity, or a security defect), **S** should-have
 | ID | Gap | Priority | Complexity | FR | 0.5.4 | After PR |
 |---|---|---|---|---|---|---|
 | G-01 | Secrets stored in plain text and uploaded by sync | M (sec) | S | FR-SEC-01..03 | partial: 8 AI keys DPAPI-sealed and kept out of sync (`db.py` SECRET_SETTINGS); `net.proxy_password` plain and synced | closed: proxy password sealed and device-only; plain values from old versions or restored backups are sealed and wiped from the file |
-| G-02 | Macro trust model for imported/synced phrases (`{#run}`, `{#http}`, `{#sql}`, `{#mail -send}`; time/app triggers) | M (sec) | M | FR-SEC-04/05 | open | open (P2) |
-| G-03 | Folder password: unsalted SHA-256, UI-only gate | M | M | FR-SEC-07/08 | open (`db.py` hash_password) | partial: salted scrypt, old hashes upgraded on unlock; enforcement at expansion (FR-SEC-08) still open |
+| G-02 | Macro trust model for imported/synced phrases (`{#run}`, `{#http}`, `{#sql}`, `{#mail -send}`; time/app triggers) | M (sec) | M | FR-SEC-04/05 | open | closed: imported phrases and phrases a sync pull adds or changes are quarantined per PC; their privileged macros (`run, open, web, http, mail -send, outputfile, dbquery, setphrase`, Win-key chords) ask Run once / Always allow / Do not run, automatic triggers skip them; engine blocks them at run time, also through `{#insert}` (`security.py`) |
+| G-03 | Folder password: unsalted SHA-256, UI-only gate | M | M | FR-SEC-07/08 | open (`db.py` hash_password) | closed: salted scrypt (old hashes upgraded on unlock); locked folders ask for the password before any expansion, are hidden from the phrase menu and its search, never feed SmartComplete, and cannot be read through `{#insert}`; one unlock per session counts everywhere (`security.LOCKS`) |
 | G-04 | Encryption at rest for the phrase DB | S | M | FR-SEC-09 | open | open |
 | G-05 | Hook callback runs Python under the GIL | M | M | FR-INP-01..03 | open (`keyboard_hook.py`) | open (P1) |
 | G-06 | UIPI / elevated-window handling | M | S | FR-INP-04 | open | open (P1) |

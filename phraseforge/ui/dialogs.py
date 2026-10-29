@@ -268,3 +268,41 @@ class ConfirmTip(QDialog):
 
 def confirm_expand(description: str) -> bool:
     return _exec(ConfirmTip(description))
+
+
+def ask_folder_password(store, folder, parent=None) -> bool:
+    """Ask for a locked folder's password; True once it is unlocked (security.LOCKS)."""
+    from phraseforge.security import LOCKS
+    from PySide6.QtWidgets import QInputDialog
+    pw, ok = QInputDialog.getText(parent, tr("Password"), tr('Password for "{name}":').format(name=folder.name),
+                                  QLineEdit.Password)
+    if not ok:
+        return False
+    if LOCKS.try_unlock(store, folder, pw):
+        return True
+    QMessageBox.warning(parent, tr("Password"), tr("Wrong password."))
+    return False
+
+
+ALLOW_ONCE, ALLOW_ALWAYS = "once", "always"
+
+
+def approve_phrase(description: str, origin: str, reasons: list[str]) -> str:
+    """Ask before an imported/synced phrase runs privileged macros.
+    Returns ALLOW_ONCE, ALLOW_ALWAYS or "" (do not run)."""
+    where = tr("was imported") if origin == "imported" else tr("came from cloud sync")
+    box = QMessageBox()
+    box.setIcon(QMessageBox.Warning)
+    box.setWindowTitle(tr("Run this phrase?"))
+    box.setText(tr('The phrase "{name}" {where} and has not been approved on this PC.').format(
+        name=description, where=where))
+    box.setInformativeText(tr("It wants to:") + "\n• " + "\n• ".join(tr(r) for r in reasons)
+                           + "\n\n" + tr("Only allow it if you trust where it came from."))
+    once = box.addButton(tr("Run once"), QMessageBox.AcceptRole)
+    always = box.addButton(tr("Always allow"), QMessageBox.AcceptRole)
+    cancel = box.addButton(tr("Do not run"), QMessageBox.RejectRole)
+    box.setDefaultButton(cancel)
+    box.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+    box.exec()
+    clicked = box.clickedButton()
+    return ALLOW_ONCE if clicked is once else ALLOW_ALWAYS if clicked is always else ""
