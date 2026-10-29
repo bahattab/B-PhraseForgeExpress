@@ -1,0 +1,46 @@
+# TEMPORARY: find which test leaves Qt in a state that crashes a later test on Windows
+# (access violation in test_sticky_notes_ui.py::test_main_window_shows_sticky_notes since #15).
+# Remove before merging.
+name: Diagnose test crash
+
+on:
+  push:
+    branches: [main-ms7p1h]
+
+jobs:
+  pytest:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [full, no_single_instance, no_locked_popup, neither, subset]
+        rep: [1, 2]
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: python -m pip install -r requirements-build.txt
+      - name: pytest (${{ matrix.variant }})
+        env:
+          PHRASEFORGE_HOME: ${{ runner.temp }}\pf-tests
+          PYTHONFAULTHANDLER: "1"
+        run: |
+          $single = "tests/test_security.py::test_single_instance_forwards_argv"
+          $popup = "tests/test_protection.py::test_phrase_menu_hides_locked_folders_until_unlocked"
+          switch ("${{ matrix.variant }}") {
+            "full"               { $a = @() }
+            "no_single_instance" { $a = @("--deselect", $single) }
+            "no_locked_popup"    { $a = @("--deselect", $popup) }
+            "neither"            { $a = @("--deselect", $single, "--deselect", $popup) }
+            "subset"             { $a = @("tests/test_protection.py", "tests/test_quick_note.py", "tests/test_rtf.py",
+                                          "tests/test_screen_geometry.py", "tests/test_security.py",
+                                          "tests/test_settings_dialog.py", "tests/test_sticky_notes_ui.py") }
+          }
+          python -m pytest -q -p no:cacheprovider @a
