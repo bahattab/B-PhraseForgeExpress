@@ -1132,13 +1132,10 @@ class MainWindow(QMainWindow):
         return None
 
     def unlock_folder(self, f: Folder) -> bool:
-        pw, ok = QInputDialog.getText(self, "Password", f'Password for "{f.name}":', QLineEdit.Password)
-        if ok and hash_password(pw) == f.password_hash:
-            self.unlocked.add(f.id)
+        from phraseforge.ui.dialogs import ask_folder_password
+        if ask_folder_password(self.store, f, self):     # unlocks for the menu and expansion too
             QTimer.singleShot(0, self.refresh_tree)
             return True
-        if ok:
-            QMessageBox.warning(self, "Password", "Wrong password.")
         return False
 
     # ================================================================= status / actions
@@ -1924,7 +1921,7 @@ class MainWindow(QMainWindow):
             if QMessageBox.question(self, "Open", "Replace all current phrases with this phrase file?") \
                     != QMessageBox.Yes:
                 return
-            self.store.restore_from(path)
+            self.store.restore_from(path, untrusted="imported")
             self.refresh_tree()
         else:
             self._import_path(path)

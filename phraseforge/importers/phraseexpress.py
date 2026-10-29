@@ -27,7 +27,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from phraseforge.db import Store
+from phraseforge.db import Store, untrusted_import
 from phraseforge.models import Folder, Phrase, Trigger, TriggerKind
 
 ENCRYPTED_SUFFIXES = (".pexdb", ".pexdbhub", ".pxp")
@@ -140,6 +140,7 @@ def read_rows(path: str | Path) -> list[dict[str, str]]:
     return [{f: (row[i] if i < len(row) else "") for i, f in cols.items()} for row in rows]
 
 
+@untrusted_import
 def import_csv(store: Store, path: str | Path, folder_name: str | None = None) -> ExchangeReport:
     """Import a CSV exported from PhraseExpress (or a similar spreadsheet)."""
     from phraseforge.io_formats import ensure_folder_path
@@ -302,6 +303,7 @@ def export_any(store: Store, path: str | Path, kind: str, folder_id: int | None 
     return fn(store, path, folder_id, language)
 
 
+@untrusted_import
 def import_any(store: Store, path: str | Path) -> ExchangeReport:
     """PhraseExpress CSV/TXT import; encrypted PhraseExpress databases raise EncryptedPhraseFile."""
     p = Path(path)

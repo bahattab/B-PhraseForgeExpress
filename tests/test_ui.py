@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QApplication
 
-from phraseforge.db import Store, hash_password
+from phraseforge.db import Store, hash_password, verify_password
 from phraseforge.host import FormField
 from phraseforge.models import Folder, OutputMode, Phrase, Trigger, TriggerKind
 
@@ -185,7 +185,7 @@ def test_folder_dialog_apply(app):
     d.inc.setText("winword.exe")
     d.pw.setText("secret")
     f = d.apply()
-    assert f.apps_include == "winword.exe" and f.password_hash == hash_password("secret")
+    assert f.apps_include == "winword.exe" and verify_password("secret", f.password_hash)
 
 
 def test_main_dialogs(app, store, tmp_path):

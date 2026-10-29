@@ -279,6 +279,29 @@ AR_EXTRA = {
     "no password": "بلا كلمة مرور",
     "leave empty to keep": "اتركه فارغًا للإبقاء عليه",
     "Wrong password.": "كلمة مرور خاطئة.",
+    'Password for "{name}":': 'كلمة مرور "{name}":',
+    "was imported": "تم استيرادها",
+    "came from cloud sync": "وصلت عبر المزامنة السحابية",
+    "Run this phrase?": "تشغيل هذه العبارة؟",
+    'The phrase "{name}" {where} and has not been approved on this PC.':
+        'العبارة "{name}" {where} ولم تتم الموافقة عليها على هذا الجهاز.',
+    "It wants to:": "تريد أن:",
+    "Only allow it if you trust where it came from.": "لا تسمح بها إلا إذا كنت تثق بمصدرها.",
+    "Run once": "تشغيل مرة واحدة",
+    "Always allow": "السماح دائمًا",
+    "Do not run": "عدم التشغيل",
+    "start programs": "تشغّل برامج",
+    "open files, folders or web pages": "تفتح ملفات أو مجلدات أو صفحات ويب",
+    "open web pages": "تفتح صفحات ويب",
+    "send or fetch data over the internet": "ترسل أو تجلب بيانات عبر الإنترنت",
+    "create or send e-mail": "تنشئ رسائل بريد أو ترسلها",
+    "write files": "تكتب ملفات",
+    "query databases": "تستعلم قواعد بيانات",
+    "create or change phrases": "تنشئ عبارات أو تغيّرها",
+    "press Windows-key shortcuts": "تضغط اختصارات مفتاح Windows",
+    "Phrase not run": "لم يتم تشغيل العبارة",
+    '"{name}" was skipped: it is not approved on this PC and was started automatically.':
+        'تم تخطي "{name}": لم تتم الموافقة عليها على هذا الجهاز وبدأت تلقائيًا.',
     "Restrict to": "قصر على",
     "Exclude from": "استثناء من",
     "Only in programs:": "فقط في البرامج:",
@@ -540,6 +563,8 @@ AR_EXTRA = {
     "Password:": "كلمة المرور:",
     "Used for AI, translation, HTTP macros and Google Drive sync. Leave Server empty to connect directly.":
         "يُستخدم للذكاء الاصطناعي والترجمة وماكرو HTTP ومزامنة Google Drive. اترك الخادم فارغًا للاتصال المباشر.",
+    "Allow HTTP macros to reach this PC and the local network (localhost, 192.168.x.x, ...)":
+        "السماح لماكرو HTTP بالوصول إلى هذا الجهاز والشبكة المحلية (localhost و192.168.x.x ...)",
 
     # Screen OCR
     "Capture2Text_CLI.exe location:": "موقع Capture2Text_CLI.exe:",

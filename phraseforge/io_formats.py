@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 
 from phraseforge import paths
-from phraseforge.db import Store, json_dumps
+from phraseforge.db import Store, json_dumps, untrusted_import
 from phraseforge.models import AutotextMode, Folder, OutputMode, Phrase, Trigger, TriggerKind
 
 _FOLDER_FIELDS = ("name", "parent_id", "sort", "enabled", "apps_include", "apps_exclude", "password_hash",
@@ -33,6 +33,7 @@ def export_json(store: Store, path: str | Path) -> int:
     return len(d["phrases"])
 
 
+@untrusted_import
 def import_dict(store: Store, d: dict, into_folder_id: int | None = None) -> dict[str, int]:
     """Import an export_dict() snapshot. Folder ids are remapped; new folders are created under
     into_folder_id (top level when None). Returns counts."""
@@ -78,6 +79,7 @@ def import_dict(store: Store, d: dict, into_folder_id: int | None = None) -> dic
     return {"folders": len(id_map) - 1, "phrases": n}
 
 
+@untrusted_import
 def import_json(store: Store, path: str | Path, into_folder_id: int | None = None) -> dict[str, int]:
     return import_dict(store, json.loads(Path(path).read_text(encoding="utf-8")), into_folder_id)
 
@@ -111,6 +113,7 @@ def export_csv(store: Store, path: str | Path) -> int:
     return len(phrases)
 
 
+@untrusted_import
 def import_csv(store: Store, path: str | Path, into_folder_id: int | None = None) -> int:
     n = 0
     with open(path, newline="", encoding="utf-8-sig") as fh:
@@ -158,6 +161,7 @@ def export_text_folder(store: Store, directory: str | Path) -> int:
     return n
 
 
+@untrusted_import
 def import_text_folder(store: Store, directory: str | Path, into_folder_id: int | None = None) -> int:
     root = Path(directory)
     n = 0
@@ -240,6 +244,7 @@ def auto_backup(store: Store, force: bool = False, min_hours: float = 24) -> Pat
 
 
 # ---------------------------------------------------------------- dispatch by file type
+@untrusted_import
 def import_file(store: Store, path: str | Path, into_folder_id: int | None = None):
     """Import .json, .csv, a .textexpander group file, or a folder of .txt files."""
     p = Path(path)

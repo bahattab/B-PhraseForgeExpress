@@ -659,11 +659,24 @@ def _insert(rt, args, opts):
     content, fmt = found
     if fmt == "html":
         content = html_to_text(content)
+    # the inserted phrase keeps its own protection (security.py): a locked folder stays
+    # locked, and an unapproved phrase cannot run privileged macros through {#insert}
+    allow_before = rt.ctx.allow_privileged
+    target = None
+    if rt.store is not None and hasattr(rt.store, "quarantine_origin"):
+        target = rt.store.find_phrase(key) or (rt.store.get_phrase(int(key)) if key.isdigit() else None)
+    if target is not None:
+        from phraseforge.security import LOCKS
+        if LOCKS.is_locked(rt.store, target.folder_id):
+            raise MacroError(f"phrase '{key}' is in a locked folder")
+        if rt.store.quarantine_origin(target.id):
+            rt.ctx.allow_privileged = False
     rt.insert_stack.append(key.lower())
     try:
         return rt.engine.eval_nodes(parse(content), rt)
     finally:
         rt.insert_stack.pop()
+        rt.ctx.allow_privileged = allow_before
 
 
 # ====================================================================== text functions

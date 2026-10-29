@@ -44,5 +44,15 @@ def _two_column_default(request, monkeypatch):
     monkeypatch.setattr(main_window, "DEFAULT_LAYOUT", "two")
 
 
+@pytest.fixture(autouse=True)
+def _relock_folders():
+    """Folders unlocked in one test must not stay unlocked in the next (security.LOCKS
+    is process-wide, and in-memory stores reuse folder ids)."""
+    from phraseforge.security import LOCKS
+    LOCKS.clear()
+    yield
+    LOCKS.clear()
+
+
 def pytest_configure(config):
     config.addinivalue_line("markers", "real_layout_default: use the app's own default layout")

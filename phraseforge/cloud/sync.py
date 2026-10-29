@@ -276,7 +276,9 @@ class CloudSync:
             keep_settings = {k: v for k, v in self.store.conn.execute("SELECT key, value FROM settings")
                              if _is_local_key(k)}
         keep_clip = [(e.text, e.created, e.source_app, int(e.pinned)) for e in self.store.clipboard_entries(10_000)]
-        self.store.restore_from(path)
+        # phrases the pull adds or changes must be approved on this PC before their
+        # privileged macros run (security.py)
+        self.store.restore_from(path, untrusted="synced")
         with self.store.lock, self.store.conn:
             for k, v in keep_settings.items():
                 self.store.conn.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (k, v))

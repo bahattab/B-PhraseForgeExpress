@@ -111,6 +111,7 @@ SCHEMA: dict[str, str] = {
     "net.proxy_port": "80",
     "net.proxy_user": "",
     "net.proxy_password": "",
+    "net.allow_private_hosts": "0",        # {#http} to localhost / LAN addresses
     # Screen OCR (Capture2Text)
     "ocr.language": DEFAULT_SETTINGS["ocr.language"],
     "ocr.keep_line_breaks": "1",
