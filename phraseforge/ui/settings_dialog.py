@@ -1719,7 +1719,13 @@ class SettingsDialog(QDialog):
         self.folder_box, fb = _group("Folder")
         self.sync_folder = self.bind("sync.folder_path", QLineEdit())
         self.sync_folder.setPlaceholderText(r"e.g. G:\My Drive\PhraseForge")
-        fb.addWidget(_row(self.sync_folder, _icon_button("folder", "Browse", self._browse_sync_folder), stretch=False))
+        find_btn = QPushButton("Find Google Drive")
+        find_btn.setToolTip("Use the folder that Google Drive for desktop syncs (no Google sign-in needed)")
+        find_btn.clicked.connect(self._find_gdrive_folder)
+        fb.addWidget(_row(self.sync_folder, _icon_button("folder", "Browse", self._browse_sync_folder), find_btn,
+                          stretch=False))
+        # Typing a folder chooses this option, like signing in chooses Google Drive.
+        self.sync_folder.textEdited.connect(lambda t: t.strip() and self.cloud_radios["folder"].setChecked(True))
         lay.addWidget(self.folder_box)
 
         g, ob = _group("Options")
@@ -1758,7 +1764,8 @@ class SettingsDialog(QDialog):
         prov = next((v for v, rb in self.cloud_radios.items() if rb.isChecked()), "off")
         # The Google Drive box stays usable whatever is selected: signing in selects Google Drive.
         self.gdrive_box.setEnabled(True)
-        self.folder_box.setEnabled(prov == "folder")
+        # The folder box stays usable too: choosing a folder selects this option.
+        self.folder_box.setEnabled(True)
         self.gdrive_signin_btn.setEnabled(True)
         try:
             d = self._drive()
@@ -1824,6 +1831,28 @@ class SettingsDialog(QDialog):
         d = QFileDialog.getExistingDirectory(self, "Sync folder", self.sync_folder.text())
         if d:
             self.sync_folder.setText(d)
+            self.cloud_radios["folder"].setChecked(True)
+
+    def _find_gdrive_folder(self) -> None:
+        """Fill in <My Drive>\\PhraseForge from Google Drive for desktop, if it is installed."""
+        from phraseforge.cloud.drive_folder import find_google_drive_folders, sync_folder_in
+        found = find_google_drive_folders()
+        if not found:
+            QMessageBox.information(
+                self, "Google Drive",
+                "Google Drive for desktop was not found on this PC.\n\n"
+                "Install it from google.com/drive/download and sign in there, then click "
+                "\"Find Google Drive\" again. Or click \"Sign in with Google\" above instead.")
+            return
+        choice = found[0]
+        if len(found) > 1:
+            items = [str(p) for p in found]
+            text, ok = QInputDialog.getItem(self, "Google Drive", "Google Drive folder to use:", items, 0, False)
+            if not ok:
+                return
+            choice = found[items.index(text)]
+        self.sync_folder.setText(str(sync_folder_in(choice)))
+        self.cloud_radios["folder"].setChecked(True)
 
     def _cloud_action(self, what: str) -> None:
         """Synchronize / back up / restore right away using the settings shown on this page."""

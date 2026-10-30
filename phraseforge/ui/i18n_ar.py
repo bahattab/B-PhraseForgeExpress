@@ -1275,4 +1275,11 @@ AR_EXTRA = {
     "OneNote and notes": "OneNote والملاحظات",
     "OCR PDF / image": "قراءة نص PDF / صورة",
     "Enabled in program": "مفعّل في البرنامج",
+    # ---------------------------------------------------------------- Google Drive folder
+    "Find Google Drive": "العثور على Google Drive",
+    "Use the folder that Google Drive for desktop syncs (no Google sign-in needed)":
+        "استخدام المجلد الذي يزامنه Google Drive لسطح المكتب (لا يلزم تسجيل الدخول إلى Google)",
+    "Google Drive folder to use:": "مجلد Google Drive المراد استخدامه:",
+    "Google Drive for desktop was not found on this PC.\n\nInstall it from google.com/drive/download and sign in there, then click \"Find Google Drive\" again. Or click \"Sign in with Google\" above instead.":
+        "لم يُعثر على Google Drive لسطح المكتب في هذا الحاسوب.\n\nثبّته من google.com/drive/download وسجّل الدخول فيه، ثم انقر \"العثور على Google Drive\" مرة أخرى. أو انقر \"Sign in with Google\" في الأعلى بدلًا من ذلك.",
 }
