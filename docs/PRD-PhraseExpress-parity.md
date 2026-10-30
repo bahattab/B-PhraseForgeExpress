@@ -2,23 +2,26 @@
 
 | | |
 |---|---|
-| Target repo | `https://github.com/bahattab/B-PhraseForgeExpress`, gap analysis checked against release **0.5.4** (`b0d84ff`) |
+| Target repo | `https://github.com/bahattab/B-PhraseForgeExpress`, inventory and gap analysis checked against release **0.5.6** (`d03986c`) |
 | Reference product | PhraseExpress 18.0.84.0, installed at `C:\Program Files (x86)\PhraseExpress` |
-| Date | 2026-10-29 |
-| Status | Draft v2 — gap table refreshed for 0.5.4; Phase 0 security items delivered in branch `security-hardening-0.5.4` |
+| Date | 2026-10-30 (v3) · 2026-10-29 (v1, v2) |
+| Status | Draft v3 — PF columns re-verified against 0.5.6; Phase 0 security items released in 0.5.5 (#15, #16); test-suite crash fixed in 0.5.6 (#14) |
 | Method | Static analysis only. No PhraseExpress binary was executed. No PhraseExpress code, assets, keys or text are reproduced here. |
 
 ---
 
-## Status note (v2)
+## Status note (v3)
 
-Draft v1 was written against an outdated local checkout (about 0.3). The
-**gap table in Section 2 is now re-checked against release 0.5.4** with file-level
-evidence: column "0.5.4" is the released state, column "After PR" is the state once
-branch `security-hardening-0.5.4` is merged. The "PF status" column of the Section
-1.2 inventory still reflects the older checkout; where it disagrees with Section 2,
-**Section 2 wins**. Features 0.5.4 has that v1 did not know about are listed in
-Section 1.5.
+v3 re-checks every **PhraseForge (PF)** claim against release **0.5.6** (`d03986c`). PhraseExpress (PE) claims are carried over from v2 unchanged: they come from the static analysis done on the user's Windows machine, and the v3 session had no access to `C:\Program Files (x86)\PhraseExpress`, so it did not re-verify them.
+
+Changes from v2:
+
+- **Section 1.2:** the "PF status" column now reflects 0.5.6. File names are authoritative. Line numbers carried over from v1 point to an older checkout and may have moved.
+- **Section 2:** the two columns "0.5.4" and "After PR" are merged into one column, "0.5.6". The PR that v2 called "After PR" was merged as #15 and released as 0.5.5.
+- **New finding, G-34 reopened as partial:** `net.is_private_host` resolves the host name, and httpx then resolves it again when it connects. A DNS-rebinding server can answer the second lookup with a private address. FR-SEC-06 ("connect to the resolved IP") is therefore not met yet.
+- **Section 6:** phase status column added. **Section 7.1:** baseline updated to 663 passed, 18 skipped, in one process.
+
+Evidence for v3 [REPO]: `grep` over `phraseforge/`, `macros.registry.catalog()` (153 commands, 169 names with aliases), `db.py` DDL (16 tables), and a full `pytest` run on Linux with `QT_QPA_PLATFORM=offscreen` on 2026-10-30: 663 passed, 18 skipped, 4 min 18 s.
 
 ---
 
@@ -88,29 +91,29 @@ Single-instance and IPC objects [C-EXE]: `Global\PhraseExpressMutex`, `Global\Ph
 
 ### 1.2 Feature inventory
 
-*PF status below reflects the ~0.3 checkout; see Section 2 for 0.5.4.* Legend for **PF status**: ✅ reproduced · 🟡 partial · ❌ missing · ➕ PF-only. "Partial" means PF has the feature but lacks options PE shows.
+*PF status below reflects release 0.5.6 (v3).* Legend for **PF status**: ✅ reproduced · 🟡 partial · ❌ missing · ➕ PF-only. "Partial" means PF has the feature but lacks options PE shows.
 
 #### A. Phrase store and organisation
 
 | # | PE feature | How PE does it (evidence) | PF status |
 |---|---|---|---|
-| A1 | Tree of phrase files → folders → phrases, all held in one `data` table (GUID id, pid, datatype, pos, color, icon, desc, allowed/declined apps, timing, paste target, hint, tag, comment, trigger BLOB) | [C-EXE] SQLite DDL `CREATE TABLE data(...)` | ✅ `db.py:40-72` (integer IDs, separate folders/phrases tables) |
+| A1 | Tree of phrase files → folders → phrases, all held in one `data` table (GUID id, pid, datatype, pos, color, icon, desc, allowed/declined apps, timing, paste target, hint, tag, comment, trigger BLOB) | [C-EXE] SQLite DDL `CREATE TABLE data(...)` | ✅ `db.py` (integer IDs, separate folders/phrases tables; 16 tables in all) |
 | A2 | Multiple phrase files at once (local, network, URL, FTP, SQL server, cloud folder), each with its own password and sync settings | [C-EXE] `files` table: `localpath, networkpath, urlpath, ftppath, sqlpath, filetype, doudp, syncdate`; [C-DATA] `PhraseFile/Data/phrases/file*` | ❌ one DB per profile |
-| A3 | **Levels**: per-language/variant content for each phrase (`phrases` is UNIQUE(id, lid)), with level hotkeys; `{#setlevel}` | [C-EXE] tables `levels(lid,hk,desc,abbr)`, `datalevels`, `taglevels` | ❌ |
+| A3 | **Levels**: per-language/variant content for each phrase (`phrases` is UNIQUE(id, lid)), with level hotkeys; `{#setlevel}` | [C-EXE] tables `levels(lid,hk,desc,abbr)`, `datalevels`, `taglevels` | 🟡 `phrase_versions(phrase_id, lang)` + `phrase.active_language` setting; no level hotkeys, no `{#setlevel}` |
 | A4 | Content formats per phrase: plain, RTF, HTML, RTF-diff, view mode; embedded files and images (`embfiles`); OLE/Word objects | [C-EXE] `phrases(plain, rtf, html, rtf1, rtfd, lang, viewmode)`, `embfiles(fid,id,lid,type,data,filename)` | 🟡 text and HTML only, images via HTML; no RTF, no embedded files table |
 | A5 | Tags (tags, datatags, taglevels) | [C-EXE] | ✅ `phrase_tags` |
 | A6 | Comments on phrases (per user) | [C-EXE] `comments(cid,id,uid,lid,flag,…,text)` | ❌ (PF has a single `notes` field) |
 | A7 | Version history for items, phrases and files, written by DB triggers; retention by count and by days | [C-EXE] `datahistory, phraseshistory, historyfiles`; `options(historynum, historydays)` | 🟡 `phrase_history` snapshots, no retention policy |
-| A8 | Trash / deleted items with restore path | [C-EXE] `deleteditems`, `data.restorepath` | ❌ deletes are hard |
+| A8 | Trash / deleted items with restore path | [C-EXE] `deleteditems`, `data.restorepath` | ❌ deletes are hard (no `deleted_at`, no Trash node in 0.5.6) |
 | A9 | Template folders, phrase links | [C-EXE] `folders.istemplate`; TExtendedFrame [I] | ❌ |
-| A10 | Folder text prefix/suffix added to every phrase (`ltextadd`, `rtextadd`) | [C-EXE] | ❌ |
+| A10 | Folder text prefix/suffix added to every phrase (`ltextadd`, `rtextadd`) | [C-EXE] | 🟡 per-folder **abbreviation** prefix only; no content prefix/suffix |
 | A11 | Folder sort options (two keys, direction, mode) | [C-EXE] `sortfield/dir/mode, sortfield2/dir2` | 🟡 manual `sort` only |
 | A12 | **Dynamic folders**: phrase lists filled live from Excel, CSV, SQL (Firebird/MSSQL/MySQL/Access/SQLite) with field mapping and a cache | [C-EXE] `folders(constr, querystr, fieldmap, cachedyndata, cachedate)`; TDyn*SettingsFrame | ❌ (PF has only `{#xls*}`/`{#sql}` macros) |
 | A13 | "Floats": phrases placed on the desktop as windows | [C-EXE] `floats(id,uid,x,y,width,height)` | ➕ sticky-notes integration is the nearest equivalent; ❌ parity |
 | A14 | Per-item ACLs: users, workgroups, domains, with rights | [C-EXE] `datausers, dataworkgroups, datadomains, editusers` | ❌ |
 | A15 | Usage statistics per user; typing speed and hourly-rate savings | [C-EXE] `userstats`; separate stats DB; TStatsForm | ✅ `usage_log`, `stats_window.py` |
 | A16 | Phrase-file encryption at rest (SQLCipher) | [C-DLL] [C-DATA] every `.pexdb` has 8.00 bits/byte entropy and no SQLite header | ❌ plaintext SQLite |
-| A17 | Password protection for phrase files, checked on start, open, expand or view (`passcheck` modes) | [C-EXE] `files.password, passcheck`; TPassDlg, TPassEditDlg | 🟡 unsalted SHA-256 folder lock that gates only the tree UI (`db.py:109`); expansion and popup bypass it |
+| A17 | Password protection for phrase files, checked on start, open, expand or view (`passcheck` modes) | [C-EXE] `files.password, passcheck`; TPassDlg, TPassEditDlg | 🟡 salted scrypt (`db.py` `hash_password`); a locked folder asks for the password before any expansion and is hidden from the popup, SmartComplete and `{#insert}` (`security.LOCKS`); no per-file `passcheck` modes |
 | A18 | Macro text in phrases stored encrypted in the DB | [C-EXE] `UPDENCRYPTPLAINMACROS … WHERE plain LIKE '%{#%'` | ❌ |
 | A19 | Clipboard cache and "last used" stored as their own phrase files | [C-DATA] `clipboard.pexdb`, `lastused.pexdb` | ✅ functionally (`clipboard` table, Last Used node) |
 
@@ -119,14 +122,14 @@ Single-instance and IPC objects [C-EXE]: `Global\PhraseExpressMutex`, `Global\Ph
 | # | PE feature | Evidence | PF status |
 |---|---|---|---|
 | B1 | Autotext with word position end / middle / entire / beginning | [C-EXE] TTriggerAtextSectionFrame | ✅ `autotext.py` |
-| B2 | Execution timing: as detected, manual confirmation, on typing pause, **on fast typing only** | [C-EXE] trigger timing strings; `data.timingtype, timinginterval` | 🟡 immediate/confirm/pause/continue; no "fast typing only" |
-| B3 | Delimiter classes for prefix and postfix: All, Standard, Letters, Numbers, Enter, Tab, Space, Point, Comma, Custom, Refine; "remove trailing char"; global `CharsBefore/CharsAfter/SentenceDelimiters` | [C-EXE] TExpertDlg; [C-DATA] `Expert/*` | 🟡 Default/None/Space/Enter/Tab/Punct/AnyNonLetter; no per-class Letters/Numbers/Point/Comma/Custom |
+| B2 | Execution timing: as detected, manual confirmation, on typing pause, **on fast typing only** | [C-EXE] trigger timing strings; `data.timingtype, timinginterval` | 🟡 `models.EXEC_MODES` = immediate/confirm/pause/continue; no "fast typing only" |
+| B3 | Delimiter classes for prefix and postfix: All, Standard, Letters, Numbers, Enter, Tab, Space, Point, Comma, Custom, Refine; "remove trailing char"; global `CharsBefore/CharsAfter/SentenceDelimiters` | [C-EXE] TExpertDlg; [C-DATA] `Expert/*` | 🟡 `models.DELIMITER_CHOICES` = Default/None/Space/Enter/Tab/Punctuation/Any non-letter; no Letters/Numbers/Point/Comma/Custom |
 | B4 | Global autotext prefix | [C-DATA] `Expert/GlobalPrefix` | ❌ |
 | B5 | Block and resend Enter/Tab (route Enter) | [C-DATA] `DoRouteEnter` | ✅ "route Enter/Tab" |
 | B6 | Unwanted-autotext detection and threshold (auto-skip after repeated undo) | [C-DATA] `AutoSkip, SkipAtextThreshold` | 🟡 undo within 10 s (`manager.py:410`), no learned auto-skip |
 | B7 | Skip-next-autotext hotkey | [C-EXE] `SkipHotkey` | 🟡 a pause command exists; no one-shot skip |
 | B8 | SmartComplete (suffix tree, refine from N chars) | [C-EXE] `SuffixTreeU` | ✅ `manager.py:395,587`, `smartcomplete_tip.py` |
-| B9 | RegEx autotext, with presets: email, URL, ISBN, IPv4, IPv6, MAC, time | [C-EXE] | 🟡 regex yes, presets no |
+| B9 | RegEx autotext, with presets: email, URL, ISBN, IPv4, IPv6, MAC, time | [C-EXE] | 🟡 regex yes; presets only in the macro dialog, not in the trigger editor |
 | B10 | Hotkey triggers through `RegisterHotKey` plus a hook-based path | [C-EXE] imports RegisterHotKey; [C-DLL] LL hook | ✅ hook-matched only (`hotkeys.py:56`) |
 | B11 | Window trigger (application focus) | [C-EXE] TTriggerAppSectionFrame | ✅ |
 | B12 | Time trigger plus scheduled tasks `Tasks/Task0–9` | [C-EXE], [C-DATA] | 🟡 daily/every-N only; no task list UI |
@@ -144,7 +147,7 @@ Single-instance and IPC objects [C-EXE]: `Global\PhraseExpressMutex`, `Global\Ph
 | C2 | Key-by-key output with selectable method (VK_PACKET vs SendKey) | [C-DATA] `KeyByKeyPasteMethod` | ✅ vk_packet / unicode / scancode (`sendinput.py:77`) |
 | C3 | Clipboard paste with formats, clipboard backup and restore, and delays `FocusDelay, SimKeyDelay, RestoreClbDelay, PlainClbDelay2, RndDelay` | [C-DATA] | ✅ except `RndDelay` (randomised typing delay) ❌ |
 | C4 | Force focus before output | [C-DATA] `ForceFocus` | 🟡 |
-| C5 | Caret position for the popup via MSAA (`AccessibleObjectFromWindow`, `DoACC`), `GetCaretPos` and `GetGUIThreadInfo`; `CaretPositionMode` | [C-EXE] imports oleacc | 🟡 GetGUIThreadInfo only (`windows.py:117`); fails in Chromium/Electron and WPF |
+| C5 | Caret position for the popup via MSAA (`AccessibleObjectFromWindow`, `DoACC`), `GetCaretPos` and `GetGUIThreadInfo`; `CaretPositionMode` | [C-EXE] imports oleacc | 🟡 GetGUIThreadInfo only (`platform/windows.py`), no MSAA/UIA fallback; fails in Chromium/Electron and WPF [I] |
 | C6 | Paste targets: current app, a specific window, clipboard, file, email | [C-EXE] TPasteTargetFrame, `data.pastetarget, pasteparams` | ✅ `output_target.py:41` |
 | C7 | Elevation handling: `pexinst -restartadmin` | [C-DLL] | ❌ silently fails in elevated windows (UIPI) |
 | C8 | Session awareness (`WTSRegisterSessionNotification`), RDP guest install | [C-EXE] | ❌ |
@@ -153,7 +156,7 @@ Single-instance and IPC objects [C-EXE]: `Global\PhraseExpressMutex`, `Global\Ph
 
 #### D. Macros
 
-PE macro names [C-EXE, from the macro name table], compared with PF's 151 commands [REPO `macros/README.md`]. PF has the same overall syntax (`{#name … -opt value}`), but parameter names and some semantics differ. Rows marked **compat** need an alias or translator so that phrases imported from PE run unchanged (FR-MAC-01).
+PE macro names [C-EXE, from the macro name table], compared with PF's 153 commands (169 names with aliases, `registry.catalog()` in 0.5.6) [REPO `macros/README.md`]. PF has the same overall syntax (`{#name … -opt value}`), but parameter names and some semantics differ. Rows marked **compat** need an alias or translator so that phrases imported from PE run unchanged (FR-MAC-01).
 
 | PE group | PE macros | PF equivalent | Status |
 |---|---|---|---|
@@ -178,20 +181,20 @@ PE macro names [C-EXE, from the macro name table], compared with PF's 151 comman
 | # | PE feature | Evidence | PF status |
 |---|---|---|---|
 | E1 | Ribbon main window (192 actions), tree, multi-column phrase list (`UI/PhraseCol*0–15`) | [C-EXE] TpexMWnd4 DFM | ✅ `ribbon.py`, `tree_panel.py` |
-| E2 | Rich editor with spell check, tables, images, find/replace, character map, font dialog, DOCX/Markdown/HTML import/export | [C-EXE] TFrmRV*, TRichForm | 🟡 HTML QTextEdit, no spell check, no Markdown/DOCX |
+| E2 | Rich editor with spell check, tables, images, find/replace, character map, font dialog, DOCX/Markdown/HTML import/export | [C-EXE] TFrmRV*, TRichForm | 🟡 HTML QTextEdit, no spell check; DOCX/PDF **export** (`documents.py`); no DOCX/Markdown import into the editor |
 | E3 | Popup menu, QuickKeys, QuickSearch (inline, case, subfolders, Quick Jump), repeat last output, dark mode, ~20 colours | [C-DATA] `Popup/*`, `Search/*` | ✅ `popup.py` (verify Quick Jump and repeat-last) |
 | E4 | Clipboard cache window with auto-collect, dedupe, plain-only, trim | [C-DATA] `ClipCache/*` | ✅ |
 | E5 | Autotext learning (word graph + corrections, `words.pal`), learns from Outlook, AutoCorrect | [C-DATA] words.pal is an encrypted ZIP; [C-EXE] `<connections><corrections>` | 🟡 sentence-repeat learner, AutoComplete word learner |
 | E6 | First-start wizard, bubble help, tray hints | [C-EXE] | ✅ wizard, tray |
 | E7 | Settings dialog | [C-EXE] TSettingsForm | ✅ 26 pages |
 | E8 | Print / print preview | [C-EXE] | ✅ `main_dialogs.py` |
-| E9 | Duplicate finder / removal | [C-EXE] TDelDupConfDlg | ❌ |
-| E10 | Backup: count retention, compare file versions, restore, optimise/vacuum | [C-EXE] TFileBackupDlg, TFileCompareDlg, TOptimizeDlg | 🟡 backup and restore; no compare, no vacuum UI |
-| E11 | UI languages EN/DE | [C-DLL] pexlang | ➕ EN/AR, but only ~64 strings translated |
+| E9 | Duplicate finder / removal | [C-EXE] TDelDupConfDlg | 🟡 Bulk edit > Remove duplicates per folder (`bulk_edit.remove_duplicates`); no library-wide finder |
+| E10 | Backup: count retention, compare file versions, restore, optimise/vacuum | [C-EXE] TFileBackupDlg, TFileCompareDlg, TOptimizeDlg | 🟡 backup and restore; `VACUUM` runs only after sealing secrets and on sync snapshots; no compare, no vacuum UI |
+| E11 | UI languages EN/DE | [C-DLL] pexlang | ➕ EN/AR with right-to-left layout; ~1,200-entry Arabic table (`ui/i18n_ar.py`); no `tr()`/`.ts` pipeline |
 | E12 | Event sounds (6) | [C-DATA] `DoSound0–5` | ✅ `sounds.py` |
 | E13 | Toast notifications (WinRT) | [C-EXE] `RoActivateInstance` [I] | 🟡 tray balloon |
 | E14 | Admin lockdown via machine-wide `C:\ProgramData\PhraseExpress\config.xml` (`ConfigDisabled, EditDisabled, DoStats`) | [C-DATA] | ❌ |
-| E15 | CLI switches (Section 3.9) and portable mode | [C-EXE] | ❌ (only the `PHRASEFORGE_HOME` env var) |
+| E15 | CLI switches (Section 3.9) and portable mode | [C-EXE] | 🟡 `--self-test`, `--minimized`, argv handed to the running instance (`single_instance.py`), portable EXE, `PHRASEFORGE_HOME`; no other switches |
 
 #### F. Integration, sync, network
 
@@ -211,19 +214,19 @@ PE macro names [C-EXE, from the macro name table], compared with PF's 151 comman
 
 | # | PE feature | Evidence | PF status |
 |---|---|---|---|
-| G1 | Built-in OpenAI engine: chat, images, image edits; presets (Instruction, Length, Accuracy, Variation, Model); text-info and answer instructions | [C-EXE] api.openai.com/v1; [C-DATA] `AIPresets/*` | 🟡 text chat only |
-| G2 | **Plugin engines** (Anthropic, OpenRouter, Ollama, GPT4All) behind a common ABI with capability discovery | [C-DLL] Section 1.4 | 🟡 providers hard-coded in `ai.py:98` |
-| G3 | Translation: DeepL (free/pro), AI engines; glossaries (name, fromlang, tolang, dict), ignored words; language detection | [C-EXE]; [C-DATA] `Translation/*` | 🟡 AI translation + glossary; no DeepL, no langdetect |
+| G1 | Built-in OpenAI engine: chat, images, image edits; presets (Instruction, Length, Accuracy, Variation, Model); text-info and answer instructions | [C-EXE] api.openai.com/v1; [C-DATA] `AIPresets/*` | 🟡 text chat only (no vision or image calls in `ai.py`) |
+| G2 | **Plugin engines** (Anthropic, OpenRouter, Ollama, GPT4All) behind a common ABI with capability discovery | [C-DLL] Section 1.4 | 🟡 nine providers hard-coded in `ai.py` (OpenAI, Anthropic, OpenRouter, Gemini, OpenCode Zen, Kilo Code, DeepL, Ollama, GPT4All); no plugin interface |
+| G3 | Translation: DeepL (free/pro), AI engines; glossaries (name, fromlang, tolang, dict), ignored words; language detection | [C-EXE]; [C-DATA] `Translation/*` | 🟡 AI and DeepL translation + glossary; heuristic `ai.guess_language` for the source language; no `{#langdetect}` macro |
 | G4 | Vision (GenerateTextFromImage), image generation/edit (OpenRouter) | [C-DLL] | ❌ |
-| G5 | Local models: Ollama model pull/delete with progress; GPT4All through a Python bridge | [C-DLL] | 🟡 Ollama chat only |
+| G5 | Local models: Ollama model pull/delete with progress; GPT4All through a Python bridge | [C-DLL] | 🟡 Ollama and GPT4All chat through their local APIs; no model pull/delete |
 | G6 | Usage/balance stats per engine | [C-DLL] `GetEngineUsageStats` | ❌ |
 
 #### H. Import / export
 
 | PE importers [C-EXE] | PF |
 |---|---|
-| TextExpander (incl. 5+), Texter, AutoHotkey (`.ahk`), Breevy, ShortHand, ShortKeys, GhostTyper, Direct Access, InstantText, Word AutoCorrect/AutoText, Outlook, Excel, CSV, SQL, folder structure; extensions `.textexpander .texter .ahk .glo .spf .gtx .dta` | ✅ TextExpander, CSV, JSON, txt folder · ➕ OneNote, Sticky Notes · ❌ everything else |
-| PE exporters: HTML, CSV, XML, Word, Excel, Android, TextExpander | ✅ JSON, CSV, txt · ❌ HTML/XML/Word/Excel/TextExpander |
+| TextExpander (incl. 5+), Texter, AutoHotkey (`.ahk`), Breevy, ShortHand, ShortKeys, GhostTyper, Direct Access, InstantText, Word AutoCorrect/AutoText, Outlook, Excel, CSV, SQL, folder structure; extensions `.textexpander .texter .ahk .glo .spf .gtx .dta` | ✅ TextExpander (CSV, `.textexpander`, macOS plist), PhraseExpress CSV/TXT/TSV, CSV, JSON, txt folder · ➕ OneNote, Sticky Notes · ❌ everything else |
+| PE exporters: HTML, CSV, XML, Word, Excel, Android, TextExpander | ✅ JSON, CSV, txt, PhraseExpress CSV, TextExpander CSV, macOS plist, DOCX, PDF · ❌ HTML/XML/Excel |
 | Native PE formats `.pxp .px3 .pxa .pexdb .pexdbupd .pexdbhub .pexmigration .pal .mrf` | ❌ none (see D3) |
 
 #### I. Present in PF but not in PE (keep)
@@ -249,7 +252,7 @@ All four DLLs are x86 Delphi with plain exports [C-DLL]. **Common exports (31):*
 
 Semantics: Params is a `Key=Value` list (Model, MaxTokens, Temperature, Top_k, Instruction, IgnoreTags, glossary) [I]. `GetSupportedSettings` returns a CSV of the abstract knobs `Length, Accuracy, Variation, Model` [C-DLL]. The host maps them to provider fields (Length→max_tokens, Variation→temperature, Accuracy→top_p/top_k/penalty) [C-DLL]. `GetOptsUI` returns a small XML form descriptor [C-DLL]. There is no ABI version export, so capability is detected by which exports exist [I]. The exact calling convention and string types (Delphi `string` vs `PWideChar`) are [U-03]. **PF will not load these DLLs** (D2); the contract is used only as the model for PF's own plugin interface (FR-PLG-*).
 
-### 1.5 PhraseForge 0.5.4 features not in PhraseExpress (keep)
+### 1.5 PhraseForge 0.5.6 features not in PhraseExpress (keep)
 
 Built-in OCR (Windows.Media.Ocr, Capture2Text-style modes, optional Mistral OCR, PDF/image to Markdown) ·
 built-in desktop sticky notes and a Microsoft Sticky Notes importer · quick-note window (send to OneNote or
@@ -258,7 +261,7 @@ hotkey (`{#promptboost}`) · AI engines Gemini, OpenCode Zen, Kilo Code, GPT4All
 translate · Listary-style "Search files" launcher · DOCX/PDF export with Arabic RTL · TextExpander, macOS
 Text Replacements and PhraseExpress-CSV exchange · HTML→RTF clipboard output · full Arabic RTL UI, Arabic
 user guide, Hijri dates · Windows installer, portable EXE, GitHub update check · Google sign-in with a
-built-in or own OAuth client.
+built-in or own OAuth client · Tools ribbon tab that mirrors every tray-menu command (0.5.6).
 
 ---
 
@@ -266,44 +269,46 @@ built-in or own OAuth client.
 
 Priority: **M** must-have (core parity, or a security defect), **S** should-have, **N** nice-to-have. Complexity: S ≤ 3 dev-days, M ≤ 2 weeks, L ≤ 6 weeks, XL > 6 weeks.
 
-| ID | Gap | Priority | Complexity | FR | 0.5.4 | After PR |
-|---|---|---|---|---|---|---|
-| G-01 | Secrets stored in plain text and uploaded by sync | M (sec) | S | FR-SEC-01..03 | partial: 8 AI keys DPAPI-sealed and kept out of sync (`db.py` SECRET_SETTINGS); `net.proxy_password` plain and synced | closed: proxy password sealed and device-only; plain values from old versions or restored backups are sealed and wiped from the file |
-| G-02 | Macro trust model for imported/synced phrases (`{#run}`, `{#http}`, `{#sql}`, `{#mail -send}`; time/app triggers) | M (sec) | M | FR-SEC-04/05 | open | closed: imported phrases and phrases a sync pull adds or changes are quarantined per PC; their privileged macros (`run, open, web, http, mail -send, outputfile, dbquery, setphrase`, Win-key chords) ask Run once / Always allow / Do not run, automatic triggers skip them; engine blocks them at run time, also through `{#insert}` (`security.py`) |
-| G-03 | Folder password: unsalted SHA-256, UI-only gate | M | M | FR-SEC-07/08 | open (`db.py` hash_password) | closed: salted scrypt (old hashes upgraded on unlock); locked folders ask for the password before any expansion, are hidden from the phrase menu and its search, never feed SmartComplete, and cannot be read through `{#insert}`; one unlock per session counts everywhere (`security.LOCKS`) |
-| G-04 | Encryption at rest for the phrase DB | S | M | FR-SEC-09 | open | open |
-| G-05 | Hook callback runs Python under the GIL | M | M | FR-INP-01..03 | open (`keyboard_hook.py`) | open (P1) |
-| G-06 | UIPI / elevated-window handling | M | S | FR-INP-04 | open | open (P1) |
-| G-07 | MSAA/UIA caret fallback | S | M | FR-INP-05 | open (GetGUIThreadInfo only) | open |
-| G-08 | Single-instance guard + argv hand-over | M | S | FR-APP-01 | open | closed: mutex + user-only local pipe per data folder |
-| G-09 | CLI switches, portable mode | S | M | FR-APP-02/03 | partial: `--self-test`, `--minimized`, portable EXE, `PHRASEFORGE_HOME`; portable EXE still writes %APPDATA% | partial |
-| G-10 | Trigger options (fast-typing-only, global prefix, delimiter classes, regex presets in trigger editor, skip-next, learned auto-skip, key blocking, random delay) | M | M | FR-TRG-01..07 | partial: modes immediate/confirm/pause/continue; regex presets only in macro dialog | partial |
-| G-11 | Missing macros + PE macro-syntax layer | M | L | FR-MAC-01..06 | partial: a few PE aliases (insertclipboard, formeditbox, formcombobox, msgbox, embed, imgfile, openfolder, openai); no translator; explode, numlist, settemp/gettemp, autocase, regexpos/count, setlevel, output, langdetect, sound, mouse x/y missing | partial |
-| G-12 | Form validation, required, formgroup, checkcombo | M | M | FR-MAC-04 | partial: `{#input -syntax}` presets and required; no formgroup/checkcombo | partial |
-| G-13 | Plugin system | M | L | FR-PLG-01..08 | open (engines hard-coded in `ai.py`) | open (P4) |
-| G-14 | AI parity (vision, image gen, Ollama pull, usage, DeepL, langdetect) | S | M | FR-AI-01..05 | partial: 8 providers + DeepL + language guess; no vision/image/pull/usage | partial |
-| G-15 | Import from PhraseExpress | M | M | FR-IMP-01..03 | partial: CSV/TXT/TSV with header aliases; encrypted .pexdb/.pxp detected and refused with instructions; no XML, no macro translation | partial |
-| G-16 | Other importers/exporters | S | M | FR-IMP-04/05 | partial: TextExpander, macOS plist, PE CSV, DOCX/PDF; no Texter/AHK/Breevy/Word AutoCorrect, no HTML/XML/XLSX export | partial |
-| G-17 | Levels (language variants), hotkeys, `{#setlevel}` | S | L | FR-DAT-01 | partial: `phrase_versions(phrase_id, lang)` + active-language setting; no level hotkeys/`{#setlevel}` | partial |
-| G-18 | Trash, comments, templates, links, folder prefix/suffix, multi-key sort | S | M | FR-DAT-02..05 | partial: folder abbreviation prefix, bulk sort | partial |
-| G-19 | Multiple mounted phrase libraries | S | L | FR-DAT-06 | open | open |
-| G-20 | Spell check | S | M | FR-EDT-01 | open | open |
-| G-21 | RTF, embedded files, Markdown/DOCX into editor | N | M | FR-EDT-02 | partial: RTF clipboard output | partial |
-| G-22 | Dynamic folders | S | L | FR-DYN-01/02 | open | open |
-| G-23 | Macro recorder | N | L | FR-REC-01 | open | open |
-| G-24 | Change-set sync | S | L | FR-SYN-01..04 | open (whole snapshot) | open |
-| G-25 | Multi-user server, ACLs, directory identity | N | XL | FR-SYN-05 | open | open |
-| G-26 | Outlook context | N | M | FR-OL-01 | partial: `{#outlook field}` via COM | partial |
-| G-27 | Duplicate finder, backup compare, vacuum | N | S | FR-UI-01 | partial: bulk remove duplicates | partial |
-| G-28 | Admin lockdown policy file | N | S | FR-APP-04 | open | open |
-| G-29 | Auto-update | N | M | FR-APP-05 | partial: GitHub release check + setup link | partial |
-| G-30 | SAPI, layout conversion, mouse/sound macros | N | S | FR-MAC-05 | open | open |
-| G-31 | Full UI localisation | S | M | FR-UI-02 | partial: ~1000-string Arabic table, RTL | partial |
-| G-32 | Full test suite hangs in one run (order-dependent Qt state) | M (quality) | S | FR-QA-01 | open: stalls at `test_ui.py::test_theme_icons_tray` | partial: theme re-apply no longer re-polishes every window when nothing changed; deleting leftover windows per test was tried and reverted (it crashed the GitHub runner). On CI a single run passes (slowly); locally run it in two parts |
-| G-33 | Session awareness (lock, RDP) | N | S | FR-INP-06 | open | open |
-| G-34 | `{#http}` can reach localhost/LAN/metadata addresses (incl. via redirect) | M (sec) | S | FR-SEC-06 | open | closed: blocked by default, setting to allow |
+| ID | Gap | Priority | Complexity | FR | Status in 0.5.6 |
+|---|---|---|---|---|---|
+| G-01 | Secrets stored in plain text and uploaded by sync | M (sec) | S | FR-SEC-01..03 | **closed** (0.5.5): proxy password sealed and device-only; plain values from old versions or restored backups are sealed and wiped from the file |
+| G-02 | Macro trust model for imported/synced phrases (`{#run}`, `{#http}`, `{#sql}`, `{#mail -send}`; time/app triggers) | M (sec) | M | FR-SEC-04/05 | **closed** (0.5.5): imported phrases and phrases a sync pull adds or changes are quarantined per PC; their privileged macros (`run, open, web, http, mail -send, outputfile, dbquery, setphrase`, Win-key chords) ask Run once / Always allow / Do not run, automatic triggers skip them; engine blocks them at run time, also through `{#insert}` (`security.py`) |
+| G-03 | Folder password: unsalted SHA-256, UI-only gate | M | M | FR-SEC-07/08 | **closed** (0.5.5): salted scrypt (old hashes upgraded on unlock); locked folders ask for the password before any expansion, are hidden from the phrase menu and its search, never feed SmartComplete, and cannot be read through `{#insert}`; one unlock per session counts everywhere (`security.LOCKS`) |
+| G-04 | Encryption at rest for the phrase DB | S | M | FR-SEC-09 | open |
+| G-05 | Hook callback runs Python under the GIL | M | M | FR-INP-01..03 | open (`keyboard_hook.py`) |
+| G-06 | UIPI / elevated-window handling | M | S | FR-INP-04 | open |
+| G-07 | MSAA/UIA caret fallback | S | M | FR-INP-05 | open (GetGUIThreadInfo only) |
+| G-08 | Single-instance guard + argv hand-over | M | S | FR-APP-01 | **closed** (0.5.5): mutex + user-only local pipe per data folder. 0.5.6 fixed two defects in it: sockets left alive after shutdown crashed the next Qt event loop, and on Linux a second launch took over the running instance's pipe (#14) |
+| G-09 | CLI switches, portable mode | S | M | FR-APP-02/03 | partial: `--self-test`, `--minimized`, portable EXE, `PHRASEFORGE_HOME`; portable EXE still writes %APPDATA% |
+| G-10 | Trigger options (fast-typing-only, global prefix, delimiter classes, regex presets in trigger editor, skip-next, learned auto-skip, key blocking, random delay) | M | M | FR-TRG-01..07 | partial: modes immediate/confirm/pause/continue; regex presets only in macro dialog |
+| G-11 | Missing macros + PE macro-syntax layer | M | L | FR-MAC-01..06 | partial: a few PE aliases (insertclipboard, formeditbox, formcombobox, msgbox, embed, imgfile, openfolder, openai); no translator; explode, numlist, settemp/gettemp, autocase, regexpos/count, setlevel, output, langdetect, sound, mouse x/y missing |
+| G-12 | Form validation, required, formgroup, checkcombo | M | M | FR-MAC-04 | partial: `{#input -syntax}` presets and required; no formgroup/checkcombo |
+| G-13 | Plugin system | M | L | FR-PLG-01..08 | open (engines hard-coded in `ai.py`) |
+| G-14 | AI parity (vision, image gen, Ollama pull, usage, DeepL, langdetect) | S | M | FR-AI-01..05 | partial: 8 providers + DeepL + language guess; no vision/image/pull/usage |
+| G-15 | Import from PhraseExpress | M | M | FR-IMP-01..03 | partial: CSV/TXT/TSV with header aliases; encrypted .pexdb/.pxp detected and refused with instructions; no XML, no macro translation |
+| G-16 | Other importers/exporters | S | M | FR-IMP-04/05 | partial: TextExpander, macOS plist, PE CSV, DOCX/PDF; no Texter/AHK/Breevy/Word AutoCorrect, no HTML/XML/XLSX export |
+| G-17 | Levels (language variants), hotkeys, `{#setlevel}` | S | L | FR-DAT-01 | partial: `phrase_versions(phrase_id, lang)` + active-language setting; no level hotkeys/`{#setlevel}` |
+| G-18 | Trash, comments, templates, links, folder prefix/suffix, multi-key sort | S | M | FR-DAT-02..05 | partial: folder abbreviation prefix, bulk sort |
+| G-19 | Multiple mounted phrase libraries | S | L | FR-DAT-06 | open |
+| G-20 | Spell check | S | M | FR-EDT-01 | open |
+| G-21 | RTF, embedded files, Markdown/DOCX into editor | N | M | FR-EDT-02 | partial: RTF clipboard output |
+| G-22 | Dynamic folders | S | L | FR-DYN-01/02 | open |
+| G-23 | Macro recorder | N | L | FR-REC-01 | open |
+| G-24 | Change-set sync | S | L | FR-SYN-01..04 | open (whole snapshot) |
+| G-25 | Multi-user server, ACLs, directory identity | N | XL | FR-SYN-05 | open |
+| G-26 | Outlook context | N | M | FR-OL-01 | partial: `{#outlook field}` via COM |
+| G-27 | Duplicate finder, backup compare, vacuum | N | S | FR-UI-01 | partial: bulk remove duplicates |
+| G-28 | Admin lockdown policy file | N | S | FR-APP-04 | open |
+| G-29 | Auto-update | N | M | FR-APP-05 | partial: GitHub release check + setup link |
+| G-30 | SAPI, layout conversion, mouse/sound macros | N | S | FR-MAC-05 | open |
+| G-31 | Full UI localisation | S | M | FR-UI-02 | partial: ~1000-string Arabic table, RTL |
+| G-32 | Full test suite hangs in one run (order-dependent Qt state) | M (quality) | S | FR-QA-01 | **closed** (0.5.6): the hang was gone after 0.5.5; the remaining Windows CI crash came from `SingleInstance` sockets (see G-08). The full suite runs in one process: 663 passed, 18 skipped (4 min 18 s on Linux offscreen, 2026-10-30). Still open from FR-QA-01: the < 3 min target and a per-test `pytest-timeout` |
+| G-33 | Session awareness (lock, RDP) | N | S | FR-INP-06 | open |
+| G-34 | `{#http}` can reach localhost/LAN/metadata addresses (incl. via redirect) | M (sec) | S | FR-SEC-06 | **partial** (0.5.5): private, loopback, link-local and reserved targets are blocked before the first request and before every redirect (`net._guard`), with a setting to allow them. **Open:** the guard resolves DNS itself and httpx resolves again on connect, so a DNS-rebinding host can pass the check (FR-SEC-06 requires connecting to the checked IP) |
 
-PE evidence for each gap: Section 1.2. Also open in 0.5.4: `test_filesearch.py::test_speed_gate_50k_entries_answers_in_milliseconds` (median < 50 ms) fails on slower machines.
+PE evidence for each gap: Section 1.2. Also open: `test_filesearch.py::test_speed_gate_50k_entries_answers_in_milliseconds` (median < 50 ms) was reported failing on slower machines in 0.5.4; it passed in the 0.5.6 Linux run, so its status on slower Windows machines is unconfirmed.
+
+**Summary for 0.5.6:** 5 of 34 gaps closed (G-01, G-02, G-03, G-08, G-32), 15 partial, 14 open. G-03 is closed for its own scope; the per-file password-check modes of FR-SEC-08 (`on_start`, `on_open`, `on_view`) are still to do. Every remaining **must-have** gap is partial or open: G-05 and G-06 (input core), G-10, G-11 and G-12 (triggers and macros), G-13 (plugins), G-15 (PE import) and G-34 (DNS rebinding).
 
 Out of scope by decision: licensing/activation, the vendor update server protocol, bit.ly/Twitter macros, DDE (`ddemacro/ddeset`, revisit on demand), Firebird/MySQL back ends, and the "AI for a fee" vendor proxy.
 
@@ -561,13 +566,23 @@ Each phase ends with an AMA-style acceptance gate: all FR tests green, performan
 
 Critical path: P0 → P1 → P2 → P3 → P5. P4 can start after P2 in parallel with P3; P6 and P7 can run in parallel after P2.
 
+### 6.1 Phase status at 0.5.6 (v3)
+
+| Phase | Status | Done | Left |
+|---|---|---|---|
+| P0 | **mostly done** | FR-SEC-01..03 (secrets sealed, device-only, migrated); FR-SEC-07 (salted scrypt, the allowed fallback); FR-APP-01 (single instance); FR-QA-01 hang and Windows crash (one-process run passes) | FR-SEC-06 DNS-rebinding hole (G-34); perf harness `bench/` and baseline numbers (Section 7.4) not built; FR-QA-01 < 3 min target and `pytest-timeout` |
+| P2 (pulled forward) | **partly done** | FR-SEC-04/05 trust gate for imported and synced phrases (`security.py`, `phrase_quarantine` table); FR-SEC-08 lock before expansion | `origin`/`trusted_hash` columns as specified (0.5.5 uses a quarantine table instead; record it as a decision); FR-SEC-08 `passcheck` modes; FR-DAT-00..05 |
+| P1, P3–P8 | not started | — | All their FRs |
+
+**Next step on the critical path:** finish P0 (close G-34 and build the `bench/` harness, so P1 has the baseline numbers it is measured against), then start P1 with a `pfhook.dll` spike that measures P-01 on a Windows runner.
+
 ---
 
 ## 7. Testing and quality
 
 ### 7.1 Current baseline [REPO]
 
-434 tests over core, IO, learning, cloud sync (two simulated PCs), macros, macro UI, triggers (incl. advanced), platform, output services, editor, popup, settings, UI, OneNote, Sticky Notes and the TextExpander import. A full single run hung at `tests/test_ui.py::test_theme_icons_tray` (stack in `app.setPalette`, `pe_style.py:142`) after 414 passes; split runs pass 434/434. FR-QA-01 fixes this first.
+0.5.6: **663 passed, 18 skipped in one process** (Linux, `QT_QPA_PLATFORM=offscreen`, 4 min 18 s, 2026-10-30), across 46 test files. Areas as in v2, plus security (trust gate, folder locks, single instance), Google sign-in, sticky-notes UI and the Tools tab. Windows CI (`windows-build.yml`) runs the same suite, then builds and runs the frozen EXE with `--self-test`, on every PR. The v2 hang at `test_ui.py::test_theme_icons_tray` no longer happens. The later Windows-only access violation was traced to `SingleInstance` sockets that stayed alive after their owner was destroyed, and was fixed in #14 with a subprocess regression test (`test_security.py::test_destroyed_single_instance_leaves_nothing_that_crashes_later`).
 
 ### 7.2 Unit and property tests (per feature)
 
