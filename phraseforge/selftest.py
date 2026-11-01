@@ -21,7 +21,7 @@ EXTRA_MODULES = ("httpx", "openpyxl", "qtawesome", "googleapiclient.discovery",
                  "google_auth_oauthlib.flow", "google.auth.transport.requests",
                  "winrt.windows.media.ocr", "winrt.windows.graphics.imaging",
                  "winrt.windows.storage.streams", "winrt.windows.globalization",
-                 "comtypes.client", "pyodbc", "win32com.client")
+                 "comtypes.client", "pyodbc", "win32com.client", "PySide6.QtPdf")
 
 
 def run() -> int:

@@ -1563,34 +1563,41 @@ class PhraseForgeApp(QObject):
         from phraseforge import mistral_ocr
         if not path:
             from PySide6.QtWidgets import QFileDialog
-            path, _ = QFileDialog.getOpenFileName(None, "OCR a PDF or image with Mistral", "",
+            path, _ = QFileDialog.getOpenFileName(None, "OCR a PDF or image", "",
                                                   mistral_ocr.FILE_FILTER)
             if not path:
                 return None
-        key = self.store.setting("ai.mistral_key", "")
-        if not key.strip():
-            self.tray.notify("Mistral OCR", "Enter your Mistral API key in Settings > Screen OCR first.")
-            self.show_settings()
-            return None
-        self.tray.notify("Mistral OCR", f"Reading {os.path.basename(path)}…")
+        key = self.store.setting("ai.mistral_key", "").strip()
+        # With a Mistral key the file goes to Mistral OCR (cloud); without one it is read on this
+        # PC: the PDF's own text, or Windows OCR for scans and images.
+        title = "Mistral OCR" if key else "OCR"
+        self.tray.notify(title, f"Reading {os.path.basename(path)}…")
         box: dict = {}
 
         def work():
             try:
-                md, pages = mistral_ocr.ocr_file(key, path, post=post)
+                if key:
+                    md, pages = mistral_ocr.ocr_file(key, path, post=post)
+                else:
+                    from phraseforge import local_ocr_file
+                    lang = self.store.setting("ocr.language", "Auto")
+                    engine = self.host._ocr()
+                    md, pages = local_ocr_file.ocr_file(
+                        path, lambda png: engine.ocr_png(png, language=lang, keep_line_breaks=True))
                 box["md"] = md
+                log.info("OCR file: %d page(s) from %s saved to %s", len(pages), os.path.basename(path), md)
 
                 def done(md=md, n=len(pages)):
-                    self.tray.notify("Mistral OCR", f"{n} page(s) saved to {md.parent.name}.")
+                    self.tray.notify(title, f"{n} page(s) saved to {md.parent.name}.")
                     if open_result:
                         from PySide6.QtCore import QUrl
                         from PySide6.QtGui import QDesktopServices
                         QDesktopServices.openUrl(QUrl.fromLocalFile(str(md)))
                 self.poster.posted.emit(done)
             except Exception as e:      # noqa: BLE001 - shown to the user
-                log.warning("Mistral OCR failed: %s", e)
-                self.poster.posted.emit(lambda e=e: self.tray.notify("Mistral OCR failed", str(e)))
-        t = threading.Thread(target=work, name="mistral-ocr", daemon=True)
+                log.warning("%s failed: %s", title, e)
+                self.poster.posted.emit(lambda e=e: self.tray.notify(f"{title} failed", str(e)))
+        t = threading.Thread(target=work, name="ocr-file", daemon=True)
         t.start()
         if post is not None:          # tests: wait for the result
             t.join(30)
