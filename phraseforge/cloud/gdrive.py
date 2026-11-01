@@ -154,7 +154,10 @@ class GoogleDrive:
         return client_config() is not None
 
     def signed_in(self) -> bool:
-        return self._load_creds() is not None
+        """True when a sign-in is stored. Reads the local token only: no network call, so the
+        Settings window can ask this while it opens (refreshing is left to the sync thread)."""
+        creds = self._creds or self._stored_creds()
+        return creds is not None and bool(creds.valid or creds.refresh_token)
 
     def sign_in(self, timeout_s: int = 300):
         """Open the browser for Google login. Blocks until done (run off the UI thread)."""
@@ -174,7 +177,7 @@ class GoogleDrive:
         return creds
 
     def sign_out(self) -> None:
-        creds = self._load_creds()
+        creds = self._creds or self._stored_creds()   # revoking needs no fresh access token
         if creds is not None:
             try:  # revoke at Google so the token can't be used anywhere
                 import requests
@@ -195,17 +198,24 @@ class GoogleDrive:
     def _save_creds(self, creds) -> None:
         token_file().write_bytes(protect(creds.to_json().encode("utf-8")))
 
-    def _load_creds(self):
-        if self._creds is not None:
-            return self._creds
+    def _stored_creds(self):
+        """The saved credentials as they are on disk (possibly expired), or None."""
         f = token_file()
         if not f.is_file():
             return None
         try:
             from google.oauth2.credentials import Credentials
             info = json.loads(unprotect(f.read_bytes()).decode("utf-8"))
-            creds = Credentials.from_authorized_user_info(info, SCOPES)
+            return Credentials.from_authorized_user_info(info, SCOPES)
         except Exception:
+            return None
+
+    def _load_creds(self):
+        """Credentials ready for API calls; refreshes an expired token over the network."""
+        if self._creds is not None:
+            return self._creds
+        creds = self._stored_creds()
+        if creds is None:
             return None
         if not creds.valid and creds.refresh_token:
             try:

@@ -161,6 +161,35 @@ def export_text_folder(store: Store, directory: str | Path) -> int:
     return n
 
 
+def read_text_any(path: str | Path) -> str:
+    """Text of a file written by any Windows program: UTF-8 (with or without BOM), UTF-16 with BOM,
+    else the PC's ANSI code page (Arabic Windows: cp1256). Line ends become "\\n"."""
+    text = _decode_any(Path(path).read_bytes())
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _decode_any(raw: bytes) -> str:
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16", errors="replace")
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        pass
+    import locale
+    enc = locale.getpreferredencoding(False) or "cp1252"
+    try:
+        return raw.decode(enc)
+    except (UnicodeDecodeError, LookupError):
+        return raw.decode("cp1252", errors="replace")
+
+
+def import_text_file(store: Store, path: str | Path, into_folder_id: int | None = None) -> int:
+    """One .txt file = one phrase; its name is the description."""
+    p = Path(path)
+    store.add_phrase(Phrase(p.stem, read_text_any(p), folder_id=into_folder_id))
+    return 1
+
+
 @untrusted_import
 def import_text_folder(store: Store, directory: str | Path, into_folder_id: int | None = None) -> int:
     root = Path(directory)
@@ -168,7 +197,7 @@ def import_text_folder(store: Store, directory: str | Path, into_folder_id: int 
     for f in sorted(root.rglob("*.txt")):
         rel = f.relative_to(root).parent
         fid = ensure_folder_path(store, str(rel) if str(rel) != "." else "", into_folder_id)
-        store.add_phrase(Phrase(f.stem, f.read_text(encoding="utf-8", errors="replace"), folder_id=fid))
+        store.add_phrase(Phrase(f.stem, read_text_any(f), folder_id=fid))
         n += 1
     return n
 
@@ -262,7 +291,7 @@ def import_file(store: Store, path: str | Path, into_folder_id: int | None = Non
         from phraseforge.importers.textexpander import import_textexpander_file
         return import_textexpander_file(store, p).imported
     if ext == ".txt":
-        return import_text_folder(store, p.parent, into_folder_id)
+        return import_text_file(store, p, into_folder_id)
     raise ValueError(f"Unsupported file type: {ext or p.name}")
 
 

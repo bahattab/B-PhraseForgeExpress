@@ -77,7 +77,7 @@ SCHEMA: dict[str, str] = {
     "sync.gdrive_folder": "PhraseForge",
     "sync.folder_path": "",
     "sync.auto": "1",
-    "sync.interval_min": "15",
+    "sync.interval_min": "7",
     "backup.cloud_auto": "1",
     "backup.cloud_interval_hours": "24",
     "backup.cloud_keep": "10",
@@ -281,6 +281,14 @@ def ensure_defaults(store) -> int:
     Returns how many defaults were added."""
     have = store.settings()
     migrate_legacy(store, have)
+    # 0.5.8: Auto sync runs every 7 minutes. Move the old default of 15 once (a value the
+    # user picked stays, and so does 15 if they choose it again later).
+    if "sync.interval_v2" not in have:
+        if have.get("sync.interval_min") == "15":
+            store.set_setting("sync.interval_min", "7")
+            have["sync.interval_min"] = "7"
+        store.set_setting("sync.interval_v2", "1")
+        have["sync.interval_v2"] = "1"
     added = 0
     for k, v in SCHEMA.items():
         if k not in have:

@@ -57,14 +57,14 @@ hiddenimports += ["winrt.windows.media.ocr", "winrt.windows.globalization", "win
                   "winrt.windows.storage.streams", "winrt.windows.foundation",
                   "winrt.windows.foundation.collections", "winrt.runtime", "winrt.system"]
 # OneNote COM client (comtypes generates its wrapper modules at run time) and ODBC queries.
-hiddenimports += collect_submodules("comtypes") + ["pyodbc", "win32com.client"]
+hiddenimports += collect_submodules("comtypes") + ["pyodbc", "win32com.client", "PySide6.QtPdf"]
 
 # Qt modules PhraseForge never uses; keeps the build much smaller.
 excludes = [
     "tkinter", "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineQuick",
     "PySide6.Qt3DCore", "PySide6.Qt3DRender", "PySide6.QtQuick", "PySide6.QtQml",
     "PySide6.QtQuick3D", "PySide6.QtCharts", "PySide6.QtDataVisualization", "PySide6.QtMultimedia",
-    "PySide6.QtPdf", "PySide6.QtBluetooth", "PySide6.QtSerialPort", "PySide6.QtSql",
+    "PySide6.QtBluetooth", "PySide6.QtSerialPort", "PySide6.QtSql",
     "PySide6.QtDesigner", "PySide6.QtHelp", "PySide6.QtLocation", "PySide6.QtPositioning",
     "PySide6.QtSensors", "PySide6.QtWebSockets", "PySide6.QtRemoteObjects", "PySide6.QtScxml",
     "PySide6.QtTextToSpeech", "PySide6.QtNfc", "PySide6.QtSpatialAudio",

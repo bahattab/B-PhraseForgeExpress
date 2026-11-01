@@ -86,9 +86,9 @@ class PromptOptimizerWindow(QWidget):
         self.use_project.toggled.connect(lambda _on: self._update_context())
         self.project.currentTextChanged.connect(lambda _t: self._update_context())
 
+        # Message box and buttons on top, the conversation below.
         self.transcript = QTextBrowser()
         self.transcript.setOpenExternalLinks(True)
-        lay.addWidget(self.transcript, 1)
         self.input = QPlainTextEdit()
         self.input.setPlaceholderText(tr("Describe what you want, e.g. \"help me build a page for an AI teacher\". "
                                          "Enter sends, Shift+Enter adds a line."))
@@ -123,6 +123,7 @@ class PromptOptimizerWindow(QWidget):
         lay.addLayout(row)
         self.status = QLabel()
         lay.addWidget(self.status)
+        lay.addWidget(self.transcript, 1)
         self.new_conversation()
 
     # ---------------------------------------------------------------- helpers

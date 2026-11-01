@@ -40,10 +40,34 @@ requirements, Constraints, Deliverables.
    - Bug fix: "Debug and fix [issue] with the following approach:" then Problem analysis (current and \
 expected behaviour, steps to reproduce), Investigation, Fix requirements, Tests.
    - Explanation: "Explain [code or concept] with focus on:" then Structure, Key logic, Examples.
-5. Write in the user's language (Arabic if the user writes Arabic). Keep placeholders in curly braces, \
-such as {#clipboard}, exactly as written."""
+5. Language: write ONLY in English or Arabic, never in any other language. Use Arabic if the user \
+writes in Arabic, otherwise English. If the user's request or examples contain text in another \
+language (for example Chinese labels or titles), translate it into the reply's language and do not \
+ask for labels or text in that other language. Keep placeholders in curly braces, such as \
+{#clipboard} or {{name}}, exactly as written."""
 
 CACHE_TTL_S = 60 * 60
+
+_ARABIC_RANGES = ((0x0600, 0x06FF), (0x0750, 0x077F), (0x08A0, 0x08FF), (0xFB50, 0xFDFF), (0xFE70, 0xFEFF))
+
+
+def _is_arabic(ch: str) -> bool:
+    o = ord(ch)
+    return any(lo <= o <= hi for lo, hi in _ARABIC_RANGES)
+
+
+def _is_latin(ch: str) -> bool:
+    o = ord(ch)
+    return o < 0x0250 or 0x1E00 <= o <= 0x1EFF
+
+
+def has_other_script(text: str) -> bool:
+    """True if the text has letters that are neither Latin nor Arabic (e.g. Chinese)."""
+    return any(ch.isalpha() and not (_is_latin(ch) or _is_arabic(ch)) for ch in text or "")
+
+
+def reply_language(user_text: str) -> str:
+    return "Arabic" if any(_is_arabic(ch) for ch in user_text or "") else "English"
 
 
 def extract_optimized(reply: str) -> str:
@@ -238,6 +262,17 @@ class Conversation:
         if reply is None:
             try:
                 reply = self.chat_fn(list(self.history), system)
+                if has_other_script(reply):
+                    # Replies must be English or Arabic only: ask once for a rewrite.
+                    lang = reply_language(text)
+                    fixed = self.chat_fn(list(self.history) + [
+                        {"role": "assistant", "content": reply},
+                        {"role": "user", "content": f"Rewrite your whole reply in {lang} only. Translate every "
+                                                    "word in another language (for example Chinese) into "
+                                                    f"{lang}. Keep the same structure and placeholders."}],
+                        system)
+                    if fixed and not has_other_script(fixed):
+                        reply = fixed
             except Exception:
                 self.history.pop()                 # let the user try the same message again
                 raise

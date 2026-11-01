@@ -84,12 +84,90 @@ def test_app_ocr_file_and_screen_engine(tmp_path):
     f.show_settings = lambda: setattr(f, "shown", f.shown + 1)
     pdf = tmp_path / "doc.pdf"
     pdf.write_bytes(b"%PDF")
-    assert PhraseForgeApp.ocr_file(f, str(pdf), post=lambda *a: fake_response()) is None   # no key yet
-    assert f.shown == 1 and "API key" in notes[-1][1]
     store.set_setting("ai.mistral_key", "k")
     md = PhraseForgeApp.ocr_file(f, str(pdf), post=lambda *a: fake_response(), open_result=False)
     assert md is not None and md.exists() and "2 page(s)" in notes[-1][1]
     assert store.setting("ai.mistral_key") == "k"
     raw = store.conn.execute("SELECT value FROM settings WHERE key='ai.mistral_key'").fetchone()[0]
     assert raw != "k"                                   # stored encrypted like the other keys
+    store.close()
+
+
+def _app_like(tmp_path, ocr_text="from windows ocr"):
+    from phraseforge.app import PhraseForgeApp
+    from phraseforge.db import Store
+    store = Store(tmp_path / "l.db")
+    notes = []
+
+    class Fake:
+        pass
+    f = Fake()
+    f.store = store
+    f.tray = type("T", (), {"notify": lambda _s, t, m: notes.append((t, m))})()
+    f.poster = type("P", (), {"posted": type("S", (), {"emit": staticmethod(lambda fn: fn())})()})()
+    engine = type("E", (), {"ocr_png": lambda _s, png, language="", keep_line_breaks=True: ocr_text})()
+    f.host = type("H", (), {"_ocr": lambda _s: engine})()
+    f.show_settings = lambda: (_ for _ in ()).throw(AssertionError("must not open Settings"))
+    return PhraseForgeApp, f, store, notes
+
+
+def _make_pdf(path, pages):
+    from PySide6.QtGui import QFont, QPainter, QPdfWriter
+    w = QPdfWriter(str(path))
+    p = QPainter(w)
+    p.setFont(QFont("Arial", 24))
+    for i, text in enumerate(pages):
+        if i:
+            w.newPage()
+        if text:
+            p.drawText(200, 600, text)
+    p.end()
+
+
+def test_without_mistral_key_pdf_text_is_read_on_this_pc(tmp_path):
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    app_cls, f, store, notes = _app_like(tmp_path)
+    pdf = tmp_path / "report.pdf"
+    _make_pdf(pdf, ["Hello PDF text", ""])          # page 2 is a "scan" without a text layer
+    md = app_cls.ocr_file(f, str(pdf), post=lambda *a: 1 / 0, open_result=False)   # Mistral is never called
+    # case-insensitive: a PDF drawn with the offscreen platform on Windows gives "HELLO PDF TEXT"
+    text = md.read_text(encoding="utf-8")
+    assert "hello pdf text" in text.lower() and "from windows ocr" in text and "## Page 2" in text
+    assert notes[-1][0] == "OCR" and "2 page(s)" in notes[-1][1]
+    store.close()
+
+
+def test_without_mistral_key_image_uses_windows_ocr(tmp_path):
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtGui import QColor, QImage
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    app_cls, f, store, notes = _app_like(tmp_path, "text in the picture")
+    img = QImage(60, 30, QImage.Format_RGB32)
+    img.fill(QColor("white"))
+    path = tmp_path / "shot.png"
+    img.save(str(path))
+    md = app_cls.ocr_file(f, str(path), post=lambda *a: 1 / 0, open_result=False)
+    assert md.read_text(encoding="utf-8") == "text in the picture"
+    store.close()
+
+
+def test_local_ocr_reports_files_without_text(tmp_path):
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    app_cls, f, store, notes = _app_like(tmp_path, "")
+    pdf = tmp_path / "blank.pdf"
+    _make_pdf(pdf, [""])
+    assert app_cls.ocr_file(f, str(pdf), post=lambda *a: 1 / 0, open_result=False) is None
+    assert notes[-1][0] == "OCR failed" and "No text" in notes[-1][1]
+    bad = tmp_path / "notes.txt"
+    bad.write_text("x")
+    assert app_cls.ocr_file(f, str(bad), post=lambda *a: 1 / 0, open_result=False) is None
+    assert "Only PDF files and images" in notes[-1][1]
     store.close()

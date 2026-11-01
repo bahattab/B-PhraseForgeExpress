@@ -1731,7 +1731,7 @@ class SettingsDialog(QDialog):
         g, ob = _group("Options")
         self.sync_auto = self.bind("sync.auto", QCheckBox("Synchronize automatically every"))
         self.sync_interval = self.bind("sync.interval_min", _spin(1, 1440))
-        ob.addWidget(_row(self.sync_auto, self.sync_interval, "minutes, at start and on exit"))
+        ob.addWidget(_row(self.sync_auto, self.sync_interval, "minutes, at start, on exit and a minute after changes"))
         self.cloud_backup_auto = self.bind("backup.cloud_auto", QCheckBox("Back up to the cloud every"))
         self.cloud_backup_hours = self.bind("backup.cloud_interval_hours", _spin(1, 720))
         ob.addWidget(_row(self.cloud_backup_auto, self.cloud_backup_hours, "hours"))

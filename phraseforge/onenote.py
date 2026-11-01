@@ -44,6 +44,18 @@ HRESULTS = {
 }
 NPS_DEFAULT = 0            # NewPageStyle.npsDefault
 
+# PublishFormat (OneNote 2013 developer reference) for IApplication.Publish
+PF = {"one": 0, "onepkg": 1, "mht": 2, "pdf": 3, "xps": 4, "docx": 5, "doc": 5, "emf": 6, "html": 7}
+# File types the user can export OneNote content to, label -> (extension, PublishFormat)
+PUBLISH_FORMATS = (
+    ("OneNote Section (*.one)", "one"),
+    ("OneNote Package (*.onepkg)", "onepkg"),
+    ("Word Document (*.docx)", "docx"),
+    ("PDF (*.pdf)", "pdf"),
+    ("XPS (*.xps)", "xps"),
+    ("Single File Web Page (*.mht)", "mht"),
+)
+
 
 class OneNoteError(RuntimeError):
     pass
@@ -379,6 +391,29 @@ class OneNote:
                 return self.create_page(node.id, title or _title_from(text), text, image_png)
             raise OneNoteError("Choose a OneNote page or section (not a notebook or group).")
         return self.create_page(self.quick_notes_section(), title or _title_from(text), text, image_png)
+
+    @_friendly
+    def open_file(self, path: str) -> str:
+        """Open a .one (section) or .onetoc2 (notebook) file already on disk and return its
+        hierarchy ID, so its pages can be read. The file is not copied or changed."""
+        if not Path(path).is_file():
+            raise OneNoteError(f"File not found: {path}")
+        return self.app.OpenHierarchy(str(path), "", CFT_NONE)
+
+    @_friendly
+    def new_section_file(self, path: str) -> str:
+        """Create (or open) a .one section file at path and return its section ID, for writing."""
+        return self.app.OpenHierarchy(str(path), "", CFT_SECTION)
+
+    @_friendly
+    def publish(self, hierarchy_id: str, path: str, fmt: str) -> str:
+        """Export a page/section/notebook (by hierarchy ID) to a file. fmt is a key of PF
+        (one, onepkg, docx, pdf, xps, mht, html). Returns the path written."""
+        code = PF.get((fmt or "").lower())
+        if code is None:
+            raise OneNoteError(f"Unknown export format: {fmt}")
+        self.app.Publish(hierarchy_id, str(path), code, "")
+        return str(path)
 
     @_friendly
     def navigate(self, object_id: str) -> None:

@@ -99,3 +99,46 @@ def import_nodes(store: Store, client: OneNote, refs: list[str], include_ocr: bo
         if not add_container(n, parent):
             break
     return rep
+
+
+def import_one_file(store: Store, client: OneNote, path: str, include_ocr: bool = False,
+                    progress: Callable[[int, int, str], bool | None] | None = None,
+                    into_folder_id: int | None = None) -> OneNoteImportReport:
+    """Import a OneNote section file (.one) that is already on disk: every page becomes a
+    phrase in a new folder named after the section. OneNote opens the file read-only."""
+    from pathlib import Path
+    section_id = client.open_file(str(path))
+    rep = import_nodes(store, client, [section_id], include_ocr=include_ocr, progress=progress,
+                       into_folder_id=into_folder_id)
+    if rep.folder_id is None and not rep.errors:
+        rep.errors.append(f"No readable pages in {Path(path).name}.")
+    return rep
+
+
+def export_to_onenote(store: Store, client: OneNote, path: str, folder_id: int | None = None,
+                      language: str = "") -> OneNoteImportReport:
+    """Write the phrases of a PhraseForge folder (and its sub-folders) to a new OneNote
+    section file (.one): one page per phrase, title = description. Nested folder names are
+    kept in the page title ("Sub / Phrase"), because a OneNote section does not hold folders.
+    """
+    from phraseforge.importers.phraseexpress import _text_of
+    rep = OneNoteImportReport()
+    section_id = client.new_section_file(str(path))
+
+    def phrases_under(fid, prefix):
+        out = []
+        for p in sorted(store.phrases(fid), key=lambda p: (p.sort, p.description.lower())):
+            out.append((prefix, p))
+        for f in sorted(store.folders(fid), key=lambda f: (f.sort, f.name.lower())):
+            out.extend(phrases_under(f.id, f"{prefix}{f.name} / " if prefix or f.name else ""))
+        return out
+
+    for prefix, p in phrases_under(folder_id, ""):
+        try:
+            text = _text_of(store, p, language)
+            client.create_page(section_id, (prefix + p.description)[:120] or "(untitled)", text)
+            rep.imported += 1
+        except Exception as e:                       # one bad page must not stop the export
+            rep.errors.append(f"{p.description}: {e}")
+    rep.folder_id = folder_id
+    return rep

@@ -30,6 +30,7 @@ from phraseforge.models import OutputMode
 from phraseforge.ocr import OCRError, WindowsOCR
 
 log = logging.getLogger("phraseforge")
+AFTER_CHANGE_SYNC_MS = 60_000      # Auto sync: wait this long after the last phrase change
 user32 = ctypes.windll.user32 if sys.platform == "win32" else None
 
 
@@ -260,8 +261,26 @@ class QtHost:
         return clipboard.get_text() or ""
 
     def set_clipboard(self, text):
+        """Put text on the clipboard from the UI thread. Its hidden owner window gets Windows
+        messages there; a worker thread's owner window never processes any."""
         from phraseforge.platform import clipboard
-        clipboard.set_text(text)
+        self._ui(lambda: clipboard.set_text(text))
+
+    def copy_checked(self, text: str, tries: int = 3) -> bool:
+        """set_clipboard, then read it back; retries a few times (another program may hold
+        or replace the clipboard). True when the clipboard holds the text."""
+        import time
+        for i in range(tries):
+            try:
+                self.set_clipboard(text)
+                got = self._ui(self.get_clipboard)
+            except Exception as e:
+                log.warning("clipboard copy failed (try %d): %s", i + 1, e)
+                got = None
+            if got is not None and got.replace("\r\n", "\n") == text.replace("\r\n", "\n"):
+                return True
+            time.sleep(0.15)
+        return False
 
     def clipboard_history(self, index):
         return self.store.clipboard_at(index)
@@ -347,6 +366,7 @@ class QtHost:
         from phraseforge.ocr import apply_replacements, parse_replace_rules
         if rect is None:
             rect = self.select_screen_region()
+            log.info("OCR: area %s", rect)
             if not rect:
                 raise Cancelled()
         self.last_ocr_rect = tuple(rect)
@@ -354,6 +374,7 @@ class QtHost:
         import time
         time.sleep(0.15)   # let the selection overlay disappear before the screenshot
         png = self._ui(lambda: _grab_screen_png(rect))
+        log.info("OCR: captured %d bytes", len(png or b""))
         if not png:
             raise OCRError("The selected area could not be captured.")
         if self.store.setting("ocr.engine", "windows") == "mistral":
@@ -368,6 +389,8 @@ class QtHost:
             engine = self._ocr()
             text = engine.ocr_png(png, language=lang, keep_line_breaks=self._keep_breaks(keep_line_breaks))
             used = engine.last_language or lang       # with "Auto", rules for the detected language apply
+        log.info("OCR: engine %s, language %s, %d characters read",
+                 self.store.setting("ocr.engine", "windows"), used, len(text or ""))
         rules = parse_replace_rules(self.store.setting("ocr.replace_rules", ""))
         return apply_replacements(text, rules, used) if rules else text
 
@@ -811,6 +834,27 @@ class PhraseForgeApp(QObject):
         self._cloud_timer.timeout.connect(self._cloud_tick)
         self._cloud_timer.start(60_000)
         QTimer.singleShot(10_000, lambda: self._cloud_tick(force_sync=True))
+        # Sync soon after phrases change, so nobody has to remember Send/Receive. Each new
+        # change restarts the wait, so a burst of edits gives one sync.
+        self._change_sync_timer = QTimer(self)
+        self._change_sync_timer.setSingleShot(True)
+        self._change_sync_timer.setInterval(AFTER_CHANGE_SYNC_MS)
+        self._change_sync_timer.timeout.connect(self._sync_after_change)
+
+    def _schedule_sync_after_change(self):
+        """UI thread: (re)start the short wait before syncing a change."""
+        st = self.store
+        timer = getattr(self, "_change_sync_timer", None)
+        if timer is not None and st.setting("sync.provider", "off") != "off" \
+                and st.setting("sync.auto", "1") == "1":
+            timer.start()
+
+    def _sync_after_change(self):
+        st = self.store
+        if st.setting("sync.provider", "off") == "off" or st.setting("sync.auto", "1") != "1":
+            return
+        if not self._cloud_tick(force_sync=True):
+            self._change_sync_timer.start()          # a sync is running: try again after the wait
 
     # ---------------------------------------------------------- automatic update check
     def _build_update_check(self):
@@ -882,7 +926,7 @@ class PhraseForgeApp(QObject):
             except ValueError:
                 return True
         do_sync = manual or st.setting("sync.auto", "1") == "1" and (
-            force_sync or due("sync.last_time", float(st.setting("sync.interval_min", "15") or 15)))
+            force_sync or due("sync.last_time", float(st.setting("sync.interval_min", "7") or 7)))
         do_backup = not manual and st.setting("backup.cloud_auto", "1") == "1" and due(
             "backup.cloud_last", 60 * float(st.setting("backup.cloud_interval_hours", "24") or 24))
         if not (do_sync or do_backup):
@@ -945,6 +989,8 @@ class PhraseForgeApp(QObject):
             self.learner.invalidate_phrases()
         if kind in ("phrase", "folder", "setting"):
             self.poster.posted.emit(self.triggers.reload)
+        if kind in ("phrase", "folder"):
+            self.poster.posted.emit(self._schedule_sync_after_change)
         if kind == "setting" and getattr(self, "tray", None) is not None:
             self.poster.posted.emit(self._apply_tray_click)
 
@@ -1373,6 +1419,7 @@ class PhraseForgeApp(QObject):
         s = self.store.setting
         from phraseforge.ocr import format_log_entry
         if not text:
+            log.info("OCR: no text recognised")
             self.poster.posted.emit(lambda: self.tray.notify("OCR", "No text recognised"))
             return
         log_file = s("ocr.log_file", "").strip()
@@ -1383,8 +1430,14 @@ class PhraseForgeApp(QObject):
             except OSError:
                 log.exception("OCR log file")
         copied = s("ocr.save_to_clipboard", "1") != "0"
-        if copied:
-            self.host.set_clipboard(text)
+        if copied and not self.host.copy_checked(text):
+            log.warning("OCR: the text could not be put on the clipboard")
+            self.poster.posted.emit(lambda: self.tray.notify(
+                "OCR", "The text was read but could not be copied to the clipboard. Another program "
+                       "may be holding the clipboard; try again."))
+            return
+        log.info("OCR: %d characters delivered (clipboard %s, notification %s)", len(text),
+                 "on" if copied else "off", "on" if s("ocr.show_popup", "1") != "0" else "off")
         if s("ocr.show_popup", "1") != "0":
             preview = text if len(text) < 120 else text[:117] + "..."
             title = "OCR copied to clipboard" if copied else "OCR"
@@ -1510,34 +1563,41 @@ class PhraseForgeApp(QObject):
         from phraseforge import mistral_ocr
         if not path:
             from PySide6.QtWidgets import QFileDialog
-            path, _ = QFileDialog.getOpenFileName(None, "OCR a PDF or image with Mistral", "",
+            path, _ = QFileDialog.getOpenFileName(None, "OCR a PDF or image", "",
                                                   mistral_ocr.FILE_FILTER)
             if not path:
                 return None
-        key = self.store.setting("ai.mistral_key", "")
-        if not key.strip():
-            self.tray.notify("Mistral OCR", "Enter your Mistral API key in Settings > Screen OCR first.")
-            self.show_settings()
-            return None
-        self.tray.notify("Mistral OCR", f"Reading {os.path.basename(path)}…")
+        key = self.store.setting("ai.mistral_key", "").strip()
+        # With a Mistral key the file goes to Mistral OCR (cloud); without one it is read on this
+        # PC: the PDF's own text, or Windows OCR for scans and images.
+        title = "Mistral OCR" if key else "OCR"
+        self.tray.notify(title, f"Reading {os.path.basename(path)}…")
         box: dict = {}
 
         def work():
             try:
-                md, pages = mistral_ocr.ocr_file(key, path, post=post)
+                if key:
+                    md, pages = mistral_ocr.ocr_file(key, path, post=post)
+                else:
+                    from phraseforge import local_ocr_file
+                    lang = self.store.setting("ocr.language", "Auto")
+                    engine = self.host._ocr()
+                    md, pages = local_ocr_file.ocr_file(
+                        path, lambda png: engine.ocr_png(png, language=lang, keep_line_breaks=True))
                 box["md"] = md
+                log.info("OCR file: %d page(s) from %s saved to %s", len(pages), os.path.basename(path), md)
 
                 def done(md=md, n=len(pages)):
-                    self.tray.notify("Mistral OCR", f"{n} page(s) saved to {md.parent.name}.")
+                    self.tray.notify(title, f"{n} page(s) saved to {md.parent.name}.")
                     if open_result:
                         from PySide6.QtCore import QUrl
                         from PySide6.QtGui import QDesktopServices
                         QDesktopServices.openUrl(QUrl.fromLocalFile(str(md)))
                 self.poster.posted.emit(done)
             except Exception as e:      # noqa: BLE001 - shown to the user
-                log.warning("Mistral OCR failed: %s", e)
-                self.poster.posted.emit(lambda e=e: self.tray.notify("Mistral OCR failed", str(e)))
-        t = threading.Thread(target=work, name="mistral-ocr", daemon=True)
+                log.warning("%s failed: %s", title, e)
+                self.poster.posted.emit(lambda e=e: self.tray.notify(f"{title} failed", str(e)))
+        t = threading.Thread(target=work, name="ocr-file", daemon=True)
         t.start()
         if post is not None:          # tests: wait for the result
             t.join(30)
