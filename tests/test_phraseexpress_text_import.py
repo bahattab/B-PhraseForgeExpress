@@ -68,3 +68,9 @@ def test_file_import_of_one_txt_does_not_import_its_whole_folder(tmp_path):
     assert io_formats.import_file(s, f) == 1
     assert [p.content for p in s.phrases()] == ["only me"]
     s.close()
+
+
+def test_windows_line_ends_become_newlines(tmp_path):
+    f = tmp_path / "crlf.txt"
+    f.write_bytes("a\r\nb\rc".encode("utf-16"))
+    assert io_formats.read_text_any(f) == "a\nb\nc"

@@ -163,8 +163,12 @@ def export_text_folder(store: Store, directory: str | Path) -> int:
 
 def read_text_any(path: str | Path) -> str:
     """Text of a file written by any Windows program: UTF-8 (with or without BOM), UTF-16 with BOM,
-    else the PC's ANSI code page (Arabic Windows: cp1256)."""
-    raw = Path(path).read_bytes()
+    else the PC's ANSI code page (Arabic Windows: cp1256). Line ends become "\\n"."""
+    text = _decode_any(Path(path).read_bytes())
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _decode_any(raw: bytes) -> str:
     if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
         return raw.decode("utf-16", errors="replace")
     try:
