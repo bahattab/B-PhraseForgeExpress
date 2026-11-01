@@ -47,13 +47,15 @@ class OneNotePicker(QDialog):
         self.client_factory = client_factory or default_client_factory(exe)
         self.synchronous = synchronous           # tests: load on the calling thread
         self.nodes: list = []
-        self.setWindowTitle({"import": "Import from OneNote", "page": "Choose a OneNote page"}
+        self.setWindowTitle({"import": "Import from OneNote", "page": "Choose a OneNote page",
+                             "export": "Export OneNote to a file"}
                             .get(mode, "Choose a OneNote page or section"))
         self.resize(460, 560)
 
         lay = QVBoxLayout(self)
         hint = {"import": "Tick the notebooks, section groups or sections to import. Each page becomes a phrase.",
-                "page": "Choose the page whose text is inserted."}.get(
+                "page": "Choose the page whose text is inserted.",
+                "export": "Choose the page, section or notebook to export to a file."}.get(
             mode, "Choose a page (text is added to it) or a section (a new page is created there).")
         lab = QLabel(hint)
         lab.setWordWrap(True)
@@ -163,7 +165,9 @@ class OneNotePicker(QDialog):
             it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
             it.setCheckState(0, Qt.Unchecked)
         else:
-            selectable = node.kind == "page" or (self.mode == "target" and node.kind == "section")
+            selectable = (self.mode == "export"                       # any single node can be exported
+                          or node.kind == "page"
+                          or (self.mode == "target" and node.kind == "section"))
             if not selectable:
                 it.setFlags(it.flags() & ~Qt.ItemIsSelectable)
         for c in node.children:
@@ -217,7 +221,7 @@ class OneNotePicker(QDialog):
         if it is None or not (it.flags() & Qt.ItemIsSelectable):
             return None
         kind = it.data(0, ROLE_KIND)
-        if kind == "page" or (self.mode == "target" and kind == "section"):
+        if self.mode == "export" or kind == "page" or (self.mode == "target" and kind == "section"):
             return it.data(0, ROLE_REF)
         return None
 

@@ -823,14 +823,17 @@ class MainWindow(QMainWindow):
         imp = menu_with(self, [("File import (JSON, CSV, TXT)...", "import", self.import_file),
                                ("Files including directory structure...", "folder_tree", self.import_folder),
                                None,
-                               ("From PhraseExpress (CSV export)...", "import", self.import_phraseexpress),
+                               ("From PhraseExpress (CSV / XML export)...", "import", self.import_phraseexpress),
                                ("TextExpander / macOS (.csv / .textexpander / .plist)...", "textexpander", self.import_textexpander),
-                               ("From OneNote...", "on_notebook", self.import_onenote)])
+                               None,
+                               ("From OneNote (running)...", "on_notebook", self.import_onenote),
+                               ("From a OneNote file (.one)...", "on_notebook", self.import_onenote_file)])
         exp = menu_with(self, [("Export to file (JSON, CSV)...", "export", self.export_file),
                                ("Text files (one file per phrase)...", "text_file", self.export_text_folder),
+                               ("Document (.docx, .pdf, .html, .mht)...", "export", self.export_document),
                                None,
-                               ("Word document (.docx)...", "export", lambda: self.export_document("docx")),
-                               ("PDF document (.pdf)...", "print", lambda: self.export_document("pdf")),
+                               ("To a OneNote section (.one)...", "on_notebook", self.export_onenote_section),
+                               ("OneNote to a file (.docx/.pdf/.xps/.mht)...", "on_notebook", self.export_onenote_file),
                                None,
                                ("For PhraseExpress (CSV)...", "export", lambda: self.export_for("phraseexpress")),
                                ("For TextExpander (CSV)...", "textexpander", lambda: self.export_for("textexpander")),
@@ -2255,8 +2258,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Import", str(e))
 
     def import_phraseexpress(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Import from PhraseExpress", "",
-                                              "PhraseExpress export (*.csv *.txt *.tsv);;"
+        path, _ = QFileDialog.getOpenFileName(self, "Import from PhraseExpress", "",  # noqa: E501 - filter below
+                                              "PhraseExpress export (*.csv *.txt *.tsv *.xml);;"
                                               "PhraseExpress phrase files (*.pexdb *.pexdbhub *.pxp);;All files (*)")
         if path:
             self.import_phraseexpress_path(path)
@@ -2345,6 +2348,97 @@ class MainWindow(QMainWindow):
             if refs:
                 self.import_onenote_refs(refs, factory)
 
+    def import_onenote_file(self, path: str | None = None, client_factory=None, show_message: bool = True):
+        """Import > From a OneNote file (.one): open the section file and import its pages."""
+        from phraseforge.ui.onenote_picker import default_client_factory
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(self, "Import a OneNote section file", "",
+                                                  "OneNote section (*.one);;All files (*)")
+            if not path:
+                return
+        factory = client_factory or default_client_factory(self.store.setting("onenote.exe", ""))
+        try:
+            section_id = factory().open_file(path)
+        except Exception as e:
+            if show_message:
+                QMessageBox.warning(self, "Import from OneNote", str(e))
+            return None
+        return self.import_onenote_refs([section_id], factory, show_message=show_message)
+
+    def export_onenote_section(self, path: str | None = None, client_factory=None, show_message: bool = True):
+        """Export > To a OneNote section: write the selected folder's phrases to a .one file."""
+        self.save_current()
+        from phraseforge.importers.onenote import export_to_onenote
+        from phraseforge.ui.onenote_picker import default_client_factory
+        folder_id = self.selected_folder_id()
+        if path is None:
+            path, _ = QFileDialog.getSaveFileName(self, "Export phrases to a OneNote section",
+                                                  "phrases.one", "OneNote section (*.one)")
+            if not path:
+                return None
+            if not path.lower().endswith(".one"):
+                path += ".one"
+        factory = client_factory or default_client_factory(self.store.setting("onenote.exe", ""))
+        try:
+            rep = export_to_onenote(self.store, factory(), path, folder_id,
+                                    self.store.setting("phrase.active_language", ""))
+        except Exception as e:
+            if show_message:
+                QMessageBox.warning(self, "Export to OneNote", str(e))
+            return None
+        if show_message:
+            msg = f"Wrote {rep.imported} page(s) to OneNote."
+            if rep.errors:
+                msg += f"\n{len(rep.errors)} page(s) failed."
+            QMessageBox.information(self, "Export to OneNote", msg)
+        return rep
+
+    def export_onenote_file(self, ref: str | None = None, path: str | None = None,
+                            fmt: str | None = None, client_factory=None, show_message: bool = True):
+        """Export > OneNote to a file: pick a page/section/notebook and a format (docx/pdf/xps/mht/one)."""
+        from phraseforge import onenote as on
+        from phraseforge.ui.onenote_picker import OneNotePicker, default_client_factory
+        factory = client_factory or default_client_factory(self.store.setting("onenote.exe", ""))
+        if ref is None:
+            dlg = OneNotePicker(self, mode="export", client_factory=factory)
+            if not dlg.exec():
+                return None
+            ref = dlg.selected_ref()
+            if not ref:
+                return None
+        if path is None:
+            flt = ";;".join(label for label, _ in on.PUBLISH_FORMATS)
+            path, sel = QFileDialog.getSaveFileName(self, "Export OneNote to a file", "onenote-export.pdf", flt)
+            if not path:
+                return None
+            from pathlib import Path as _P
+            fmt = _P(path).suffix.lower().lstrip(".") or dict(
+                (lbl, key) for lbl, key in on.PUBLISH_FORMATS).get(sel, "pdf")
+            if not _P(path).suffix:
+                path += "." + fmt
+        fmt = fmt or Path(path).suffix.lower().lstrip(".")
+        try:
+            client = factory()
+            node = None
+            for n in client.notebooks():
+                from phraseforge.onenote import find
+                node = find([n], ref)
+                if node:
+                    break
+            client.publish(node.id if node else ref, path, fmt)
+        except Exception as e:
+            if show_message:
+                QMessageBox.warning(self, "Export OneNote", str(e))
+            return None
+        if show_message:
+            box = QMessageBox(QMessageBox.Information, "Export OneNote",
+                              f"Exported to {Path(path).name}.", QMessageBox.Close, self)
+            btn = box.addButton("Open", QMessageBox.AcceptRole)
+            box.exec()
+            if box.clickedButton() is btn:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        return path
+
     def import_onenote_refs(self, refs: list[str], client_factory, show_message: bool = True):
         """Run the import with a progress dialog. Runs on the UI thread (store listeners update
         widgets), keeping the window responsive between pages. Returns the report or None."""
@@ -2431,19 +2525,29 @@ class MainWindow(QMainWindow):
             return self.store.phrases(self.sel_id)
         return self.store.phrases()
 
-    def export_document(self, kind: str, path: str | None = None, show_message: bool = True):
-        """Selected phrase, selected folder or all phrases as .docx / .pdf (Arabic right to left)."""
+    def export_document(self, kind: str | None = None, path: str | None = None, show_message: bool = True):
+        """Selected phrase, selected folder or all phrases as a document. kind is the extension
+        without the dot (docx, pdf, html, mht); None asks with a format picker."""
         self.save_current()
         from phraseforge import documents
         from phraseforge.ui import i18n
-        title = "Export as Word document" if kind == "docx" else "Export as PDF"
+        title = "Export as document"
         if path is None:
-            flt = "Word document (*.docx)" if kind == "docx" else "PDF (*.pdf)"
-            path, _ = QFileDialog.getSaveFileName(self, title, f"phrases.{kind}", flt)
+            flt = ";;".join(f"{label}" for label, _ in documents.EXPORT_FORMATS
+                            if _[1:] in ("docx", "pdf", "html", "mht"))
+            path, sel = QFileDialog.getSaveFileName(self, title, "phrases.docx", flt)
             if not path:
                 return None
-            if not path.lower().endswith("." + kind):
-                path += "." + kind
+            from pathlib import Path as _P
+            ext = _P(path).suffix.lower().lstrip(".")
+            if ext not in ("docx", "pdf", "html", "htm", "mht"):
+                ext = {("Word Document (*.docx)"): "docx", "PDF (*.pdf)": "pdf",
+                       "Web Page (*.html)": "html", "Single File Web Page (*.mht)": "mht"}.get(sel, "docx")
+                path += "." + ext
+            kind = ext
+        elif kind is None:
+            from pathlib import Path as _P
+            kind = _P(path).suffix.lower().lstrip(".")
         try:
             n = documents.export(self.store, self.phrases_for_print(), path, i18n.language(),
                                  self.store.setting("phrase.active_language", ""))

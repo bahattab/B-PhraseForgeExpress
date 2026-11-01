@@ -168,6 +168,87 @@ def import_csv(store: Store, path: str | Path, folder_name: str | None = None) -
     return rep
 
 
+# ------------------------------------------------------------------ XML reading
+# PhraseExpress' "Export > XML" writes folders and phrases either with attributes or with
+# child elements; this reads both. Tag and field names are matched loosely (HEADER_ALIASES).
+_PHRASE_TAGS = {"phrase", "autotext", "item", "entry"}
+_FOLDER_TAGS = {"folder", "group", "category", "phrasefolder"}
+
+
+def _field_from(el, field: str) -> str:
+    """Value of a field for a PhraseExpress element: matching attribute or child element."""
+    for k, v in el.attrib.items():
+        key = re.sub(r"[\s_\-]+", "", k.strip().lower())
+        if HEADER_ALIASES.get(key) == field and (v or "").strip():
+            return v
+    for child in el:
+        tag = re.sub(r"\{[^}]*\}", "", child.tag)       # strip XML namespace
+        key = re.sub(r"[\s_\-]+", "", tag.strip().lower())
+        if HEADER_ALIASES.get(key) == field and (child.text or "").strip():
+            return child.text
+    return ""
+
+
+def _is_phrase_el(el) -> bool:
+    tag = re.sub(r"\{[^}]*\}", "", el.tag).strip().lower()
+    if tag in _PHRASE_TAGS:
+        return True
+    # a <folder>-like element that carries content directly is also a phrase
+    return bool(_field_from(el, "content")) and not any(
+        re.sub(r"\{[^}]*\}", "", c.tag).strip().lower() in _PHRASE_TAGS | _FOLDER_TAGS for c in el)
+
+
+@untrusted_import
+def import_xml(store: Store, path: str | Path, folder_name: str | None = None) -> ExchangeReport:
+    """Import a PhraseExpress XML export (folders, descriptions, content, autotext, hotkey)."""
+    import xml.etree.ElementTree as ET
+    p = Path(path)
+    rep = ExchangeReport()
+    try:
+        root = ET.fromstring(_read_text(p))
+    except ET.ParseError as e:
+        raise ValueError(f"This XML file could not be read: {e}") from e
+    top = store.add_folder(Folder(folder_name or p.stem))
+    rep.folder_id = top.id
+
+    def phrase_el(el, fid) -> None:
+        content = _field_from(el, "content") or (el.text or "")
+        autotext = _field_from(el, "autotext")
+        if not content.strip() and not autotext.strip():
+            rep.skipped += 1
+            return
+        desc = _field_from(el, "description").strip() or (content.strip().splitlines() or ["Phrase"])[0][:60]
+        triggers = []
+        for at in filter(None, (x.strip() for x in re.split(r"[|;]", autotext))):
+            triggers.append(Trigger(TriggerKind.AUTOTEXT, at))
+        hk = _field_from(el, "hotkey").strip()
+        if hk:
+            triggers.append(Trigger(TriggerKind.HOTKEY, hk))
+        fmt = "html" if re.search(r"(?i)</?(p|b|i|br|div|span)\b", content) else "text"
+        store.add_phrase(Phrase(desc, content, folder_id=fid, triggers=triggers, content_format=fmt))
+        rep.imported += 1
+
+    def walk(el, fid) -> None:
+        for child in el:
+            tag = re.sub(r"\{[^}]*\}", "", child.tag).strip().lower()
+            if tag in _FOLDER_TAGS and not _is_phrase_el(child):
+                name = _field_from(child, "description").strip() or child.get("name", "").strip() or "Folder"
+                sub = store.add_folder(Folder(name, parent_id=fid))
+                walk(child, sub.id)
+            elif _is_phrase_el(child):
+                phrase_el(child, fid)
+            else:
+                walk(child, fid)                 # unknown wrapper: descend
+
+    if _is_phrase_el(root):
+        phrase_el(root, top.id)
+    else:
+        walk(root, top.id)
+    if not rep.imported and not rep.skipped:
+        rep.notes.append("No phrases were found in this XML file.")
+    return rep
+
+
 # ------------------------------------------------------------------ writing
 def _phrases(store: Store, folder_id: int | None = None) -> list[Phrase]:
     phrases = store.phrases()
@@ -310,6 +391,8 @@ def import_any(store: Store, path: str | Path) -> ExchangeReport:
     check_phraseexpress_file(p)
     if p.suffix.lower() in (".csv", ".txt", ".tsv"):
         return import_csv(store, p)
+    if p.suffix.lower() == ".xml":
+        return import_xml(store, p)
     if looks_encrypted(p):
         raise EncryptedPhraseFile(ENCRYPTED_MESSAGE)
     raise ValueError(f"Unsupported PhraseExpress file: {p.name}. Export a CSV file from PhraseExpress.")

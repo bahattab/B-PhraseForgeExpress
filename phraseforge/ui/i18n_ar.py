@@ -1310,4 +1310,18 @@ AR_EXTRA = {
     'Choose the buttons of the toolbar and their order (the first one is shown at the start of the bar).': 'اختر أزرار شريط الأدوات وترتيبها (يظهر الأول في بداية الشريط).',
     'OCR a PDF or image': 'قراءة نص PDF أو صورة',
     "Phrase created: {name}": "تم إنشاء العبارة: {name}",
+    # ------------------------- OneNote / PhraseExpress exchange (0.5.9)
+    'From PhraseExpress (CSV / XML export)...': 'من PhraseExpress (تصدير CSV / XML)...',
+    'From OneNote (running)...': 'من OneNote (المفتوح)...',
+    'From a OneNote file (.one)...': 'من ملف OneNote \u200f(.one)...',
+    'Document (.docx, .pdf, .html, .mht)...': 'مستند \u200f(.docx، \u200f.pdf، \u200f.html، \u200f.mht)...',
+    'To a OneNote section (.one)...': 'إلى قسم OneNote \u200f(.one)...',
+    'OneNote to a file (.docx/.pdf/.xps/.mht)...': 'OneNote إلى ملف \u200f(.docx/.pdf/.xps/.mht)...',
+    'Import a OneNote section file': 'استيراد ملف قسم OneNote',
+    'Export phrases to a OneNote section': 'تصدير العبارات إلى قسم OneNote',
+    'Export OneNote to a file': 'تصدير OneNote إلى ملف',
+    'Export to OneNote': 'التصدير إلى OneNote',
+    'Export OneNote': 'تصدير OneNote',
+    'Export as document': 'تصدير كمستند',
+    'Choose the page, section or notebook to export to a file.': 'اختر الصفحة أو القسم أو الدفتر لتصديره إلى ملف.',
 }

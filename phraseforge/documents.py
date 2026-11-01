@@ -252,13 +252,80 @@ def export_pdf(entries: list[Entry], path: str | Path, ui_lang: str = "en", titl
     return len(entries)
 
 
+def build_html(entries: list["Entry"], ui_lang: str = "en", title: str | None = None) -> str:
+    """A self-contained HTML page listing the phrases (used for .html and .mht export)."""
+    lab = LABELS.get(ui_lang, LABELS["en"])
+    doc_rtl = ui_lang == "ar"
+    rows = []
+    for e in entries:
+        trg = " · ".join(f"{_html.escape(l)}: {_html.escape(v)}" for l, v in e.triggers)
+        body_rtl = ' dir="rtl"' if is_rtl(e.text) else ""
+        meta = []
+        if e.folder:
+            meta.append(f"{_html.escape(lab['folder'])}: {_html.escape(e.folder)}")
+        if trg:
+            meta.append(trg)
+        meta_html = f'<div class="meta">{" | ".join(meta)}</div>' if meta else ""
+        body = _html.escape(e.text).replace("\n", "<br>")
+        extra = ""
+        for lang, text in e.versions:
+            extra += (f'<div class="ver"><b>{_html.escape(lang)}:</b> '
+                      f'{_html.escape(text).replace(chr(10), "<br>")}</div>')
+        rows.append(f'<article><h2>{_html.escape(e.description)}</h2>{meta_html}'
+                    f'<div class="body"{body_rtl}>{body}</div>{extra}</article>')
+    head = (f'<!doctype html><html lang="{ui_lang}"{" dir=rtl" if doc_rtl else ""}>'
+            f'<head><meta charset="utf-8"><title>{_html.escape(title or lab["title"])}</title>'
+            '<style>body{font-family:Segoe UI,Arial,sans-serif;max-width:820px;margin:24px auto;'
+            'padding:0 16px;color:#222}h1{font-size:22px}h2{font-size:16px;margin:18px 0 4px}'
+            'article{border-bottom:1px solid #e0e0e0;padding-bottom:10px}.meta{color:#777;font-size:12px}'
+            '.body{white-space:pre-wrap;margin-top:6px}.ver{color:#555;margin-top:6px;font-size:13px}</style>'
+            f'</head><body><h1>{_html.escape(title or lab["title"])}</h1>'
+            f'<p class="meta">{len(entries)} {_html.escape(lab["count"])}</p>')
+    return head + "".join(rows) + "</body></html>"
+
+
+def export_html(entries: list["Entry"], path: str | Path, ui_lang: str = "en",
+                title: str | None = None) -> int:
+    Path(path).write_text(build_html(entries, ui_lang, title), encoding="utf-8")
+    return len(entries)
+
+
+def export_mht(entries: list["Entry"], path: str | Path, ui_lang: str = "en",
+               title: str | None = None) -> int:
+    """Single File Web Page (MHTML), the same format OneNote and Word write."""
+    import email.message
+    import email.policy
+    msg = email.message.EmailMessage(policy=email.policy.default)
+    msg["Subject"] = title or LABELS.get(ui_lang, LABELS["en"])["title"]
+    msg["MIME-Version"] = "1.0"
+    msg["Content-Type"] = "multipart/related; type=\"text/html\""
+    msg.add_related(build_html(entries, ui_lang, title), subtype="html", charset="utf-8")
+    Path(path).write_bytes(msg.as_bytes())
+    return len(entries)
+
+
+EXPORT_FORMATS = (
+    ("Word Document (*.docx)", ".docx"),
+    ("PDF (*.pdf)", ".pdf"),
+    ("Web Page (*.html)", ".html"),
+    ("Single File Web Page (*.mht)", ".mht"),
+    ("JSON (*.json)", ".json"),
+    ("Text files (*.txt)", ".txt"),
+    ("CSV (*.csv)", ".csv"),
+)
+
+
 def export(store: Store, phrases: list[Phrase], path: str | Path, ui_lang: str = "en",
            language: str = "", include_versions: bool = True) -> int:
-    """Write .docx or .pdf by the file extension."""
+    """Write .docx, .pdf, .html or .mht by the file extension."""
     entries = collect(store, phrases, language, include_versions)
     ext = Path(path).suffix.lower()
     if ext == ".docx":
         return export_docx(entries, path, ui_lang)
     if ext == ".pdf":
         return export_pdf(entries, path, ui_lang)
+    if ext in (".html", ".htm"):
+        return export_html(entries, path, ui_lang)
+    if ext == ".mht":
+        return export_mht(entries, path, ui_lang)
     raise ValueError(f"Unsupported document type: {ext}")
