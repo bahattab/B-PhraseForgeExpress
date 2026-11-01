@@ -115,3 +115,39 @@ def test_window(tmp_path):
     assert w.conv.history == [] and not w.copy_btn.isEnabled()
     w.close()
     store.close()
+
+
+def test_reply_language_rules():
+    assert po.has_other_script("参考表 / Reference sheet")
+    assert po.has_other_script("Привет")
+    assert not po.has_other_script("Optimized Prompt:\nمرحبا Hello é ü {#clipboard}")
+    assert po.reply_language("أريد صورة") == "Arabic"
+    assert po.reply_language("make a sheet 人物") == "English"
+    assert "ONLY in English or Arabic" in po.SYSTEM_PROMPT
+
+
+def test_reply_with_chinese_is_rewritten_once():
+    calls = []
+
+    def chat_fn(history, system):
+        calls.append(history[-1]["content"])
+        return "Optimized Prompt:\n人物 Character sheet" if len(calls) == 1 else "Optimized Prompt:\nCharacter sheet"
+    c = po.Conversation({}, chat_fn=chat_fn, cache=po.ReplyCache())
+    reply = c.send("make a 人物一致性参考表")
+    assert reply == "Optimized Prompt:\nCharacter sheet" and len(calls) == 2
+    assert "English only" in calls[1]
+    assert [m["role"] for m in c.history] == ["user", "assistant"]
+
+
+def test_window_puts_the_message_box_above_the_conversation():
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from phraseforge.ui.prompt_optimizer import PromptOptimizerWindow
+    from phraseforge.db import Store
+    w = PromptOptimizerWindow(Store(":memory:"))
+    lay = w.layout()
+    order = [lay.indexOf(w.input), lay.indexOf(w.transcript)]
+    assert -1 not in order and order[0] < order[1]
+    w.close()
