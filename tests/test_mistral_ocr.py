@@ -133,8 +133,9 @@ def test_without_mistral_key_pdf_text_is_read_on_this_pc(tmp_path):
     pdf = tmp_path / "report.pdf"
     _make_pdf(pdf, ["Hello PDF text", ""])          # page 2 is a "scan" without a text layer
     md = app_cls.ocr_file(f, str(pdf), post=lambda *a: 1 / 0, open_result=False)   # Mistral is never called
+    # case-insensitive: a PDF drawn with the offscreen platform on Windows gives "HELLO PDF TEXT"
     text = md.read_text(encoding="utf-8")
-    assert "Hello PDF text" in text and "from windows ocr" in text and "## Page 2" in text
+    assert "hello pdf text" in text.lower() and "from windows ocr" in text and "## Page 2" in text
     assert notes[-1][0] == "OCR" and "2 page(s)" in notes[-1][1]
     store.close()
 
