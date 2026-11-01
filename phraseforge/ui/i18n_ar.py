@@ -1282,4 +1282,15 @@ AR_EXTRA = {
     "Google Drive folder to use:": "مجلد Google Drive المراد استخدامه:",
     "Google Drive for desktop was not found on this PC.\n\nInstall it from google.com/drive/download and sign in there, then click \"Find Google Drive\" again. Or click \"Sign in with Google\" above instead.":
         "لم يُعثر على Google Drive لسطح المكتب في هذا الحاسوب.\n\nثبّته من google.com/drive/download وسجّل الدخول فيه، ثم انقر \"العثور على Google Drive\" مرة أخرى. أو انقر \"Sign in with Google\" في الأعلى بدلًا من ذلك.",
+    # ---------------------------------------------------------------- Auto sync
+    "Auto sync": "مزامنة تلقائية",
+    "minutes, at start, on exit and a minute after changes": "دقيقة، وعند البدء والخروج، وبعد دقيقة من أي تعديل",
+    "Synchronize automatically: at start, about a minute after you change phrases, every few minutes and on exit, so you never have to click Send/Receive.":
+        "مزامنة تلقائية: عند البدء، وبعد نحو دقيقة من تعديل العبارات، وكل بضع دقائق، وعند الخروج؛ فلا تحتاج إلى النقر على إرسال/استقبال.",
+    "Every {n} minutes": "كل {n} دقيقة",
+    "Every minute": "كل دقيقة",
+    "Every {n} min": "كل {n} دقيقة",
+    "Synchronize every (minutes):": "المزامنة كل (دقيقة):",
+    "How often Auto sync runs": "عدد مرات المزامنة التلقائية",
+    "Every 7 min": "كل 7 دقيقة",
 }

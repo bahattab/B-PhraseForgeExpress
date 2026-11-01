@@ -30,6 +30,7 @@ from phraseforge.models import OutputMode
 from phraseforge.ocr import OCRError, WindowsOCR
 
 log = logging.getLogger("phraseforge")
+AFTER_CHANGE_SYNC_MS = 60_000      # Auto sync: wait this long after the last phrase change
 user32 = ctypes.windll.user32 if sys.platform == "win32" else None
 
 
@@ -811,6 +812,27 @@ class PhraseForgeApp(QObject):
         self._cloud_timer.timeout.connect(self._cloud_tick)
         self._cloud_timer.start(60_000)
         QTimer.singleShot(10_000, lambda: self._cloud_tick(force_sync=True))
+        # Sync soon after phrases change, so nobody has to remember Send/Receive. Each new
+        # change restarts the wait, so a burst of edits gives one sync.
+        self._change_sync_timer = QTimer(self)
+        self._change_sync_timer.setSingleShot(True)
+        self._change_sync_timer.setInterval(AFTER_CHANGE_SYNC_MS)
+        self._change_sync_timer.timeout.connect(self._sync_after_change)
+
+    def _schedule_sync_after_change(self):
+        """UI thread: (re)start the short wait before syncing a change."""
+        st = self.store
+        timer = getattr(self, "_change_sync_timer", None)
+        if timer is not None and st.setting("sync.provider", "off") != "off" \
+                and st.setting("sync.auto", "1") == "1":
+            timer.start()
+
+    def _sync_after_change(self):
+        st = self.store
+        if st.setting("sync.provider", "off") == "off" or st.setting("sync.auto", "1") != "1":
+            return
+        if not self._cloud_tick(force_sync=True):
+            self._change_sync_timer.start()          # a sync is running: try again after the wait
 
     # ---------------------------------------------------------- automatic update check
     def _build_update_check(self):
@@ -882,7 +904,7 @@ class PhraseForgeApp(QObject):
             except ValueError:
                 return True
         do_sync = manual or st.setting("sync.auto", "1") == "1" and (
-            force_sync or due("sync.last_time", float(st.setting("sync.interval_min", "15") or 15)))
+            force_sync or due("sync.last_time", float(st.setting("sync.interval_min", "7") or 7)))
         do_backup = not manual and st.setting("backup.cloud_auto", "1") == "1" and due(
             "backup.cloud_last", 60 * float(st.setting("backup.cloud_interval_hours", "24") or 24))
         if not (do_sync or do_backup):
@@ -945,6 +967,8 @@ class PhraseForgeApp(QObject):
             self.learner.invalidate_phrases()
         if kind in ("phrase", "folder", "setting"):
             self.poster.posted.emit(self.triggers.reload)
+        if kind in ("phrase", "folder"):
+            self.poster.posted.emit(self._schedule_sync_after_change)
         if kind == "setting" and getattr(self, "tray", None) is not None:
             self.poster.posted.emit(self._apply_tray_click)
 

@@ -644,6 +644,18 @@ class MainWindow(QMainWindow):
         b = g.add_large("Send/Receive\nupdates", "sync", self.sync_now)
         b.setToolTip("Synchronize your phrases with the cloud now (Ctrl+F5). "
                      "Set up the cloud service in Settings > Backup & Sync.")
+        c = g.add_column()
+        self.btn_auto_sync = c.add_small("Auto sync", "sync")
+        self.btn_auto_sync.setCheckable(True)
+        self.btn_auto_sync.setToolTip("Synchronize automatically: at start, about a minute after you change "
+                                      "phrases, every few minutes and on exit, so you never have to "
+                                      "click Send/Receive.")
+        self.btn_auto_sync.toggled.connect(self._set_auto_sync)
+        self.sync_interval_menu = QMenu(self)
+        self.sync_interval_menu.aboutToShow.connect(self._fill_sync_interval_menu)
+        self.btn_sync_interval = c.add_small("Every 7 min", "", menu=self.sync_interval_menu, split=False)
+        self.btn_sync_interval.setToolTip("How often Auto sync runs")
+        self.refresh_auto_sync()
         g = t.add_group("Edit")
         self.color_menu = color_menu(self, self.set_color)
         self.btn_color = g.add_large("Color", "color", menu=self.color_menu, split=False)
@@ -817,6 +829,7 @@ class MainWindow(QMainWindow):
 
     def refresh_tools(self) -> None:
         """Update the items that change: "Enabled in <program>", OCR languages, Statistics."""
+        self.refresh_auto_sync()
         tray = self.tray
         if tray is None or not hasattr(self, "tool_buttons"):
             return
@@ -1085,6 +1098,53 @@ class MainWindow(QMainWindow):
         self._push_nav(kind, id_)
         self._update_status()
         self._update_actions()
+
+    def _set_auto_sync(self, on: bool) -> None:
+        want = "1" if on else "0"
+        if self.store.setting("sync.auto", "1") != want:
+            self.store.set_setting("sync.auto", want)
+        self.refresh_auto_sync()
+
+    SYNC_INTERVALS = (1, 5, 7, 10, 15, 30, 60)
+
+    def sync_interval(self) -> int:
+        try:
+            return max(1, min(1440, int(self.store.setting("sync.interval_min", "7") or 7)))
+        except ValueError:
+            return 7
+
+    def set_sync_interval(self, minutes: int) -> None:
+        self.store.set_setting("sync.interval_min", str(max(1, min(1440, int(minutes)))))
+        self.refresh_auto_sync()
+
+    def _fill_sync_interval_menu(self) -> None:
+        m = self.sync_interval_menu
+        m.clear()
+        cur = self.sync_interval()
+        for n in self.SYNC_INTERVALS:
+            a = m.addAction(tr("Every {n} minutes").replace("{n}", str(n)) if n > 1 else tr("Every minute"))
+            a.setCheckable(True)
+            a.setChecked(n == cur)
+            a.triggered.connect(lambda _=False, n=n: self.set_sync_interval(n))
+        m.addSeparator()
+        m.addAction(tr("Other..."), self._ask_sync_interval)
+
+    def _ask_sync_interval(self) -> None:
+        n, ok = QInputDialog.getInt(self, tr("Auto sync"), tr("Synchronize every (minutes):"),
+                                    self.sync_interval(), 1, 1440)
+        if ok:
+            self.set_sync_interval(n)
+
+    def refresh_auto_sync(self) -> None:
+        """Show the Auto sync buttons as the settings are (they can change in Settings)."""
+        b = getattr(self, "btn_auto_sync", None)
+        if b is not None:
+            on = self.store.setting("sync.auto", "1") == "1"
+            b.blockSignals(True)
+            b.setChecked(on)
+            b.blockSignals(False)
+            self.btn_sync_interval.setText(tr("Every {n} min").replace("{n}", str(self.sync_interval())))
+            self.btn_sync_interval.setEnabled(on)
 
     def sync_now(self) -> None:
         """Send/Receive updates: synchronize with the cloud (Settings > Backup & Sync)."""

@@ -216,3 +216,47 @@ def test_client_from_another_pc_is_ignored(home):
 def test_builtin_client_with_bom(home):
     (home / "builtin.json").write_bytes(b"\xef\xbb\xbf" + json.dumps(gdrive.client_json(CID, "s")).encode())
     assert gdrive.client_source() == "builtin"
+
+
+# ---- Settings must not wait on the network while it opens (it flickered once sign-in worked)
+
+def _expired_token(home):
+    import datetime
+    info = {"token": "old-access", "refresh_token": "refresh-123", "client_id": CID,
+            "client_secret": "fake-secret", "token_uri": "https://oauth2.googleapis.com/token",
+            "scopes": gdrive.SCOPES,
+            "expiry": (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")}
+    gdrive.token_file().write_bytes(_seal(json.dumps(info).encode("utf-8")))
+
+
+def _no_network(monkeypatch):
+    from google.oauth2.credentials import Credentials
+    hits = []
+    monkeypatch.setattr(Credentials, "refresh", lambda self, req: hits.append(1) or (_ for _ in ()).throw(
+        OSError("network used")))
+    return hits
+
+
+def test_signed_in_reads_the_stored_token_without_network(home, monkeypatch):
+    hits = _no_network(monkeypatch)
+    _expired_token(home)
+    assert gdrive.GoogleDrive().signed_in() is True
+    assert hits == []
+
+
+def test_signed_in_false_without_token_or_refresh(home, monkeypatch):
+    _no_network(monkeypatch)
+    assert gdrive.GoogleDrive().signed_in() is False
+    gdrive.token_file().write_bytes(b"not sealed")
+    assert gdrive.GoogleDrive().signed_in() is False
+
+
+def test_settings_opens_without_refreshing_the_token(app, home, monkeypatch):
+    hits = _no_network(monkeypatch)
+    _expired_token(home)
+    from phraseforge.ui import settings_dialog as sd
+    s = Store(":memory:")
+    s.set_setting("sync.provider", "gdrive")
+    d = sd.SettingsDialog(s, page="cloud")
+    assert hits == []
+    assert d.gdrive_signin_btn.text() == "Sign out"
