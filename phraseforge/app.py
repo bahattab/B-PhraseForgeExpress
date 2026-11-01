@@ -261,8 +261,26 @@ class QtHost:
         return clipboard.get_text() or ""
 
     def set_clipboard(self, text):
+        """Put text on the clipboard from the UI thread. Its hidden owner window gets Windows
+        messages there; a worker thread's owner window never processes any."""
         from phraseforge.platform import clipboard
-        clipboard.set_text(text)
+        self._ui(lambda: clipboard.set_text(text))
+
+    def copy_checked(self, text: str, tries: int = 3) -> bool:
+        """set_clipboard, then read it back; retries a few times (another program may hold
+        or replace the clipboard). True when the clipboard holds the text."""
+        import time
+        for i in range(tries):
+            try:
+                self.set_clipboard(text)
+                got = self._ui(self.get_clipboard)
+            except Exception as e:
+                log.warning("clipboard copy failed (try %d): %s", i + 1, e)
+                got = None
+            if got is not None and got.replace("\r\n", "\n") == text.replace("\r\n", "\n"):
+                return True
+            time.sleep(0.15)
+        return False
 
     def clipboard_history(self, index):
         return self.store.clipboard_at(index)
@@ -1412,8 +1430,12 @@ class PhraseForgeApp(QObject):
             except OSError:
                 log.exception("OCR log file")
         copied = s("ocr.save_to_clipboard", "1") != "0"
-        if copied:
-            self.host.set_clipboard(text)
+        if copied and not self.host.copy_checked(text):
+            log.warning("OCR: the text could not be put on the clipboard")
+            self.poster.posted.emit(lambda: self.tray.notify(
+                "OCR", "The text was read but could not be copied to the clipboard. Another program "
+                       "may be holding the clipboard; try again."))
+            return
         log.info("OCR: %d characters delivered (clipboard %s, notification %s)", len(text),
                  "on" if copied else "off", "on" if s("ocr.show_popup", "1") != "0" else "off")
         if s("ocr.show_popup", "1") != "0":
