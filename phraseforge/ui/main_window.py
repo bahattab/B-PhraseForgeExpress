@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from PySide6.QtCore import QEvent, QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QActionGroup, QColor, QDesktopServices, QFont, QKeySequence, QPainter, QPixmap, QShortcut
+from PySide6.QtGui import QAction, QActionGroup, QColor, QCursor, QDesktopServices, QFont, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow,
     QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSplitter, QStackedWidget, QStatusBar, QToolBar, QToolButton,
@@ -523,18 +523,155 @@ class MainWindow(QMainWindow):
         return self.panel.unlocked
 
     def _build_quick_toolbar(self) -> QToolBar:
+        """The small bar under the ribbon. Its buttons are chosen by the user (quick_toolbar.py)."""
         tb = QToolBar()
         tb.setObjectName("QuickToolbar")
         tb.setIconSize(QSize(16, 16))
         tb.setMovable(False)
-        self.act_back = tb.addAction(icon("back"), "Back", self.nav_back)
-        self.act_forward = tb.addAction(icon("forward"), "Forward", self.nav_forward)
-        tb.addAction(icon("sync"), "Send/Receive updates (Ctrl+F5)", self.sync_now)
-        tb.addAction(icon("new_folder"), "New Folder (Ctrl+O)", lambda: self.new_folder())
-        tb.addAction(icon("new_phrase"), "New Phrase (Ctrl+N)", lambda: self.new_phrase())
-        tb.addAction(icon("column_toggle"), "Toggle two/three columns",
-                     lambda: self.set_columns(2 if self.three_columns else 3))
+        tb.setContextMenuPolicy(Qt.CustomContextMenu)
+        tb.customContextMenuRequested.connect(self._quickbar_context_menu)
+        self.quickbar = tb
+        self._quick_actions: dict = {}
+        # Back/Forward exist even when hidden: navigation enables and disables them.
+        self.act_back = self._quick_action("back")
+        self.act_forward = self._quick_action("forward")
+        self.quick_menu_btn = QToolButton(tb)
+        self.quick_menu_btn.setText("▾")
+        self.quick_menu_btn.setToolTip("Customize the toolbar")
+        self.quick_menu_btn.setPopupMode(QToolButton.InstantPopup)
+        self.quick_menu = QMenu(self.quick_menu_btn)
+        self.quick_menu.aboutToShow.connect(self._fill_quick_menu)
+        self.quick_menu_btn.setMenu(self.quick_menu)
+        self.rebuild_quickbar()
         return tb
+
+    # ---- quick toolbar: catalog, actions and customization
+    def quick_catalog(self) -> list[tuple[str, str, str]]:
+        """Every command the toolbar can show: the window's own, then the Tools tab's items."""
+        from phraseforge.ui import quick_toolbar as qt_
+        out = list(qt_.BUILTIN)
+        for _group, columns in self.TOOLS_TAB:
+            for column in columns:
+                out.extend(column)
+        return out
+
+    def _quick_action(self, key: str) -> QAction:
+        act = self._quick_actions.get(key)
+        if act is not None:
+            return act
+        entry = next((e for e in self.quick_catalog() if e[0] == key), None)
+        label, icon_name = (entry[1], entry[2]) if entry else (key, "")
+        act = QAction(icon(icon_name), tr(label), self)
+        act.setToolTip(tr(label))
+        handlers = {"back": self.nav_back, "forward": self.nav_forward, "sync": self.sync_now,
+                    "new_folder": lambda: self.new_folder(), "new_phrase": lambda: self.new_phrase(),
+                    "columns": lambda: self.set_columns(2 if self.three_columns else 3)}
+        if key in handlers:
+            act.triggered.connect(lambda _=False, f=handlers[key]: f())
+        else:
+            tray_act = getattr(self.tray, "items", {}).get(key) if self.tray is not None else None
+            if key in self.TOOL_MENUS:
+                menu = tray_act.menu() if tray_act is not None else None
+                if menu is not None:
+                    act.setMenu(menu)
+                    act.triggered.connect(lambda _=False, m=menu: m.exec(QCursor.pos()))
+                act.setEnabled(menu is not None)
+            else:
+                if key in self.TOOL_TOGGLES:
+                    act.setCheckable(True)
+                    if tray_act is not None:
+                        act.setChecked(tray_act.isChecked())
+                        tray_act.toggled.connect(act.setChecked)
+                act.triggered.connect(lambda _=False, k=key: self.run_tool(k))
+                act.setEnabled(self._tool_available(key))
+        self._quick_actions[key] = act
+        return act
+
+    def quick_keys(self) -> list[str]:
+        from phraseforge.ui import quick_toolbar as qt_
+        return qt_.load(self.store, {k for k, _, _ in self.quick_catalog()})
+
+    def set_quick_keys(self, keys: list[str]) -> None:
+        from phraseforge.ui import quick_toolbar as qt_
+        qt_.save(self.store, keys)
+        self.rebuild_quickbar()
+
+    def rebuild_quickbar(self) -> None:
+        tb = self.quickbar
+        tb.clear()                      # removes the actions from the bar; they stay alive
+        for key in self.quick_keys():
+            tb.addAction(self._quick_action(key))
+        tb.addWidget(self.quick_menu_btn)
+
+    def _fill_quick_menu(self) -> None:
+        """▾ menu: tick a command to show it, untick to hide it."""
+        m = self.quick_menu
+        m.clear()
+        shown = self.quick_keys()
+        for key, label, icon_name in self.quick_catalog():
+            a = m.addAction(icon(icon_name), tr(label))
+            a.setCheckable(True)
+            a.setChecked(key in shown)
+            a.toggled.connect(lambda on, k=key: self.show_on_quickbar(k, on))
+        m.addSeparator()
+        m.addAction(tr("Customize toolbar..."), self.customize_quickbar)
+        m.addAction(tr("Reset toolbar"), self.reset_quickbar)
+
+    def show_on_quickbar(self, key: str, on: bool = True) -> None:
+        keys = self.quick_keys()
+        if on and key not in keys:
+            keys.append(key)
+        elif not on and key in keys:
+            keys.remove(key)
+        self.set_quick_keys(keys)
+
+    def move_on_quickbar(self, key: str, direction: str) -> None:
+        """direction "left" / "right" as seen on screen (also in right-to-left layouts)."""
+        from phraseforge.ui import quick_toolbar as qt_
+        step = qt_.visual_step(direction, self.layoutDirection() == Qt.RightToLeft)
+        self.set_quick_keys(qt_.moved(self.quick_keys(), key, step))
+
+    def reset_quickbar(self) -> None:
+        from phraseforge.ui import quick_toolbar as qt_
+        self.set_quick_keys(list(qt_.DEFAULT))
+
+    def customize_quickbar(self) -> None:
+        from phraseforge.ui.quick_toolbar import QuickToolbarDialog
+        d = QuickToolbarDialog(self.quick_catalog(), self.quick_keys(), self,
+                               rtl=self.layoutDirection() == Qt.RightToLeft)
+        if d.exec() == QDialog.Accepted:
+            self.set_quick_keys(d.keys())
+
+    def _quick_key_of(self, action) -> str | None:
+        return next((k for k, a in self._quick_actions.items() if a is action), None)
+
+    def _quickbar_context_menu(self, pos) -> None:
+        key = self._quick_key_of(self.quickbar.actionAt(pos))
+        m = QMenu(self)
+        if key is not None:
+            keys = self.quick_keys()
+            i = keys.index(key) if key in keys else -1
+            rtl = self.layoutDirection() == Qt.RightToLeft
+            first, last = i == 0, i == len(keys) - 1
+            a = m.addAction(tr("Move left"), lambda: self.move_on_quickbar(key, "left"))
+            a.setEnabled(not (last if rtl else first))
+            a = m.addAction(tr("Move right"), lambda: self.move_on_quickbar(key, "right"))
+            a.setEnabled(not (first if rtl else last))
+            m.addAction(tr("Remove from toolbar"), lambda: self.show_on_quickbar(key, False))
+            m.addSeparator()
+        m.addAction(tr("Customize toolbar..."), self.customize_quickbar)
+        m.addAction(tr("Reset toolbar"), self.reset_quickbar)
+        m.exec(self.quickbar.mapToGlobal(pos))
+
+    def _tool_button_context_menu(self, key: str, button, pos) -> None:
+        """Right-click on a Tools tab button: add it to (or remove it from) the toolbar."""
+        m = QMenu(self)
+        if key in self.quick_keys():
+            m.addAction(tr("Remove from toolbar"), lambda: self.show_on_quickbar(key, False))
+        else:
+            m.addAction(tr("Add to toolbar"), lambda: self.show_on_quickbar(key, True))
+        m.addAction(tr("Customize toolbar..."), self.customize_quickbar)
+        m.exec(button.mapToGlobal(pos))
 
     def _build_search(self) -> None:
         self.search = QLineEdit()
@@ -797,6 +934,9 @@ class MainWindow(QMainWindow):
                                 b.setChecked(act.isChecked())
                                 act.toggled.connect(b.setChecked)
                         b.setEnabled(self._tool_available(key))
+                    b.setContextMenuPolicy(Qt.CustomContextMenu)
+                    b.customContextMenuRequested.connect(
+                        lambda pos, k=key, btn=b: self._tool_button_context_menu(k, btn, pos))
                     self.tool_buttons[key] = b
         self.ribbon.tab_changed.connect(lambda k: k == "tools" and self.refresh_tools())
         self.refresh_tools()
