@@ -90,6 +90,30 @@ def phrase_label(p: Phrase) -> str:
     return p.description or "(no description)"
 
 
+ITEM_MIME = "application/x-phraseforge-item"
+DRAGGABLE = ("phrase", "folder", "clip", "note")     # clip / note: dropping makes a new phrase
+
+
+def item_mime(kind: str, id_) -> "QMimeData":
+    """Drag data for one item; the description goes along as plain text for other programs."""
+    import json
+    from PySide6.QtCore import QMimeData
+    md = QMimeData()
+    md.setData(ITEM_MIME, json.dumps({"kind": kind, "id": id_}).encode("utf-8"))
+    return md
+
+
+def read_item_mime(md) -> tuple[str, object] | None:
+    import json
+    if md is None or not md.hasFormat(ITEM_MIME):
+        return None
+    try:
+        d = json.loads(bytes(md.data(ITEM_MIME)).decode("utf-8"))
+        return (d["kind"], d["id"]) if d.get("kind") in DRAGGABLE else None
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
 class PhraseTree(QTreeWidget):
     """Tree with drag & drop; drops are reported to the owner instead of moved by Qt."""
     dropped = Signal(str, int, object)   # kind, id, new parent folder id (None = root)
@@ -105,7 +129,36 @@ class PhraseTree(QTreeWidget):
         self.setIndentation(14)
         self.setUniformRowHeights(True)
 
+    def _external(self, e):
+        return None if e.source() is self else read_item_mime(e.mimeData())
+
+    def dragEnterEvent(self, e):  # noqa: N802
+        if self._external(e):
+            e.setDropAction(Qt.MoveAction)
+            e.accept()
+            return
+        super().dragEnterEvent(e)
+
+    def dragMoveEvent(self, e):  # noqa: N802
+        if self._external(e):
+            target = self.itemAt(e.position().toPoint())
+            ok = target is not None and target.data(0, ROLE_KIND) in ("folder", "root")
+            e.setDropAction(Qt.MoveAction)
+            e.accept() if ok else e.ignore()
+            return
+        super().dragMoveEvent(e)
+
     def dropEvent(self, e):  # noqa: N802
+        ext = self._external(e)
+        if ext:
+            target = self.itemAt(e.position().toPoint())
+            e.ignore()
+            if target is not None and target.data(0, ROLE_KIND) in ("folder", "root"):
+                folder = target.data(0, ROLE_ID) if target.data(0, ROLE_KIND) == "folder" else None
+                e.setDropAction(Qt.MoveAction)
+                e.accept()
+                self.dropped.emit(ext[0], ext[1], folder)
+            return
         src = self.currentItem()
         target = self.itemAt(e.position().toPoint())
         e.ignore()
@@ -348,6 +401,83 @@ class TreePanel(QWidget):
             self.selected.emit(cur.data(0, ROLE_KIND), cur.data(0, ROLE_ID))
 
 
+class _DragList(QTreeWidget):
+    """Middle-column list: items can be dragged (to the folder tree or onto a folder row);
+    drops on a folder row or ".." move there, drops on empty space move into the shown folder."""
+    dropped = Signal(str, object, object)     # kind, id, target folder id (None = root)
+
+    def __init__(self, owner: "PhraseList"):
+        super().__init__(owner)
+        self.owner = owner
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(QAbstractItemView.DragDrop)
+        self.setDefaultDropAction(Qt.MoveAction)
+
+    def mimeTypes(self):  # noqa: N802
+        return [ITEM_MIME, "text/plain"]
+
+    def mimeData(self, items):  # noqa: N802
+        it = items[0] if items else None
+        if it is None or it.data(0, ROLE_KIND) not in DRAGGABLE:
+            return None
+        md = item_mime(it.data(0, ROLE_KIND), it.data(0, ROLE_ID))
+        md.setText(it.text(0))
+        return md
+
+    def startDrag(self, actions):  # noqa: N802
+        it = self.currentItem()
+        if it is not None and it.data(0, ROLE_KIND) in DRAGGABLE:
+            super().startDrag(Qt.MoveAction | Qt.CopyAction)
+
+    def target_folder(self, pos):
+        """(ok, folder id) for a drop at pos."""
+        it = self.itemAt(pos)
+        o = self.owner
+        if it is not None and it.data(0, ROLE_KIND) == "folder":
+            return True, it.data(0, ROLE_ID)
+        if it is not None and it.data(0, ROLE_KIND) == "up":
+            f = o.store.get_folder(o.folder_id) if o.folder_id else None
+            return True, f.parent_id if f else None
+        if o.kind in ("folder", "root") and not (o.kind == "root" and o.panel.flat):
+            return True, o.folder_id if o.kind == "folder" else None
+        return False, None
+
+    def _accept(self, e) -> bool:
+        src = read_item_mime(e.mimeData())
+        if not src:
+            return False
+        ok, folder = self.target_folder(e.position().toPoint())
+        if not ok or (src[0] == "folder" and src[1] == folder):
+            return False
+        return True
+
+    def dragEnterEvent(self, e):  # noqa: N802
+        if read_item_mime(e.mimeData()):
+            e.setDropAction(Qt.MoveAction)
+            e.accept()
+        else:
+            e.ignore()
+
+    def dragMoveEvent(self, e):  # noqa: N802
+        if self._accept(e):
+            e.setDropAction(Qt.MoveAction)
+            e.accept()
+        else:
+            e.ignore()
+
+    def dropEvent(self, e):  # noqa: N802
+        src = read_item_mime(e.mimeData())
+        e.ignore()
+        if not src or not self._accept(e):
+            return
+        _ok, folder = self.target_folder(e.position().toPoint())
+        e.setDropAction(Qt.MoveAction)
+        e.accept()
+        self.dropped.emit(src[0], src[1], folder)
+
+
 class PhraseList(QWidget):
     """Middle column of the three-column layout: content of one folder."""
     selected = Signal(str, object)
@@ -366,7 +496,8 @@ class PhraseList(QWidget):
         h = QLabel("Folders and phrases")
         h.setObjectName("PanelHeader")
         lay.addWidget(h)
-        self.list = QTreeWidget(self)
+        self.list = _DragList(self)
+        self.dropped = self.list.dropped
         self.list.setHeaderLabels(["Description", "Autotext", "Hotkey"])
         self.list.setRootIsDecorated(False)
         self.list.setUniformRowHeights(True)

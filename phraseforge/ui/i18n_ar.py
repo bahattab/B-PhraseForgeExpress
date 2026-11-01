@@ -1309,4 +1309,5 @@ AR_EXTRA = {
     'Reset': 'استعادة الافتراضي',
     'Choose the buttons of the toolbar and their order (the first one is shown at the start of the bar).': 'اختر أزرار شريط الأدوات وترتيبها (يظهر الأول في بداية الشريط).',
     'OCR a PDF or image': 'قراءة نص PDF أو صورة',
+    "Phrase created: {name}": "تم إنشاء العبارة: {name}",
 }

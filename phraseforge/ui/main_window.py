@@ -496,7 +496,8 @@ class MainWindow(QMainWindow):
         self._build_shortcuts()
 
         self.panel.selected.connect(self._on_selected)
-        self.panel.tree.dropped.connect(self.move_item)
+        self.panel.tree.dropped.connect(self.drop_item)
+        self.phrase_list.dropped.connect(self.drop_item)
         self.panel.tree.customContextMenuRequested.connect(self._tree_menu)
         self.panel.tree.itemChanged.connect(self._item_renamed)
         self.phrase_list.selected.connect(self._on_list_selected)
@@ -1728,6 +1729,28 @@ class MainWindow(QMainWindow):
                 self.store.update_phrase(dlg.apply(), record_history=False)
                 self._show_editor("phrase", p.id)
                 self.refresh_tree()
+
+    def drop_item(self, kind: str, id_, folder_id: int | None) -> None:
+        """Drag and drop: a phrase or folder moves into folder_id; a clipboard entry or a
+        sticky note becomes a new phrase there."""
+        if kind in ("phrase", "folder"):
+            self.move_item(kind, id_, folder_id)
+            return
+        text, desc = "", ""
+        if kind == "clip":
+            e = next((c for c in self.store.clipboard_entries(500) if c.id == id_), None)
+            text = e.text if e else ""
+        elif kind == "note":
+            n = self.panel.notes_by_id.get(id_)
+            text = n.text if n else ""
+            desc = getattr(n, "title", "") if n else ""
+        if not text.strip():
+            return
+        from phraseforge.models import Phrase
+        desc = (desc or text.strip().splitlines()[0])[:60]
+        p = self.store.add_phrase(Phrase(desc, text, folder_id=folder_id))
+        self.refresh_tree()
+        self.statusBar().showMessage(tr("Phrase created: {name}").replace("{name}", p.description), 4000)
 
     def move_item(self, kind: str, id_: int, new_parent: int | None) -> None:
         self.save_current()
