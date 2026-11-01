@@ -823,7 +823,9 @@ class MainWindow(QMainWindow):
         imp = menu_with(self, [("File import (JSON, CSV, TXT)...", "import", self.import_file),
                                ("Files including directory structure...", "folder_tree", self.import_folder),
                                None,
-                               ("From PhraseExpress (CSV / XML export)...", "import", self.import_phraseexpress),
+                               ("From PhraseExpress (.txt files)...", "import", self.import_phraseexpress),
+                               ("From PhraseExpress (folder of .txt files)...", "folder_tree",
+                                self.import_phraseexpress_folder),
                                ("TextExpander / macOS (.csv / .textexpander / .plist)...", "textexpander", self.import_textexpander),
                                None,
                                ("From OneNote (running)...", "on_notebook", self.import_onenote),
@@ -2258,17 +2260,32 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Import", str(e))
 
     def import_phraseexpress(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Import from PhraseExpress", "",  # noqa: E501 - filter below
-                                              "PhraseExpress export (*.csv *.txt *.tsv *.xml);;"
-                                              "PhraseExpress phrase files (*.pexdb *.pexdbhub *.pxp);;All files (*)")
-        if path:
-            self.import_phraseexpress_path(path)
+        paths, _ = QFileDialog.getOpenFileNames(self, "Import from PhraseExpress", "",  # noqa: E501 - filter below
+                                                "PhraseExpress export (*.txt *.csv *.tsv *.xml);;"
+                                                "PhraseExpress phrase files (*.pexdb *.pexdbhub *.pxp);;All files (*)")
+        if paths:
+            self.import_phraseexpress_path(paths if len(paths) > 1 else paths[0])
 
-    def import_phraseexpress_path(self, path: str, show_message: bool = True):
-        """Import a PhraseExpress CSV export; returns the report (None on error)."""
+    def import_phraseexpress_folder(self) -> None:
+        d = QFileDialog.getExistingDirectory(self, "Import a folder exported from PhraseExpress")
+        if d:
+            self.import_phraseexpress_path(d)
+
+    def import_phraseexpress_path(self, path, show_message: bool = True):
+        """Import a PhraseExpress export: a .txt/.csv/.xml file, a list of .txt files, or a folder
+        written by Export > Files including directory structure. Returns the report (None on error)."""
         try:
-            from phraseforge.importers.phraseexpress import import_any
-            rep = import_any(self.store, path)
+            from phraseforge.importers.phraseexpress import import_any, import_text_files
+            if isinstance(path, (list, tuple)):
+                txt = [q for q in path if str(q).lower().endswith(".txt")]
+                rep = import_text_files(self.store, txt)
+                for q in path:
+                    if q not in txt:
+                        more = import_any(self.store, q)
+                        rep.imported += more.imported
+                        rep.skipped += more.skipped
+            else:
+                rep = import_any(self.store, path)
         except Exception as e:
             if show_message:
                 QMessageBox.warning(self, "Import from PhraseExpress", str(e))

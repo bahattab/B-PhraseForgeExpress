@@ -35,9 +35,12 @@ ENCRYPTED_SUFFIXES = (".pexdb", ".pexdbhub", ".pxp")
 ENCRYPTED_MESSAGE = (
     "This PhraseExpress file is encrypted and can only be opened by PhraseExpress.\n\n"
     "To bring your phrases into PhraseForge:\n"
-    "1. In PhraseExpress select the folder to move (or the top folder).\n"
-    "2. Use Export and choose a spreadsheet / CSV file.\n"
-    "3. In PhraseForge use Import > From PhraseExpress and pick that CSV file."
+    "1. In PhraseExpress select a phrase and use Export > text file "
+    "(PhraseExpress exports one phrase per file).\n"
+    "2. Save the .txt files into one folder (sub-folders become PhraseForge folders).\n"
+    "3. In PhraseForge use Import > From PhraseExpress (.txt files) and select all the files, "
+    "or Import > From PhraseExpress (folder of .txt files) and pick the folder.\n\n"
+    "Each file name becomes the phrase description."
 )
 
 # header name (lower case, no spaces/underscores) -> PhraseForge field
@@ -97,16 +100,22 @@ def check_phraseexpress_file(path: str | Path) -> None:
 
 # ------------------------------------------------------------------ CSV reading
 def _read_text(path: str | Path) -> str:
-    raw = Path(path).read_bytes()
-    for enc in ("utf-8-sig", "utf-16"):
-        try:
-            text = raw.decode(enc)
-            if enc == "utf-16" and not raw.startswith((b"\xff\xfe", b"\xfe\xff")):
-                continue
-            return text
-        except UnicodeDecodeError:
-            continue
-    return raw.decode("cp1252", errors="replace")
+    from phraseforge.io_formats import read_text_any
+    return read_text_any(path)
+
+
+def looks_like_table(text: str) -> bool:
+    """True when a .txt file is a CSV/TSV table (a known header, or every line split into columns);
+    False for a plain phrase text such as PhraseExpress writes one file per phrase."""
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return False
+    first = next(csv.reader([lines[0]], _dialect(text)), [])
+    if map_header(first) is not None:
+        return True
+    if len(lines) < 2:
+        return False
+    return all("\t" in ln for ln in lines) or all(ln.count(";") == lines[0].count(";") > 0 for ln in lines)
 
 
 def _dialect(text: str):
@@ -384,11 +393,54 @@ def export_any(store: Store, path: str | Path, kind: str, folder_id: int | None 
     return fn(store, path, folder_id, language)
 
 
+PE_FOLDER = "From PhraseExpress"
+
+
+def _import_folder(store: Store) -> int:
+    for f in store.folders(None):
+        if f.name == PE_FOLDER:
+            return f.id
+    return store.add_folder(Folder(PE_FOLDER)).id
+
+
+@untrusted_import
+def import_text_files(store: Store, paths, folder_id: int | None = None) -> ExchangeReport:
+    """PhraseExpress text export: each .txt file is one phrase named after the file."""
+    from phraseforge.io_formats import read_text_any
+    rep = ExchangeReport()
+    rep.folder_id = folder_id if folder_id is not None else _import_folder(store)
+    for f in paths:
+        text = read_text_any(f)
+        if not text.strip():
+            rep.skipped += 1
+            continue
+        fmt = "html" if re.search(r"</?(p|b|i|br|div|span)\b", text, re.I) else "text"
+        store.add_phrase(Phrase(Path(f).stem, text, folder_id=rep.folder_id, content_format=fmt))
+        rep.imported += 1
+    return rep
+
+
+@untrusted_import
+def import_directory(store: Store, directory: str | Path) -> ExchangeReport:
+    """PhraseExpress "Export > Files including directory structure": sub-folders become folders,
+    each .txt file a phrase. The tree is put in a folder named after the directory."""
+    from phraseforge.io_formats import import_text_folder
+    root = Path(directory)
+    rep = ExchangeReport()
+    rep.folder_id = store.add_folder(Folder(root.name or PE_FOLDER)).id
+    rep.imported = import_text_folder(store, root, rep.folder_id)
+    return rep
+
+
 @untrusted_import
 def import_any(store: Store, path: str | Path) -> ExchangeReport:
     """PhraseExpress CSV/TXT import; encrypted PhraseExpress databases raise EncryptedPhraseFile."""
     p = Path(path)
     check_phraseexpress_file(p)
+    if p.is_dir():
+        return import_directory(store, p)
+    if p.suffix.lower() == ".txt" and not looks_like_table(_read_text(p)):
+        return import_text_files(store, [p])
     if p.suffix.lower() in (".csv", ".txt", ".tsv"):
         return import_csv(store, p)
     if p.suffix.lower() == ".xml":

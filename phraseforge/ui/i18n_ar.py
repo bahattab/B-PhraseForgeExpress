@@ -1312,6 +1312,10 @@ AR_EXTRA = {
     "Phrase created: {name}": "تم إنشاء العبارة: {name}",
     # ------------------------- OneNote / PhraseExpress exchange (0.5.9)
     'From PhraseExpress (CSV / XML export)...': 'من PhraseExpress (تصدير CSV / XML)...',
+    'From PhraseExpress (.txt files)...': 'من PhraseExpress (ملفات ‎.txt)...',
+    'From PhraseExpress (folder of .txt files)...': 'من PhraseExpress (مجلد ملفات ‎.txt)...',
+    'Import a folder exported from PhraseExpress': 'استيراد مجلد مصدَّر من PhraseExpress',
+    'From PhraseExpress': 'من PhraseExpress',
     'From OneNote (running)...': 'من OneNote (المفتوح)...',
     'From a OneNote file (.one)...': 'من ملف OneNote \u200f(.one)...',
     'Document (.docx, .pdf, .html, .mht)...': 'مستند \u200f(.docx، \u200f.pdf، \u200f.html، \u200f.mht)...',
