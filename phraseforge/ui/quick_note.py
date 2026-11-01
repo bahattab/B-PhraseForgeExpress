@@ -10,6 +10,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QVBoxLayout
 
+from phraseforge.ui import pe_style
 from phraseforge.ui.i18n import tr
 from phraseforge.ui.icons import app_icon
 
@@ -38,7 +39,7 @@ class QuickNoteWindow(QDialog):
         self.phrase_button = QPushButton(tr("Save as phrase"))
         self.phrase_button.clicked.connect(lambda: self._emit(self.save_as_phrase))
         self.onenote_button = QPushButton(tr("Send to OneNote"))
-        self.onenote_button.setDefault(True)
+        pe_style.primary(self.onenote_button).setDefault(True)
         self.onenote_button.clicked.connect(lambda: self._emit(self.send_to_onenote))
         for b in (self.phrase_button, self.onenote_button):
             b.setMinimumWidth(b.fontMetrics().horizontalAdvance(b.text()) + 32)

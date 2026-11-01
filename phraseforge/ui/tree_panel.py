@@ -498,13 +498,16 @@ class PhraseList(QWidget):
         lay.addWidget(h)
         self.list = _DragList(self)
         self.dropped = self.list.dropped
-        self.list.setHeaderLabels(["Description", "Autotext", "Hotkey"])
+        self.list.setHeaderLabels([tr("Description"), tr("Autotext"), tr("Hotkey")])
         self.list.setRootIsDecorated(False)
         self.list.setUniformRowHeights(True)
         self.list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.list.header().setSectionResizeMode(0, QHeaderView.Interactive)
-        self.list.setColumnWidth(0, 150)
-        self.list.setColumnWidth(1, 70)
+        # Description takes the free width, so the list needs no horizontal scroll bar
+        hdr = self.list.header()
+        hdr.setStretchLastSection(False)
+        hdr.setSectionResizeMode(0, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)   # header text never cut off
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         lay.addWidget(self.list, 1)
         self.list.currentItemChanged.connect(self._sel)
         self.list.itemDoubleClicked.connect(self._open)

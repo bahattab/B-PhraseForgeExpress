@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QDialog, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout,
 )
 
+from phraseforge.ui import pe_style
 from phraseforge import __version__
 from phraseforge.ui.icons import about_artwork, app_icon
 
@@ -67,7 +68,7 @@ class AboutDialog(QDialog):
         bottom.addWidget(credits)
         bottom.addStretch(1)
         ok = QPushButton("OK")
-        ok.setDefault(True)
+        pe_style.primary(ok).setDefault(True)
         ok.clicked.connect(self.accept)
         bottom.addWidget(ok)
         right.addLayout(bottom)

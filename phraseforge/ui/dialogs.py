@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QRadioButton, QVBoxLayout, QWidget,
 )
 
+from phraseforge.ui import pe_style
 from phraseforge.host import Cancelled, FormField
 from phraseforge.ui.i18n import tr
 
@@ -260,7 +261,7 @@ class ConfirmTip(QDialog):
         b.setObjectName("primary")
         b.clicked.connect(self.accept)
         lay.addWidget(b)
-        b.setDefault(True)
+        pe_style.primary(b).setDefault(True)
         QTimer.singleShot(timeout_ms, self.reject)
         pos = QCursor.pos() + QPoint(12, 18)
         self.move(pos)

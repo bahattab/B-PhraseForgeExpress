@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from phraseforge import prompt_optimizer as po
+from phraseforge.ui import pe_style
 from phraseforge.ui.i18n import tr
 from phraseforge.ui.icons import app_icon
 
@@ -61,7 +62,7 @@ class PromptOptimizerWindow(QWidget):
         lay = QVBoxLayout(self)
 
         top = QHBoxLayout()
-        self.tpl_btn = QToolButton()
+        self.tpl_btn = pe_style.menu_button(QToolButton())
         self.tpl_btn.setText(tr("Start from a template"))
         self.tpl_btn.setPopupMode(QToolButton.InstantPopup)
         self.tpl_menu = QMenu(self.tpl_btn)
@@ -97,7 +98,7 @@ class PromptOptimizerWindow(QWidget):
         lay.addWidget(self.input)
         row = QHBoxLayout()
         self.send_btn = QPushButton(tr("Send"))
-        self.send_btn.setDefault(True)
+        pe_style.primary(self.send_btn).setDefault(True)
         self.send_btn.clicked.connect(lambda: self.send())
         row.addWidget(self.send_btn)
         b = QPushButton(tr("Write the prompt now"))
@@ -111,7 +112,7 @@ class PromptOptimizerWindow(QWidget):
         self.copy_btn = QPushButton(tr("Copy optimized prompt"))
         self.copy_btn.clicked.connect(self.copy_optimized)
         row.addWidget(self.copy_btn)
-        more = QToolButton()
+        more = pe_style.menu_button(QToolButton())
         more.setText(tr("More"))
         more.setPopupMode(QToolButton.InstantPopup)
         mm = QMenu(more)

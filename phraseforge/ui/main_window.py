@@ -1353,7 +1353,7 @@ class MainWindow(QMainWindow):
         crumbs: list[tuple[str, str]] = []
         if kind in ("phrase", "folder"):
             fid = id_ if kind == "folder" else (self.current.folder_id if self.current else None)
-            crumbs.append(("root:", "Phrases"))
+            crumbs.append(("root:", tr("Phrases")))
             crumbs += [(f"folder:{f.id}", f.name) for f in self.folder_path(fid)]
         if crumbs:
             html = " » ".join(f'<a href="{h}" style="color:#0066cc">{t.replace("<", "&lt;")}</a>' for h, t in crumbs)
@@ -1436,8 +1436,8 @@ class MainWindow(QMainWindow):
         self.save_current()
         self.three_columns = n == 3
         self.panel.folders_only = self.three_columns
-        self.panel.header.setText('Files and Folders ("Default")' if self.three_columns
-                                  else 'Folders and phrases ("Default")')
+        self.panel.header.setText(tr('Files and Folders ("Default")') if self.three_columns
+                                  else tr('Folders and phrases ("Default")'))
         self.phrase_list.setVisible(self.three_columns)
         if save:
             self.store.set_setting("view.layout", "three" if self.three_columns else "two")

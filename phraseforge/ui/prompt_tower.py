@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from phraseforge import prompttower as pt
+from phraseforge.ui import pe_style
 from phraseforge.ui.i18n import tr
 from phraseforge.ui.icons import app_icon
 
@@ -129,7 +130,7 @@ class PromptTowerWindow(QWidget):
         self.sets.setMinimumWidth(160)
         self.sets.activated.connect(lambda _i: self.load_set(self.sets.currentText()))
         top.addWidget(self.sets)
-        sm = QToolButton()
+        sm = pe_style.menu_button(QToolButton())
         sm.setText(tr("Save / delete"))
         sm.setPopupMode(QToolButton.InstantPopup)
         m = QMenu(sm)
@@ -204,7 +205,7 @@ class PromptTowerWindow(QWidget):
         rl.addStretch(1)
         actions = QHBoxLayout()
         self.copy_btn = QPushButton(tr("Copy prompt"))
-        self.copy_btn.setDefault(True)
+        pe_style.primary(self.copy_btn).setDefault(True)
         self.copy_btn.clicked.connect(self.copy_prompt)
         actions.addWidget(self.copy_btn)
         b = QPushButton(tr("Preview"))
@@ -213,7 +214,7 @@ class PromptTowerWindow(QWidget):
         b = QPushButton(tr("Save as phrase"))
         b.clicked.connect(self._save_as_phrase)
         actions.addWidget(b)
-        chat = QToolButton()
+        chat = pe_style.menu_button(QToolButton())
         chat.setText(tr("Open in AI chat"))
         chat.setPopupMode(QToolButton.InstantPopup)
         cm = QMenu(chat)
@@ -292,7 +293,7 @@ class PromptTowerWindow(QWidget):
             bb.setToolTip(tr("PromptBoost: rewrite the task as a detailed, structured prompt (Settings > AI)."))
             bb.clicked.connect(lambda: self.boost_prefix())
             row.addWidget(bb)
-        hb = QToolButton()
+        hb = pe_style.menu_button(QToolButton())
         hb.setText(tr("History"))
         hb.setPopupMode(QToolButton.InstantPopup)
         menu = QMenu(hb)

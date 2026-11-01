@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QStackedWidget, QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QColorDialog,
 )
 
+from phraseforge.ui import pe_style
 from phraseforge import paths
 from phraseforge.db import Store
 from phraseforge.ui.hotkey_picker import KEYS, HotkeyPicker
@@ -650,7 +651,7 @@ class SettingsDialog(QDialog):
         opts.setMinimumWidth(144)
         self.options_button = opts
         ok = QPushButton("OK")
-        ok.setDefault(True)
+        pe_style.primary(ok).setDefault(True)
         ok.clicked.connect(self.accept)
         cancel = QPushButton("Cancel")
         cancel.clicked.connect(self.reject)
@@ -735,7 +736,6 @@ class SettingsDialog(QDialog):
         stats = self.bind("features.usage_statistics", QCheckBox("Usage statistics"))
         gl.addWidget(_row(stats, _icon_button("info", "Count phrase usage to show the time you saved.")))
         gl.addWidget(self.bind("features.detect_unwanted_replacements", QCheckBox("Detect unwanted text replacements")))
-        gl.addSpacing(6)
         gl.addWidget(self.bind("features.disable_capslock", QCheckBox("Disable CAPSLOCK key to prevent unintended activation")))
         gl.addWidget(self.bind("tray.left_click_popup", QCheckBox("Left click on the tray icon opens the phrase menu (Ctrl+click pauses, Alt+click opens settings)")))
         gl.addWidget(self.bind("autocorrect.capitalize_sentences", QCheckBox("Capitalize first letter of sentences")))
@@ -1129,7 +1129,7 @@ class SettingsDialog(QDialog):
         d.model_box.setVisible(bool(model))
         v.addWidget(d.model_box)
         ok, cancel = QPushButton("OK"), QPushButton("Cancel")
-        ok.setDefault(True)
+        pe_style.primary(ok).setDefault(True)
         ok.clicked.connect(d.accept)
         cancel.clicked.connect(d.reject)
         v.addWidget(_row(QWidget(), ok, cancel))
