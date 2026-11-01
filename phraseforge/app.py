@@ -348,6 +348,7 @@ class QtHost:
         from phraseforge.ocr import apply_replacements, parse_replace_rules
         if rect is None:
             rect = self.select_screen_region()
+            log.info("OCR: area %s", rect)
             if not rect:
                 raise Cancelled()
         self.last_ocr_rect = tuple(rect)
@@ -355,6 +356,7 @@ class QtHost:
         import time
         time.sleep(0.15)   # let the selection overlay disappear before the screenshot
         png = self._ui(lambda: _grab_screen_png(rect))
+        log.info("OCR: captured %d bytes", len(png or b""))
         if not png:
             raise OCRError("The selected area could not be captured.")
         if self.store.setting("ocr.engine", "windows") == "mistral":
@@ -369,6 +371,8 @@ class QtHost:
             engine = self._ocr()
             text = engine.ocr_png(png, language=lang, keep_line_breaks=self._keep_breaks(keep_line_breaks))
             used = engine.last_language or lang       # with "Auto", rules for the detected language apply
+        log.info("OCR: engine %s, language %s, %d characters read",
+                 self.store.setting("ocr.engine", "windows"), used, len(text or ""))
         rules = parse_replace_rules(self.store.setting("ocr.replace_rules", ""))
         return apply_replacements(text, rules, used) if rules else text
 
@@ -1397,6 +1401,7 @@ class PhraseForgeApp(QObject):
         s = self.store.setting
         from phraseforge.ocr import format_log_entry
         if not text:
+            log.info("OCR: no text recognised")
             self.poster.posted.emit(lambda: self.tray.notify("OCR", "No text recognised"))
             return
         log_file = s("ocr.log_file", "").strip()
@@ -1409,6 +1414,8 @@ class PhraseForgeApp(QObject):
         copied = s("ocr.save_to_clipboard", "1") != "0"
         if copied:
             self.host.set_clipboard(text)
+        log.info("OCR: %d characters delivered (clipboard %s, notification %s)", len(text),
+                 "on" if copied else "off", "on" if s("ocr.show_popup", "1") != "0" else "off")
         if s("ocr.show_popup", "1") != "0":
             preview = text if len(text) < 120 else text[:117] + "..."
             title = "OCR copied to clipboard" if copied else "OCR"
