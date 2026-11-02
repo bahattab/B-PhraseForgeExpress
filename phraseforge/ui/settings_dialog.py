@@ -684,7 +684,10 @@ class SettingsDialog(QDialog):
 
     def export_to(self, path: str) -> None:
         self.save()
-        data = {k: v for k, v in self.store.settings().items()}
+        from phraseforge.db import SECRET_SETTINGS
+        # API keys and the proxy password are left out: the file is plain JSON and may be
+        # mailed or synced. They are re-entered on the other PC.
+        data = {k: v for k, v in self.store.settings().items() if k not in SECRET_SETTINGS}
         with open(path, "w", encoding="utf-8") as fh:
             json.dump({"format": "phraseforge-settings", "settings": data,
                        "excluded_apps": sorted(self.store.excluded_apps())}, fh, ensure_ascii=False, indent=2)
@@ -696,14 +699,28 @@ class SettingsDialog(QDialog):
                 self.import_from(path)
             except Exception as e:
                 QMessageBox.warning(self, "Import settings", str(e))
+                return
+            if self.import_skipped:
+                QMessageBox.information(self, "Import settings", tr(
+                    "Imported. {n} setting(s) that only belong to this PC were kept as they are "
+                    "(network and proxy, server addresses, program and file paths, sync and backup "
+                    "folders). Set them here if you need to.").format(n=len(self.import_skipped)))
 
     def import_from(self, path: str) -> None:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
         if data.get("format") != "phraseforge-settings":
             raise ValueError("Not a PhraseForge settings file")
+        from phraseforge.db import is_device_setting
+        skipped = []
         for k, v in (data.get("settings") or {}).items():
+            if is_device_setting(str(k)):
+                # where data and keys go, programs, paths and sync stay as set on this PC: a
+                # settings file from elsewhere must not redirect them (set them here by hand)
+                skipped.append(str(k))
+                continue
             self.store.set_setting(str(k), str(v))
+        self.import_skipped = skipped
         if "excluded_apps" in data:
             self.store.set_excluded_apps(data["excluded_apps"])
         self._ai_keys = {}

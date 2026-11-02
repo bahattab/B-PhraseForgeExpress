@@ -180,6 +180,7 @@ def import_csv(store: Store, path: str | Path, folder_name: str | None = None) -
 # ------------------------------------------------------------------ XML reading
 # PhraseExpress' "Export > XML" writes folders and phrases either with attributes or with
 # child elements; this reads both. Tag and field names are matched loosely (HEADER_ALIASES).
+MAX_XML_DEPTH = 200          # a crafted file nested deeper would exhaust Python's recursion
 _PHRASE_TAGS = {"phrase", "autotext", "item", "entry"}
 _FOLDER_TAGS = {"folder", "group", "category", "phrasefolder"}
 
@@ -237,17 +238,19 @@ def import_xml(store: Store, path: str | Path, folder_name: str | None = None) -
         store.add_phrase(Phrase(desc, content, folder_id=fid, triggers=triggers, content_format=fmt))
         rep.imported += 1
 
-    def walk(el, fid) -> None:
+    def walk(el, fid, depth=0) -> None:
+        if depth > MAX_XML_DEPTH:
+            raise ValueError(f"The XML file is nested more than {MAX_XML_DEPTH} levels deep.")
         for child in el:
             tag = re.sub(r"\{[^}]*\}", "", child.tag).strip().lower()
             if tag in _FOLDER_TAGS and not _is_phrase_el(child):
                 name = _field_from(child, "description").strip() or child.get("name", "").strip() or "Folder"
                 sub = store.add_folder(Folder(name, parent_id=fid))
-                walk(child, sub.id)
+                walk(child, sub.id, depth + 1)
             elif _is_phrase_el(child):
                 phrase_el(child, fid)
             else:
-                walk(child, fid)                 # unknown wrapper: descend
+                walk(child, fid, depth + 1)      # unknown wrapper: descend
 
     if _is_phrase_el(root):
         phrase_el(root, top.id)

@@ -2177,7 +2177,9 @@ class MainWindow(QMainWindow):
             return
         try:
             d = self.store.export_dict()
-            d["settings"] = self.store.settings()
+            from phraseforge.db import SECRET_SETTINGS
+            # plain JSON: API keys and the proxy password are not written (re-enter them there)
+            d["settings"] = {k: v for k, v in self.store.settings().items() if k not in SECRET_SETTINGS}
             with open(path, "w", encoding="utf-8") as fh:
                 json.dump(d, fh, ensure_ascii=False, indent=2)
             QMessageBox.information(self, "Migration Assistant", f"Saved to {path}")
@@ -2193,8 +2195,10 @@ class MainWindow(QMainWindow):
                 d = json.load(fh)
             from phraseforge import io_formats
             io_formats.import_dict(self.store, d)
+            from phraseforge.db import is_device_setting
             for k, v in (d.get("settings") or {}).items():
-                self.store.set_setting(k, v)
+                if not is_device_setting(str(k)):    # this PC's paths, programs, network, sync stay
+                    self.store.set_setting(k, v)
             self.refresh_tree()
             QMessageBox.information(self, "Migration Assistant", "Settings and phrases restored.")
         except Exception as e:

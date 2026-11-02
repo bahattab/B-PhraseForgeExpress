@@ -654,6 +654,26 @@ Critical path: P0 → P1 → P2 → P3 → P5. P4 can start after P2 in parallel
 - Static analysis: `bandit` (no `shell=True`, no `eval`, no `pickle`, which the current code already satisfies [REPO]) and `ruff`.
 - Native DLL: built with `/guard:cf /Qspectre /DYNAMICBASE /HIGHENTROPYVA`; fuzz the ring-buffer reader.
 
+#### 7.5.1 Red-team review of 0.6.1 (2026-11-02), fixed in 0.6.2
+
+Three parallel reviews (trust gate; file parsers and sync; secrets, IPC and network) attacked 0.6.1. Each fix has a regression test in `tests/test_redteam.py` that fails on 0.6.1 (31 of 41 cases; the other 10 are allowed-key controls).
+
+| # | Finding | Severity | Fix |
+|---|---|---|---|
+| R1 | An imported/synced phrase or folder with output target "Specific program" ran that program with no approval, also from time/app triggers; the phrase fingerprint ignored output targets, so a sync could add one to a trusted phrase | Critical | `approved_for` treats a resolved `program` target as privileged (and `email`/`onenote` for unapproved phrases); the fingerprint covers the phrase's and its folders' targets; legacy `ui.trigger_extras` is migrated before the comparison |
+| R2 | `{#key}` filter matched only `win`/`lwin`/`rwin`: `meta+r`, `super+r`, `cmd+r`, `windows+r`, `lwinkey`, `vk5b` and `ctrl+esc` (Start menu) passed, so typed commands could run | Critical | `security.opens_system_ui` normalises every key name the sender understands |
+| R3 | A sync pull or an opened `.db` replaced every non-local setting: AI base URLs (this PC's key sent to another host), proxy, `net.allow_private_hosts`, backup folder, OCR log file, `onenote.exe`, file-search commands/actions; an incoming local-only key not set on this PC also got through | High | `db.is_device_setting` (prefixes + path/URL/program suffixes); `restore_from(untrusted=…)` drops the file's device settings and keeps this PC's; settings import and migration restore skip them |
+| R4 | Settings export and the migration file wrote API keys and the proxy password in plain text | Medium | Secrets left out of both files |
+| R5 | `httpx`/`urllib3` logged full request URLs (translated text, tokens in query strings) to `phraseforge.log` | Medium | HTTP loggers set to WARNING |
+| R6 | Clipboard history kept passwords from password managers | Medium | Content marked `ExcludeClipboardContentFromMonitorProcessing`, `Clipboard Viewer Ignore` or `CanIncludeInClipboardHistory=0` is not recorded |
+| R7 | `{#http}` forwarded custom headers (e.g. `x-api-key`) on a redirect to another host | Low | Headers the phrase set are dropped when the redirect leaves the origin |
+| R8 | `100.64.0.0/10` (CGNAT, Tailscale, some cloud metadata) not blocked | Low | Added to `is_private_ip` |
+| R9 | Deeply nested XML exhausted recursion in the PE XML importer | Low | Depth limit 200, clean error |
+
+Held up: XML entity expansion and XXE (expat limits, no external entities), symlinks in folder import (not followed), export path sanitising, `_check_db` on pulled files, DPAPI sealing, Google sign-in (PKCE, state, loopback), single-instance IPC (argv only shows the window), the 0.6.1 pinned `{#http}` transport (decimal/octal/IPv6-mapped/NAT64 forms blocked).
+
+Open (not fixed in 0.6.2): synced `{#var}` values can change the arguments of an "Always allow" phrase that builds a privileged call from variables; Linux single-instance socket squatting by the same user; the update notice opens the API-supplied URL without a host check; with a proxy, `{#http}` relies on the name check only.
+
 ### 7.6 PE behaviour capture plan (to resolve `needs-PE-capture` and the unknowns)
 
 The user runs PE, under their own license, on a test machine:

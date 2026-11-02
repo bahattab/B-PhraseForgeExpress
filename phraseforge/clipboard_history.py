@@ -12,12 +12,26 @@ class ClipboardHistory:
     """start()/stop(). Set `paused = True` to stop recording temporarily.
     Uses setting "clipboard_history.enabled" (default "1")."""
 
-    def __init__(self, store, watcher_factory=None, foreground_app=None):
+    def __init__(self, store, watcher_factory=None, foreground_app=None, marked_private=None):
         self.store = store
         self.paused = False
         self._watcher_factory = watcher_factory
         self._foreground_app = foreground_app
+        self._marked_private = marked_private
         self._watcher = None
+
+    def _is_private(self) -> bool:
+        """The app that copied asked clipboard tools not to keep it (password managers)."""
+        if self._marked_private is None:
+            import sys
+            if sys.platform != "win32":
+                return False
+            from phraseforge.platform.clipboard import marked_private
+            self._marked_private = marked_private
+        try:
+            return bool(self._marked_private())
+        except Exception:
+            return False
 
     def start(self) -> None:
         if self._watcher_factory is None:
@@ -50,6 +64,8 @@ class ClipboardHistory:
         if self.paused or not self.enabled():
             return
         if not text or not text.strip() or len(text) > MAX_ENTRY_CHARS:
+            return
+        if self._is_private():
             return
         exe = self._fg_exe()
         if exe and exe in self.store.excluded_apps():
