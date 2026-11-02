@@ -115,6 +115,25 @@ def _utf16z(text: str) -> bytes:
     return text.encode("utf-16-le") + b"\x00\x00"
 
 
+# Formats a program puts on the clipboard to say "do not record this" (KeePass, KeePassXC,
+# 1Password, Bitwarden, Windows itself for passwords): Microsoft's documented markers.
+PRIVATE_FORMATS = ("ExcludeClipboardContentFromMonitorProcessing", "Clipboard Viewer Ignore")
+
+
+def marked_private() -> bool:
+    """True if the current clipboard content asks clipboard managers not to keep it."""
+    with _Open():
+        for name in PRIVATE_FORMATS:
+            if user32.IsClipboardFormatAvailable(user32.RegisterClipboardFormatW(name)):
+                return True
+        fmt = user32.RegisterClipboardFormatW("CanIncludeInClipboardHistory")
+        if user32.IsClipboardFormatAvailable(fmt):
+            data = _get(fmt)
+            if data and len(data) >= 4 and int.from_bytes(data[:4], "little") == 0:
+                return True
+    return False
+
+
 def get_text() -> str:
     with _Open():
         if not user32.IsClipboardFormatAvailable(CF_UNICODETEXT):

@@ -184,6 +184,23 @@ SECRET_SETTINGS = frozenset({"ai.openai_key", "ai.anthropic_key", "ai.openrouter
                              "net.proxy_password"})
 _SEALED = "dpapi:"
 
+# Settings that belong to this PC: never uploaded by sync, and kept when data comes from
+# elsewhere (sync pull, a phrase file opened with File > Open). Besides PC state they include
+# everything that decides where data and keys go or what program runs: a synced or opened
+# copy must not send this PC's API keys to another server, set a proxy, lift the {#http}
+# guard, move backups or logs, or swap the programs behind the file-search actions.
+DEVICE_SETTING_PREFIXES = (
+    "sync.", "gdrive.", "backup.cloud_", "backup.directory", "ocr.cli_path", "ocr.log_file",
+    "app.start_with_windows", "app.first_run_done", "ui.item_colors", "ui.trigger_extras",
+    "updates.last_check", "updates.notified_version", "net.", "onenote.exe",
+    "filesearch.actions", "filesearch.commands", "filesearch.roots", "sound.",
+    *sorted(SECRET_SETTINGS))
+DEVICE_SETTING_SUFFIXES = ("_url", "_endpoint", "_path", "_file", ".file", ".exe", "_dir", "_directory")
+
+
+def is_device_setting(key: str) -> bool:
+    return key.startswith(DEVICE_SETTING_PREFIXES) or key.endswith(DEVICE_SETTING_SUFFIXES)
+
 
 def _seal(value: str) -> str:
     from phraseforge.cloud.secure import protect
@@ -538,16 +555,28 @@ class Store:
             return {r[0]: r[1] for r in self.conn.execute("SELECT phrase_id, origin FROM phrase_quarantine")}
 
     def phrase_fingerprints(self) -> dict[int, str]:
-        """phrase id -> hash of everything that runs (content of every language version)."""
+        """phrase id -> hash of everything that runs: the content of every language version and
+        where the output goes (the phrase's and its folders' output target, which can start a
+        program). A sync that changes any of it quarantines the phrase again."""
         with self.lock:
-            rows = self.conn.execute("SELECT id, content, content_format FROM phrases").fetchall()
+            rows = self.conn.execute("SELECT id, content, content_format, folder_id, output_target, "
+                                     "output_target_arg FROM phrases").fetchall()
+            folders = {r[0]: (r[1], r[2] or "", r[3] or "") for r in self.conn.execute(
+                "SELECT id, parent_id, output_target, output_target_arg FROM folders")}
             versions: dict[int, list] = {}
             for r in self.conn.execute(
                     "SELECT phrase_id, lang, content, content_format FROM phrase_versions ORDER BY phrase_id, lang"):
                 versions.setdefault(r[0], []).append((r[1], r[2], r[3]))
         out = {}
         for r in rows:
-            blob = json.dumps([r[1], r[2], versions.get(r[0], [])], ensure_ascii=False)
+            chain, fid, seen = [], r[3], set()
+            while fid in folders and fid not in seen:
+                seen.add(fid)
+                parent, target, arg = folders[fid]
+                chain.append((target, arg))
+                fid = parent
+            blob = json.dumps([r[1], r[2], versions.get(r[0], []), r[4] or "", r[5] or "", chain],
+                              ensure_ascii=False)
             out[r[0]] = hashlib.sha256(blob.encode("utf-8")).hexdigest()
         return out
 
@@ -968,6 +997,9 @@ class Store:
         (restoring this PC's own backup) the backup's list is used as it is."""
         before = self.phrase_fingerprints() if untrusted else {}
         keep_q = self.quarantined() if untrusted else {}
+        with self.lock:                   # raw values: API keys stay encrypted
+            keep_device = ({k: v for k, v in self.conn.execute("SELECT key, value FROM settings")
+                            if is_device_setting(k)} if untrusted else {})
         with self.lock:
             src = sqlite3.connect(str(path))
             src.backup(self.conn)
@@ -975,7 +1007,16 @@ class Store:
             self.conn.execute("PRAGMA foreign_keys = ON")
             self._migrate_schema()        # a backup/sync copy may come from an older version
             self.conn.executescript(SCHEMA)
+        # Move a legacy output-target setting into the columns BEFORE the comparison below,
+        # so a synced copy cannot add a "Specific program" target after the check.
+        self._migrate_extras()
         if untrusted:
+            with self.lock, self.conn:    # this PC's device settings win, whatever the file holds
+                for (k,) in self.conn.execute("SELECT key FROM settings").fetchall():
+                    if is_device_setting(k):
+                        self.conn.execute("DELETE FROM settings WHERE key=?", (k,))
+                for k, v in keep_device.items():
+                    self.conn.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (k, v))
             after = self.phrase_fingerprints()
             with self.lock, self.conn:
                 self.conn.execute("DELETE FROM phrase_quarantine")
@@ -983,7 +1024,6 @@ class Store:
                     origin = keep_q.get(pid) or (untrusted if before.get(pid) != fp else None)
                     if origin:
                         self.conn.execute("INSERT INTO phrase_quarantine VALUES (?,?,?)", (pid, origin, _now()))
-        self._migrate_extras()
         self._seal_plain_secrets()        # an old backup may hold plain-text keys
         for kind in ("folder", "phrase", "setting", "var", "clipboard", "sticky"):
             self._changed(kind)

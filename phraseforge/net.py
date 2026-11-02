@@ -26,13 +26,18 @@ _proxy: str | None = None
 _allow_private = False
 
 
+# 100.64.0.0/10 (RFC 6598, carrier-grade NAT) is not "private" to Python's ipaddress, but it
+# holds Tailscale hosts and some cloud metadata services (100.100.100.200).
+_SHARED_SPACE = ipaddress.ip_network("100.64.0.0/10")
+
+
 def is_private_ip(address: str) -> bool:
     """True for a loopback/private/link-local/reserved/multicast/unspecified address."""
     ip = ipaddress.ip_address(address.split("%", 1)[0])
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
         ip = ip.ipv4_mapped
     return bool(ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
-                or ip.is_multicast or ip.is_unspecified)
+                or ip.is_multicast or ip.is_unspecified or ip in _SHARED_SPACE)
 
 
 def is_private_host(host: str) -> bool:
@@ -163,8 +168,18 @@ def http_request(method: str, url: str, headers: dict[str, str] | None = None, b
         raise NetError("only http(s) URLs are allowed")
     try:
         extra = client_kwargs() if _proxy else {"transport": pinned_transport()}
-        with httpx.Client(timeout=timeout_s, follow_redirects=True, event_hooks={"request": [_guard]},
-                          **extra) as c:
+        first = httpx.URL(url)
+        own = [h for h in (headers or {})]
+
+        def same_site_headers(request: httpx.Request) -> None:
+            # httpx drops Authorization on a redirect to another host but keeps the rest
+            # (x-api-key, cookies...): a redirect must not carry the phrase's headers away.
+            if (request.url.scheme, request.url.host, request.url.port) != (first.scheme, first.host, first.port):
+                for h in own:
+                    request.headers.pop(h, None)
+
+        with httpx.Client(timeout=timeout_s, follow_redirects=True,
+                          event_hooks={"request": [_guard, same_site_headers]}, **extra) as c:
             r = c.request(method.upper(), url, headers=headers or {},
                           content=body.encode("utf-8") if body is not None else None)
     except httpx.HTTPError as e:

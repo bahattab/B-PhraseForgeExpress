@@ -35,14 +35,37 @@ PRIVILEGED: dict[str, str] = {
 }
 
 
+def opens_system_ui(chord: str) -> bool:
+    """True if a {#key} chord presses the Windows key (under any of its names: win, lwin,
+    windows, meta, super, cmd, lwinkey, vk5b...) or Ctrl+Esc (the Start menu). Either one
+    lets typed text start programs (Win+R, Start search + Enter)."""
+    from phraseforge.macros.commands import _KEY_ALIASES
+    from phraseforge.platform.keys import MODIFIER_ALIASES, key_name_to_vk
+    names: list[str] = []
+    for part in re.split(r"[+\s,]+", (chord or "").lower()):
+        if not part:
+            continue
+        part = _KEY_ALIASES.get(part, part)
+        mod = MODIFIER_ALIASES.get(part)
+        if mod:
+            names.append(mod)
+            continue
+        try:
+            vk = key_name_to_vk(part)
+        except (ValueError, TypeError):
+            names.append(part)
+            continue
+        names.append("win" if vk in (0x5B, 0x5C) else "esc" if vk == 0x1B else part)
+    return "win" in names or ("ctrl" in names and "esc" in names)
+
+
 def privileged_reason(name: str, args: list[str], opts: dict[str, str]) -> str | None:
     """Why the call {#name args opts} needs an approved phrase, or None if it is harmless."""
     reason = PRIVILEGED.get(name)
     if reason is None:
         return None
     if name == "key":     # ordinary keys (enter, tab, ctrl+c) are fine; Win+R and friends are not
-        chord = " ".join(args).lower()
-        return reason if re.search(r"\b(l|r)?win\b", chord) else None
+        return reason if opens_system_ui(" ".join(args)) else None
     if name == "mail" and not ({"send", "attach"} & set(opts)):
         return None       # only opens a draft for the user to check
     return reason

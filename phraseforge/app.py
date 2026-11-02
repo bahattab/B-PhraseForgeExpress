@@ -1735,8 +1735,14 @@ def approved_for(app, p, req: ExpansionRequest) -> bool:
     origin = app.store.quarantine_origin(p.id)
     if not origin:
         return True
+    from phraseforge import output_target
     from phraseforge.security import scan_privileged
     reasons = scan_privileged(p.content)
+    target = output_target.resolve(app.store, p)[0]
+    if target == "program":
+        reasons.append("start a program (output target)")
+    elif target in ("email", "onenote"):
+        reasons.append(f"send its text by {'e-mail' if target == 'email' else 'OneNote'} (output target)")
     req.context.allow_privileged = False
     if not reasons:
         return True                       # nothing privileged to block; the engine still guards
@@ -1753,12 +1759,20 @@ def approved_for(app, p, req: ExpansionRequest) -> bool:
     return False
 
 
+def quiet_http_loggers() -> None:
+    """HTTP libraries log every request URL at INFO (and headers at DEBUG). URLs can hold the
+    text sent for translation or a token in a {#http} query string, so keep them out of the log."""
+    for name in ("httpx", "httpcore", "urllib3", "googleapiclient", "google_auth_oauthlib", "oauthlib"):
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+
 def main(argv: list[str] | None = None) -> int:
     if "--self-test" in (argv if argv is not None else sys.argv):
         from phraseforge.selftest import run
         return run()
     logging.basicConfig(filename=str(paths.data_dir() / "phraseforge.log"), level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    quiet_http_loggers()
     sys.excepthook = lambda *a: log.error("".join(traceback.format_exception(*a)))
     # Qt 6 sets per-monitor DPI awareness itself; setting it here first made Qt warn.
     qapp = QApplication(argv if argv is not None else sys.argv)
