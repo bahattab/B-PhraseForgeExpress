@@ -324,9 +324,11 @@ Priority: **M** must-have (core parity, or a security defect), **S** should-have
 | G-31 | Full UI localisation | S | M | FR-UI-02 | partial, **changed in 0.6.0**: 1,277-entry Arabic table, RTL; list headers, panel title and breadcrumb now translated; strings are still found by hand (no extraction step) |
 | G-32 | Full test suite hangs in one run (order-dependent Qt state) | M (quality) | S | FR-QA-01 | **closed** (0.5.6): the hang was gone after 0.5.5; the remaining Windows CI crash came from `SingleInstance` sockets (see G-08). The full suite runs in one process: 663 passed, 18 skipped (4 min 18 s on Linux offscreen, 2026-10-30). Still open from FR-QA-01: the < 3 min target and a per-test `pytest-timeout` |
 | G-33 | Session awareness (lock, RDP) | N | S | FR-INP-06 | open |
-| G-34 | `{#http}` can reach localhost/LAN/metadata addresses (incl. via redirect) | M (sec) | S | FR-SEC-06 | **partial** (0.5.5; unchanged in 0.6.0, `net.py` re-checked): private, loopback, link-local and reserved targets are blocked before the first request and before every redirect (`net._guard`), with a setting to allow them. **Open:** the guard resolves DNS itself and httpx resolves again on connect, so a DNS-rebinding host can pass the check (FR-SEC-06 requires connecting to the checked IP) |
+| G-34 | `{#http}` can reach localhost/LAN/metadata addresses (incl. via redirect) | M (sec) | S | FR-SEC-06 | **closed** (0.6.1): without a proxy, `{#http}` uses a pinned transport (`net.pinned_transport`): one lookup, every answer checked, and the connection goes only to a checked address; TLS still verifies the certificate against the host name. The name check before the first request and every redirect (`net._guard`) stays. Tests: a rebinding resolver (public first, 127.0.0.1 second) is stopped and the local server sees nothing; the same test fails on 0.6.0. **Limit:** with a proxy set in Settings > Network the proxy resolves names, so only the name check applies there |
 
 PE evidence for each gap: Section 1.2. Also open: `test_filesearch.py::test_speed_gate_50k_entries_answers_in_milliseconds` (median < 50 ms) was reported failing on slower machines in 0.5.4; it passed in the 0.5.6 Linux run, so its status on slower Windows machines is unconfirmed.
+
+**Summary for 0.6.1:** G-34 closed → 6 of 34 closed, 14 partial, 14 open.
 
 **Summary for 0.6.0:** no gap changed state between 0.5.6 and 0.6.0. G-15, G-16 and G-31 moved forward inside "partial"; G-34 is still the open security item. The counts below still hold.
 
@@ -592,12 +594,12 @@ Critical path: P0 → P1 → P2 → P3 → P5. P4 can start after P2 in parallel
 
 | Phase | Status | Done | Left |
 |---|---|---|---|
-| P0 | **mostly done** | FR-SEC-01..03 (secrets sealed, device-only, migrated); FR-SEC-07 (salted scrypt, the allowed fallback); FR-APP-01 (single instance); FR-QA-01 hang and Windows crash (one-process run passes) | FR-SEC-06 DNS-rebinding hole (G-34); perf harness `bench/` and baseline numbers (Section 7.4) not built; FR-QA-01 < 3 min target and `pytest-timeout` |
+| P0 | **mostly done** | FR-SEC-01..03 (secrets sealed, device-only, migrated); FR-SEC-06 incl. DNS rebinding (0.6.1); FR-SEC-07 (salted scrypt, the allowed fallback); FR-APP-01 (single instance); FR-QA-01 hang and Windows crash (one-process run passes) | perf harness `bench/` and baseline numbers (Section 7.4) not built; FR-QA-01 < 3 min target and `pytest-timeout` |
 | P2 (pulled forward) | **partly done** | FR-SEC-04/05 trust gate for imported and synced phrases (`security.py`, `phrase_quarantine` table); FR-SEC-08 lock before expansion | `origin`/`trusted_hash` columns as specified (0.5.5 uses a quarantine table instead; record it as a decision); FR-SEC-08 `passcheck` modes; FR-DAT-00..05 |
 | P5 (started early, user request) | **partly done** | FR-IMP-01 text route and folder tree; FR-IMP-05 HTML/DOCX export; OneNote exchange (outside the FR list) | FR-IMP-01 real-sample check and macro translation (needs P3 `pe_compat`); FR-IMP-02 `phraseexpress` tag and `origin` (imports use the 0.5.5 quarantine instead); FR-IMP-04 importers; FR-IMP-05 XML/XLSX |
 | P1, P3, P4, P6–P8 | not started | — | All their FRs |
 
-**Next step on the critical path (unchanged in v4):** the 0.5.7–0.6.0 releases went to user-requested features, sync, import/export and UI quality; P0 is where v3 left it. Finish P0 (close G-34 and build the `bench/` harness, so P1 has the baseline numbers it is measured against), then start P1 with a `pfhook.dll` spike that measures P-01 on a Windows runner.
+**Next step on the critical path (unchanged in v4):** the 0.5.7–0.6.0 releases went to user-requested features, sync, import/export and UI quality; P0 is where v3 left it. Finish P0 (G-34 closed in 0.6.1; build the `bench/` harness, so P1 has the baseline numbers it is measured against), then start P1 with a `pfhook.dll` spike that measures P-01 on a Windows runner.
 
 ---
 
