@@ -993,6 +993,7 @@ AR_EXTRA = {
     'Flat list': 'قائمة مسطّحة',
     'Folders and phrases': 'المجلدات والعبارات',
     'Folders and phrases ("Default")': 'المجلدات والعبارات ("الافتراضي")',
+    'Files and Folders ("Default")': 'الملفات والمجلدات ("الافتراضي")',
     'For PhraseExpress (CSV)': 'لبرنامج PhraseExpress \u200f(CSV)',
     'For TextExpander (CSV)': 'لبرنامج TextExpander \u200f(CSV)',
     'For macOS Text Replacements (.plist)': 'لاستبدالات النص في macOS \u200f(.plist)',

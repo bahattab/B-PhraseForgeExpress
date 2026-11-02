@@ -112,6 +112,23 @@ ICONS: dict[str, tuple[str, str]] = {
 }
 
 
+# One calm palette: blue for commands, grey for neutral tools, yellow for folders and highlight,
+# red only where it warns (delete, exit, recording, text colour), orange only for warnings.
+KEEP_RED = {"delete", "exit", "m_recorder", "font_color"}
+KEEP_ORANGE = {"warning"}
+
+
+def tone(name: str, color: str) -> str:
+    """The colour actually used for an icon (see the palette note above)."""
+    if color in (BLUE, GREY, YELLOW):
+        return color
+    if color == RED and name in KEEP_RED:
+        return RED
+    if color == ORANGE and name in KEEP_ORANGE:
+        return ORANGE
+    return BLUE
+
+
 @lru_cache(maxsize=None)
 def icon(name: str, color: str | None = None) -> QIcon:
     """Return the icon for a semantic name (empty icon if unknown)."""
@@ -120,6 +137,6 @@ def icon(name: str, color: str | None = None) -> QIcon:
         return QIcon()
     try:
         import qtawesome as qta
-        return qta.icon(spec[0], color=color or spec[1])
+        return qta.icon(spec[0], color=color or tone(name, spec[1]))
     except Exception:  # qtawesome missing or font not found
         return QIcon()
