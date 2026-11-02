@@ -2,11 +2,29 @@
 
 | | |
 |---|---|
-| Target repo | `https://github.com/bahattab/B-PhraseForgeExpress`, inventory and gap analysis checked against release **0.5.6** (`d03986c`) |
+| Target repo | `https://github.com/bahattab/B-PhraseForgeExpress`, inventory and gap analysis checked against release **0.6.0** (`6c4904f`) |
 | Reference product | PhraseExpress 18.0.84.0, installed at `C:\Program Files (x86)\PhraseExpress` |
-| Date | 2026-10-30 (v3) · 2026-10-29 (v1, v2) |
-| Status | Draft v3 — PF columns re-verified against 0.5.6; Phase 0 security items released in 0.5.5 (#15, #16); test-suite crash fixed in 0.5.6 (#14) |
+| Date | 2026-11-02 (v4) · 2026-10-30 (v3) · 2026-10-29 (v1, v2) |
+| Status | Draft v4 — PF rows changed by 0.5.7–0.6.0 re-verified against 0.6.0; PE export routes corrected from the vendor documentation (Section 1.2 H, U-15); Phase 0 security items released in 0.5.5 (#15, #16) |
 | Method | Static analysis only. No PhraseExpress binary was executed. No PhraseExpress code, assets, keys or text are reproduced here. |
+
+---
+
+## Status note (v4)
+
+v4 brings the **PhraseForge (PF)** columns up to release **0.6.0** (`6c4904f`). Only the rows that releases 0.5.7–0.6.0 changed were re-checked against the code; every other PF row is carried over from v3 (0.5.6) unchanged. PhraseExpress (PE) binary claims are still those of v2.
+
+What changed in PF since v3:
+
+| Release | PR | Changes relevant to this PRD |
+|---|---|---|
+| 0.5.7 | #17 | Sync through the Google Drive for desktop folder without sign-in: `cloud/drive_folder.py` finds "My Drive" on the streaming drive, a translated name or a mirrored profile folder (F1) |
+| 0.5.8–0.5.9 | #18 | Automatic sync every N minutes (default 7, user-selectable), at start, on exit and 60 s after an edit (F1) · Settings no longer refreshes the Google token on the UI thread · customizable quick toolbar: show, hide, move, add any Tools command (E1) · drag and drop between the phrase list and the folder tree (E1) · OCR to clipboard copies on the UI thread and verifies the copy · OCR of PDF/images without a cloud key (Qt PDF text layer, Windows OCR for scanned pages) · Prompt Optimizer answers only in English or Arabic · OneNote: import a `.one` file, export a folder to a new OneNote section, publish a page/section/notebook to PDF/DOCX/XPS/MHT/ONE/ONEPKG · phrase export to HTML and MHT (E2, H) · PhraseExpress import of `.txt` files (one phrase per file, several at once, or a folder tree) and of XML; text files read as UTF-8, UTF-16 or the ANSI code page (G-15) · fix: File import of one `.txt` imported every `.txt` in its folder tree |
+| 0.6.0 | #19 | Visual audit: input borders 3.45:1 and placeholder text 5.1:1 (WCAG 1.4.11 / 1.4.3), filled primary buttons, menu buttons styled like push buttons, one icon palette, translated list headers and breadcrumb in Arabic (E11, G-31) |
+
+**New PE evidence (v4).** PhraseExpress's own online manual (`phraseexpress.com/doc/managing-phrases/export/` and `/doc/phrase-files/export/`, read through web search on 2026-11-01; the site itself was not reachable from the session) says PE exports **text one phrase at a time** ("no file format could save all meta data"), and exports a whole folder only as a **phrase file** (`.pexdb`, encrypted). It documents no CSV or XML export. The user confirmed this on their install: the export choices are text or `.pexdb`. This conflicts with the exporter names found in the binary ([C-EXE], Section 1.2 H); the conflict is logged as U-15. FR-IMP-01 is rewritten around the per-phrase text export.
+
+Evidence for v4 [REPO]: release 0.6.0 (`6c4904f`); `registry.catalog()` still 153 commands; `db.py` still 16 tables; Arabic table 1,277 entries; `pytest --collect-only`: 750 tests; Windows CI (`windows-build.yml`, run 90) passed the full suite, the frozen-EXE self-test and the silent install/uninstall test on `6c4904f`.
 
 ---
 
@@ -91,7 +109,7 @@ Single-instance and IPC objects [C-EXE]: `Global\PhraseExpressMutex`, `Global\Ph
 
 ### 1.2 Feature inventory
 
-*PF status below reflects release 0.5.6 (v3).* Legend for **PF status**: ✅ reproduced · 🟡 partial · ❌ missing · ➕ PF-only. "Partial" means PF has the feature but lacks options PE shows.
+*PF status below reflects release 0.6.0 for the rows changed since v3 (marked "0.5.7+"/"0.5.8+"/"0.5.9+"/"0.6.0"), and 0.5.6 for the rest.* Legend for **PF status**: ✅ reproduced · 🟡 partial · ❌ missing · ➕ PF-only. "Partial" means PF has the feature but lacks options PE shows.
 
 #### A. Phrase store and organisation
 
@@ -180,8 +198,8 @@ PE macro names [C-EXE, from the macro name table], compared with PF's 153 comman
 
 | # | PE feature | Evidence | PF status |
 |---|---|---|---|
-| E1 | Ribbon main window (192 actions), tree, multi-column phrase list (`UI/PhraseCol*0–15`) | [C-EXE] TpexMWnd4 DFM | ✅ `ribbon.py`, `tree_panel.py` |
-| E2 | Rich editor with spell check, tables, images, find/replace, character map, font dialog, DOCX/Markdown/HTML import/export | [C-EXE] TFrmRV*, TRichForm | 🟡 HTML QTextEdit, no spell check; DOCX/PDF **export** (`documents.py`); no DOCX/Markdown import into the editor |
+| E1 | Ribbon main window (192 actions), tree, multi-column phrase list (`UI/PhraseCol*0–15`) | [C-EXE] TpexMWnd4 DFM | ✅ `ribbon.py`, `tree_panel.py`; 0.5.8+: customizable quick toolbar (`ui/quick_toolbar.py`), drag and drop of phrases and folders between list and tree |
+| E2 | Rich editor with spell check, tables, images, find/replace, character map, font dialog, DOCX/Markdown/HTML import/export | [C-EXE] TFrmRV*, TRichForm | 🟡 HTML QTextEdit, no spell check; DOCX/PDF/HTML/MHT **export** (`documents.py`, HTML/MHT 0.5.9+); no DOCX/Markdown import into the editor |
 | E3 | Popup menu, QuickKeys, QuickSearch (inline, case, subfolders, Quick Jump), repeat last output, dark mode, ~20 colours | [C-DATA] `Popup/*`, `Search/*` | ✅ `popup.py` (verify Quick Jump and repeat-last) |
 | E4 | Clipboard cache window with auto-collect, dedupe, plain-only, trim | [C-DATA] `ClipCache/*` | ✅ |
 | E5 | Autotext learning (word graph + corrections, `words.pal`), learns from Outlook, AutoCorrect | [C-DATA] words.pal is an encrypted ZIP; [C-EXE] `<connections><corrections>` | 🟡 sentence-repeat learner, AutoComplete word learner |
@@ -190,7 +208,7 @@ PE macro names [C-EXE, from the macro name table], compared with PF's 153 comman
 | E8 | Print / print preview | [C-EXE] | ✅ `main_dialogs.py` |
 | E9 | Duplicate finder / removal | [C-EXE] TDelDupConfDlg | 🟡 Bulk edit > Remove duplicates per folder (`bulk_edit.remove_duplicates`); no library-wide finder |
 | E10 | Backup: count retention, compare file versions, restore, optimise/vacuum | [C-EXE] TFileBackupDlg, TFileCompareDlg, TOptimizeDlg | 🟡 backup and restore; `VACUUM` runs only after sealing secrets and on sync snapshots; no compare, no vacuum UI |
-| E11 | UI languages EN/DE | [C-DLL] pexlang | ➕ EN/AR with right-to-left layout; ~1,200-entry Arabic table (`ui/i18n_ar.py`); no `tr()`/`.ts` pipeline |
+| E11 | UI languages EN/DE | [C-DLL] pexlang | ➕ EN/AR with right-to-left layout; 1,277-entry Arabic table (`ui/i18n.py` + `ui/i18n_ar.py`); 0.6.0 translated the remaining list headers and breadcrumb; no `.ts` pipeline |
 | E12 | Event sounds (6) | [C-DATA] `DoSound0–5` | ✅ `sounds.py` |
 | E13 | Toast notifications (WinRT) | [C-EXE] `RoActivateInstance` [I] | 🟡 tray balloon |
 | E14 | Admin lockdown via machine-wide `C:\ProgramData\PhraseExpress\config.xml` (`ConfigDisabled, EditDisabled, DoStats`) | [C-DATA] | ❌ |
@@ -200,7 +218,7 @@ PE macro names [C-EXE, from the macro name table], compared with PF's 153 comman
 
 | # | PE feature | Evidence | PF status |
 |---|---|---|---|
-| F1 | Cloud-folder sync: Dropbox, OneDrive, Google Drive, iCloud | [C-EXE] | ✅ folder remote + Google Drive OAuth (`cloud/sync.py`) |
+| F1 | Cloud-folder sync: Dropbox, OneDrive, Google Drive, iCloud | [C-EXE] | ✅ folder remote + Google Drive OAuth (`cloud/sync.py`); 0.5.7+: finds the Google Drive for desktop folder (`cloud/drive_folder.py`); 0.5.8+: automatic sync on an interval (default 7 min), at start, on exit and after edits |
 | F2 | **Change-set sync** ("hub", `.pexdbhub`, `.pexdbupd`) with tombstones, synced-change log, sync users, master client | [C-EXE] `syncedchanges, synclog, deleteditems`; TSyncUsersDlg | ❌ PF syncs whole snapshots with a keep-mine/keep-theirs choice |
 | F3 | Client-server: MS SQL Server, MySQL, Firebird back ends; UDP server discovery | [C-EXE] four DDL dialects; `ListenUDPPort` | ❌ |
 | F4 | LDAP/AD and Microsoft Entra ID (OAuth v2 + Graph `me, memberOf, users, groups`) for identity and ACLs | [C-EXE]; [C-DATA] `AzureAD/*` | ❌ (PF has `{#ad}` lookups only) |
@@ -225,13 +243,13 @@ PE macro names [C-EXE, from the macro name table], compared with PF's 153 comman
 
 | PE importers [C-EXE] | PF |
 |---|---|
-| TextExpander (incl. 5+), Texter, AutoHotkey (`.ahk`), Breevy, ShortHand, ShortKeys, GhostTyper, Direct Access, InstantText, Word AutoCorrect/AutoText, Outlook, Excel, CSV, SQL, folder structure; extensions `.textexpander .texter .ahk .glo .spf .gtx .dta` | ✅ TextExpander (CSV, `.textexpander`, macOS plist), PhraseExpress CSV/TXT/TSV, CSV, JSON, txt folder · ➕ OneNote, Sticky Notes · ❌ everything else |
-| PE exporters: HTML, CSV, XML, Word, Excel, Android, TextExpander | ✅ JSON, CSV, txt, PhraseExpress CSV, TextExpander CSV, macOS plist, DOCX, PDF · ❌ HTML/XML/Excel |
+| TextExpander (incl. 5+), Texter, AutoHotkey (`.ahk`), Breevy, ShortHand, ShortKeys, GhostTyper, Direct Access, InstantText, Word AutoCorrect/AutoText, Outlook, Excel, CSV, SQL, folder structure; extensions `.textexpander .texter .ahk .glo .spf .gtx .dta` | ✅ TextExpander (CSV, `.textexpander`, macOS plist), CSV, JSON, txt folder · PhraseExpress: per-phrase `.txt` (one or many files, or a folder tree; 0.5.9+), CSV/TSV, XML (0.5.9+, schema not yet checked against a real file) · ➕ OneNote (running notebooks and `.one` files, 0.5.9+), Sticky Notes · ❌ everything else |
+| PE exporters: HTML, CSV, XML, Word, Excel, Android, TextExpander [C-EXE names]. **The vendor manual documents only per-phrase text export and phrase-file (`.pexdb`) export (U-15).** | ✅ JSON, CSV, txt, PhraseExpress CSV, TextExpander CSV, macOS plist, DOCX, PDF, HTML, MHT (0.5.9+) · ➕ OneNote section and OneNote Publish (0.5.9+) · ❌ XML/Excel |
 | Native PE formats `.pxp .px3 .pxa .pexdb .pexdbupd .pexdbhub .pexmigration .pal .mrf` | ❌ none (see D3) |
 
 #### I. Present in PF but not in PE (keep)
 
-Screen OCR via Capture2Text, OneNote import/send/clip, Windows Sticky Notes import, Google Drive OAuth with DPAPI-protected token, Arabic UI and right-to-left layout, AST-sandboxed calculator, chip-style macro display in the editor, typing-speed test.
+Screen OCR via Capture2Text, OCR of PDFs and images on the PC (0.5.8+), OneNote import/send/clip and `.one` exchange (0.5.9+), Windows Sticky Notes import, Google Drive OAuth with DPAPI-protected token, Arabic UI and right-to-left layout, AST-sandboxed calculator, chip-style macro display in the editor, typing-speed test.
 
 ### 1.3 Data files of the installed instance
 
@@ -252,7 +270,7 @@ All four DLLs are x86 Delphi with plain exports [C-DLL]. **Common exports (31):*
 
 Semantics: Params is a `Key=Value` list (Model, MaxTokens, Temperature, Top_k, Instruction, IgnoreTags, glossary) [I]. `GetSupportedSettings` returns a CSV of the abstract knobs `Length, Accuracy, Variation, Model` [C-DLL]. The host maps them to provider fields (Length→max_tokens, Variation→temperature, Accuracy→top_p/top_k/penalty) [C-DLL]. `GetOptsUI` returns a small XML form descriptor [C-DLL]. There is no ABI version export, so capability is detected by which exports exist [I]. The exact calling convention and string types (Delphi `string` vs `PWideChar`) are [U-03]. **PF will not load these DLLs** (D2); the contract is used only as the model for PF's own plugin interface (FR-PLG-*).
 
-### 1.5 PhraseForge 0.5.6 features not in PhraseExpress (keep)
+### 1.5 PhraseForge features not in PhraseExpress (keep; 0.5.6 list plus 0.5.7–0.6.0 additions)
 
 Built-in OCR (Windows.Media.Ocr, Capture2Text-style modes, optional Mistral OCR, PDF/image to Markdown) ·
 built-in desktop sticky notes and a Microsoft Sticky Notes importer · quick-note window (send to OneNote or
@@ -261,7 +279,9 @@ hotkey (`{#promptboost}`) · AI engines Gemini, OpenCode Zen, Kilo Code, GPT4All
 translate · Listary-style "Search files" launcher · DOCX/PDF export with Arabic RTL · TextExpander, macOS
 Text Replacements and PhraseExpress-CSV exchange · HTML→RTF clipboard output · full Arabic RTL UI, Arabic
 user guide, Hijri dates · Windows installer, portable EXE, GitHub update check · Google sign-in with a
-built-in or own OAuth client · Tools ribbon tab that mirrors every tray-menu command (0.5.6).
+built-in or own OAuth client · Tools ribbon tab that mirrors every tray-menu command (0.5.6) · sync through the
+Google Drive for desktop folder without sign-in (0.5.7) · OCR of PDFs and images without a cloud key, OneNote
+`.one` import/export and Publish, HTML/MHT phrase export, customizable quick toolbar (0.5.8–0.5.9).
 
 ---
 
@@ -269,7 +289,7 @@ built-in or own OAuth client · Tools ribbon tab that mirrors every tray-menu co
 
 Priority: **M** must-have (core parity, or a security defect), **S** should-have, **N** nice-to-have. Complexity: S ≤ 3 dev-days, M ≤ 2 weeks, L ≤ 6 weeks, XL > 6 weeks.
 
-| ID | Gap | Priority | Complexity | FR | Status in 0.5.6 |
+| ID | Gap | Priority | Complexity | FR | Status in 0.6.0 (rows not marked changed: as in 0.5.6) |
 |---|---|---|---|---|---|
 | G-01 | Secrets stored in plain text and uploaded by sync | M (sec) | S | FR-SEC-01..03 | **closed** (0.5.5): proxy password sealed and device-only; plain values from old versions or restored backups are sealed and wiped from the file |
 | G-02 | Macro trust model for imported/synced phrases (`{#run}`, `{#http}`, `{#sql}`, `{#mail -send}`; time/app triggers) | M (sec) | M | FR-SEC-04/05 | **closed** (0.5.5): imported phrases and phrases a sync pull adds or changes are quarantined per PC; their privileged macros (`run, open, web, http, mail -send, outputfile, dbquery, setphrase`, Win-key chords) ask Run once / Always allow / Do not run, automatic triggers skip them; engine blocks them at run time, also through `{#insert}` (`security.py`) |
@@ -285,8 +305,8 @@ Priority: **M** must-have (core parity, or a security defect), **S** should-have
 | G-12 | Form validation, required, formgroup, checkcombo | M | M | FR-MAC-04 | partial: `{#input -syntax}` presets and required; no formgroup/checkcombo |
 | G-13 | Plugin system | M | L | FR-PLG-01..08 | open (engines hard-coded in `ai.py`) |
 | G-14 | AI parity (vision, image gen, Ollama pull, usage, DeepL, langdetect) | S | M | FR-AI-01..05 | partial: 8 providers + DeepL + language guess; no vision/image/pull/usage |
-| G-15 | Import from PhraseExpress | M | M | FR-IMP-01..03 | partial: CSV/TXT/TSV with header aliases; encrypted .pexdb/.pxp detected and refused with instructions; no XML, no macro translation |
-| G-16 | Other importers/exporters | S | M | FR-IMP-04/05 | partial: TextExpander, macOS plist, PE CSV, DOCX/PDF; no Texter/AHK/Breevy/Word AutoCorrect, no HTML/XML/XLSX export |
+| G-15 | Import from PhraseExpress | M | M | FR-IMP-01..03 | partial, **changed in 0.5.9**: per-phrase `.txt` (PE's documented text export: one file = one phrase, name = description; several files at once; a folder tree keeps its sub-folders), CSV/TXT/TSV tables, XML (layout guessed, no real PE sample yet); encrypted `.pexdb/.pexdbhub/.pxp` refused with instructions for the text route; no macro translation; triggers are lost in the text route (U-15) |
+| G-16 | Other importers/exporters | S | M | FR-IMP-04/05 | partial, **changed in 0.5.9**: TextExpander, macOS plist, PE CSV, DOCX/PDF/HTML/MHT export, OneNote section export and Publish; no Texter/AHK/Breevy/Word AutoCorrect, no XML/XLSX export |
 | G-17 | Levels (language variants), hotkeys, `{#setlevel}` | S | L | FR-DAT-01 | partial: `phrase_versions(phrase_id, lang)` + active-language setting; no level hotkeys/`{#setlevel}` |
 | G-18 | Trash, comments, templates, links, folder prefix/suffix, multi-key sort | S | M | FR-DAT-02..05 | partial: folder abbreviation prefix, bulk sort |
 | G-19 | Multiple mounted phrase libraries | S | L | FR-DAT-06 | open |
@@ -294,19 +314,21 @@ Priority: **M** must-have (core parity, or a security defect), **S** should-have
 | G-21 | RTF, embedded files, Markdown/DOCX into editor | N | M | FR-EDT-02 | partial: RTF clipboard output |
 | G-22 | Dynamic folders | S | L | FR-DYN-01/02 | open |
 | G-23 | Macro recorder | N | L | FR-REC-01 | open |
-| G-24 | Change-set sync | S | L | FR-SYN-01..04 | open (whole snapshot) |
+| G-24 | Change-set sync | S | L | FR-SYN-01..04 | open (whole snapshot). 0.5.8 made snapshot sync automatic (interval, start, exit, after edits), which makes the missing merge more visible: two PCs that both edit between syncs still get keep-mine/keep-theirs |
 | G-25 | Multi-user server, ACLs, directory identity | N | XL | FR-SYN-05 | open |
 | G-26 | Outlook context | N | M | FR-OL-01 | partial: `{#outlook field}` via COM |
 | G-27 | Duplicate finder, backup compare, vacuum | N | S | FR-UI-01 | partial: bulk remove duplicates |
 | G-28 | Admin lockdown policy file | N | S | FR-APP-04 | open |
 | G-29 | Auto-update | N | M | FR-APP-05 | partial: GitHub release check + setup link |
 | G-30 | SAPI, layout conversion, mouse/sound macros | N | S | FR-MAC-05 | open |
-| G-31 | Full UI localisation | S | M | FR-UI-02 | partial: ~1000-string Arabic table, RTL |
+| G-31 | Full UI localisation | S | M | FR-UI-02 | partial, **changed in 0.6.0**: 1,277-entry Arabic table, RTL; list headers, panel title and breadcrumb now translated; strings are still found by hand (no extraction step) |
 | G-32 | Full test suite hangs in one run (order-dependent Qt state) | M (quality) | S | FR-QA-01 | **closed** (0.5.6): the hang was gone after 0.5.5; the remaining Windows CI crash came from `SingleInstance` sockets (see G-08). The full suite runs in one process: 663 passed, 18 skipped (4 min 18 s on Linux offscreen, 2026-10-30). Still open from FR-QA-01: the < 3 min target and a per-test `pytest-timeout` |
 | G-33 | Session awareness (lock, RDP) | N | S | FR-INP-06 | open |
-| G-34 | `{#http}` can reach localhost/LAN/metadata addresses (incl. via redirect) | M (sec) | S | FR-SEC-06 | **partial** (0.5.5): private, loopback, link-local and reserved targets are blocked before the first request and before every redirect (`net._guard`), with a setting to allow them. **Open:** the guard resolves DNS itself and httpx resolves again on connect, so a DNS-rebinding host can pass the check (FR-SEC-06 requires connecting to the checked IP) |
+| G-34 | `{#http}` can reach localhost/LAN/metadata addresses (incl. via redirect) | M (sec) | S | FR-SEC-06 | **partial** (0.5.5; unchanged in 0.6.0, `net.py` re-checked): private, loopback, link-local and reserved targets are blocked before the first request and before every redirect (`net._guard`), with a setting to allow them. **Open:** the guard resolves DNS itself and httpx resolves again on connect, so a DNS-rebinding host can pass the check (FR-SEC-06 requires connecting to the checked IP) |
 
 PE evidence for each gap: Section 1.2. Also open: `test_filesearch.py::test_speed_gate_50k_entries_answers_in_milliseconds` (median < 50 ms) was reported failing on slower machines in 0.5.4; it passed in the 0.5.6 Linux run, so its status on slower Windows machines is unconfirmed.
+
+**Summary for 0.6.0:** no gap changed state between 0.5.6 and 0.6.0. G-15, G-16 and G-31 moved forward inside "partial"; G-34 is still the open security item. The counts below still hold.
 
 **Summary for 0.5.6:** 5 of 34 gaps closed (G-01, G-02, G-03, G-08, G-32), 15 partial, 14 open. G-03 is closed for its own scope; the per-file password-check modes of FR-SEC-08 (`on_start`, `on_open`, `on_view`) are still to do. Every remaining **must-have** gap is partial or open: G-05 and G-06 (input core), G-10, G-11 and G-12 (triggers and macros), G-13 (plugins), G-15 (PE import) and G-34 (DNS rebinding).
 
@@ -392,7 +414,7 @@ Schema v3 migration requirements (one migration, reversible through the pre-migr
 
 ### 3.8 Import / export
 
-- **FR-IMP-01 — PhraseExpress import (export-based; D3 option B).** PF imports the files PE itself writes when the user exports from PE (CSV, XML, HTML [C-EXE: exporters exist]) and the user's `config.xml` (AI presets, glossaries, delimiter settings, excluded apps, hotkeys; secrets are **not** imported automatically, and the user is told to re-enter them). Folder tree, descriptions, plain/HTML content, autotext and hotkeys are mapped; macros go through FR-MAC-01. The import report lists every unsupported macro and option. *Acceptance:* blocked until the user supplies sample PE export files for each format ([U-02]); then a round-trip fixture made from those samples imports with 0 data loss for supported fields. *Test:* T-IMP-01.
+- **FR-IMP-01 — PhraseExpress import (export-based; D3 option B).** *(v4: rewritten for the export routes the vendor manual documents; see U-15.)* The primary route is PE's per-phrase **text export**: PF imports one or many `.txt` files (file name → description, file text → content) and a folder of such files (sub-folders → folders), reading UTF-8, UTF-16 and the ANSI code page. Tables (CSV/TSV) and XML from PE or from third-party exporters are accepted when present. Triggers, macros-as-structure and levels do not survive the text route, and the import report must say so (0.5.9 reports only the count of imported and skipped files). PF also imports the user's `config.xml` (AI presets, glossaries, delimiter settings, excluded apps, hotkeys; secrets are **not** imported automatically, and the user is told to re-enter them). Folder tree, descriptions, plain/HTML content, autotext and hotkeys are mapped; macros go through FR-MAC-01. The import report lists every unsupported macro and option. *Acceptance:* the text route passes on synthetic fixtures today (`tests/test_phraseexpress_text_import.py`); full closure needs one real PE text export and, if it exists on the user's build, one CSV/XML export ([U-02], [U-15]) imported with 0 data loss for the fields that format carries. *Test:* T-IMP-01.
 - **FR-IMP-02 — Imported items get `origin="imported"`** (FR-SEC-04) and the tag `phraseexpress`, and are placed under a new root folder by default. *Test:* T-IMP-02.
 - **FR-IMP-03 — Native `.pxp`/`.pexdb` import is out of scope** unless [U-01]/[U-02] are resolved by a lawful route (Section 8): e.g. PE offers a documented plaintext export of these files, or a user decrypts their own files using PE itself. If such a route exists, the import adapter reads a decrypted SQLite copy mapped through Appendix A. *Test:* —
 - **FR-IMP-04 — Additional importers:** Word AutoCorrect (`.acl` via Word COM, or the Word export), AutoHotkey hotstrings (`::abbr::text` incl. options `*`, `?`, `C`, `O`, `R`), Texter (`.texter`), Breevy, ShortKeys (CSV/text exports). Each is a separate `importer` plugin with fixtures. *Test:* T-IMP-04.
@@ -566,21 +588,24 @@ Each phase ends with an AMA-style acceptance gate: all FR tests green, performan
 
 Critical path: P0 → P1 → P2 → P3 → P5. P4 can start after P2 in parallel with P3; P6 and P7 can run in parallel after P2.
 
-### 6.1 Phase status at 0.5.6 (v3)
+### 6.1 Phase status at 0.6.0 (v4)
 
 | Phase | Status | Done | Left |
 |---|---|---|---|
 | P0 | **mostly done** | FR-SEC-01..03 (secrets sealed, device-only, migrated); FR-SEC-07 (salted scrypt, the allowed fallback); FR-APP-01 (single instance); FR-QA-01 hang and Windows crash (one-process run passes) | FR-SEC-06 DNS-rebinding hole (G-34); perf harness `bench/` and baseline numbers (Section 7.4) not built; FR-QA-01 < 3 min target and `pytest-timeout` |
 | P2 (pulled forward) | **partly done** | FR-SEC-04/05 trust gate for imported and synced phrases (`security.py`, `phrase_quarantine` table); FR-SEC-08 lock before expansion | `origin`/`trusted_hash` columns as specified (0.5.5 uses a quarantine table instead; record it as a decision); FR-SEC-08 `passcheck` modes; FR-DAT-00..05 |
-| P1, P3–P8 | not started | — | All their FRs |
+| P5 (started early, user request) | **partly done** | FR-IMP-01 text route and folder tree; FR-IMP-05 HTML/DOCX export; OneNote exchange (outside the FR list) | FR-IMP-01 real-sample check and macro translation (needs P3 `pe_compat`); FR-IMP-02 `phraseexpress` tag and `origin` (imports use the 0.5.5 quarantine instead); FR-IMP-04 importers; FR-IMP-05 XML/XLSX |
+| P1, P3, P4, P6–P8 | not started | — | All their FRs |
 
-**Next step on the critical path:** finish P0 (close G-34 and build the `bench/` harness, so P1 has the baseline numbers it is measured against), then start P1 with a `pfhook.dll` spike that measures P-01 on a Windows runner.
+**Next step on the critical path (unchanged in v4):** the 0.5.7–0.6.0 releases went to user-requested features, sync, import/export and UI quality; P0 is where v3 left it. Finish P0 (close G-34 and build the `bench/` harness, so P1 has the baseline numbers it is measured against), then start P1 with a `pfhook.dll` spike that measures P-01 on a Windows runner.
 
 ---
 
 ## 7. Testing and quality
 
 ### 7.1 Current baseline [REPO]
+
+0.6.0: **750 tests collected** (`pytest --collect-only`, Linux). Windows CI ran the full suite green on `6c4904f`, then the frozen-EXE self-test (which now also checks `PySide6.QtPdf`, the OneNote COM wrappers and the built-in Google client) and a silent install/uninstall. New since 0.5.6: tests for Drive folder detection, automatic sync, quick toolbar, drag and drop, OneNote exchange (with a fake COM client), export formats, PhraseExpress text import (incl. Windows line ends and UTF-16) and the visual audit (contrast ratios, primary buttons, icon palette, Arabic keys). OneNote, Windows OCR and clipboard paths are still checked only with fakes or on the CI runner, not on a machine with OneNote and PhraseExpress installed.
 
 0.5.6: **663 passed, 18 skipped in one process** (Linux, `QT_QPA_PLATFORM=offscreen`, 4 min 18 s, 2026-10-30), across 46 test files. Areas as in v2, plus security (trust gate, folder locks, single instance), Google sign-in, sticky-notes UI and the Tools tab. Windows CI (`windows-build.yml`) runs the same suite, then builds and runs the frozen EXE with `--self-test`, on every PR. The v2 hang at `test_ui.py::test_theme_icons_tray` no longer happens. The later Windows-only access violation was traced to `SingleInstance` sockets that stayed alive after their owner was destroyed, and was fixed in #14 with a subprocess regression test (`test_security.py::test_destroyed_single_instance_leaves_nothing_that_crashes_later`).
 
@@ -684,7 +709,7 @@ Not to be traced: `sqlite3_key` and any licensing code path (Section 8).
 | ID | Unknown | Why it matters | Resolution route |
 |---|---|---|---|
 | U-01 | SQLCipher key derivation / cipher settings of `.pexdb` | Native file import | **Do not resolve by RE** (Section 8). Only via a vendor-documented export. |
-| U-02 | What PE's CSV/XML/HTML exports contain (triggers? macros? levels? folders?) | FR-IMP-01 fidelity | The user exports a small synthetic library from PE in each format and adds it to `tests/fixtures/pe_exports/` |
+| U-02 | What PE's exports contain (triggers? macros? levels? folders?). v4: for the per-phrase text export the answer is plain or formatted text only (vendor manual); still open for any CSV/XML export, see U-15 | FR-IMP-01 fidelity | The user exports a small synthetic library from PE in each available format and adds it to `tests/fixtures/pe_exports/` |
 | U-03 | Exact plugin ABI calling convention and string types | Only relevant if D2-C were chosen (it is not) | None needed |
 | U-04 | Exact semantics of macros without visible parameter docs (`autocase, decstr, explode, parse, headfootfilled, qstext, check, numlist` styles…) | FR-MAC-02/03 compat fidelity | PE's public online macro documentation (allowed: public docs) + behaviour capture |
 | U-05 | Whether `config.xml` secrets (`*APIKey`, AzureAD tokens) are obfuscated or plaintext | Importing settings, and a security note for users migrating | Inspect the user's own file manually; never import secrets automatically |
@@ -697,6 +722,7 @@ Not to be traced: `sqlite3_key` and any licensing code path (Section 8).
 | U-12 | `LowLevelHooksTimeout` effective default on the target Windows builds | D1 risk sizing | Read `HKCU\Control Panel\Desktop\LowLevelHooksTimeout` on test machines; test with an induced stall |
 | U-13 | Whether PE's "Window" trigger matches by title, class, exe, or a mix | FR parity of B11 | Capture 7.6 step 3 |
 | U-14 | Whether the "SQL" macro dialog maps to a `{#sql}` macro (only the dialog form was observed) | Macro compat | Public docs |
+| U-15 | **(v4)** Which export formats PE 18 actually offers. The binary contains exporter names (HTML, CSV, XML, Word, Excel, Android, TextExpander) [C-EXE], but the vendor manual documents only per-phrase text export and phrase-file export, and the user's install shows only those. Possible reasons: the exporters are edition-specific, hidden or retired. | Whether FR-IMP-01 can ever carry triggers and folders from PE without the encrypted file | The user checks Export in their PE edition with a folder selected and a phrase selected and sends a screenshot of the choices; no binary analysis needed |
 
 Ambiguities in this PRD itself:
 - PF currently uses integer IDs. Moving to UUIDv7 (FR-DAT-00) touches every module, but is required for sync and import; the alternative (keep ints, add a uid column only for sync) is accepted if P2 estimates overrun.
