@@ -265,6 +265,7 @@ def test_https_still_checks_the_certificate_against_the_host_name(tmp_path, loca
     import ssl
     cf, kf = _self_signed(tmp_path, "pinned.example")
     server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     server_ctx.load_cert_chain(cf, kf)
     local_server.httpd.socket = server_ctx.wrap_socket(local_server.httpd.socket, server_side=True)
     client_ctx = ssl.create_default_context(cafile=str(cf))
