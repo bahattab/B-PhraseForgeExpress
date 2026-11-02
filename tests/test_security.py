@@ -128,7 +128,7 @@ def test_http_macro_blocks_private_hosts_by_default():
 def _mock_client(monkeypatch, handler):
     real_client = httpx.Client
     monkeypatch.setattr(net.httpx, "Client",
-                        lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw))
+                        lambda **kw: real_client(**{**kw, "transport": httpx.MockTransport(handler)}))
 
 
 def test_http_redirect_to_private_host_is_blocked(monkeypatch):
@@ -153,6 +153,144 @@ def test_http_private_hosts_allowed_by_setting(monkeypatch):
     _mock_client(monkeypatch, lambda r: httpx.Response(200, text="ok"))
     try:
         assert net.http_request("GET", "http://127.0.0.1/") == "ok"
+    finally:
+        net.configure({})
+
+
+class _LocalServer:
+    """A tiny HTTP server on 127.0.0.1 that records the Host header of each request."""
+
+    def __init__(self):
+        import http.server
+        import threading
+        hosts = self.hosts = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                hosts.append(self.headers.get("Host"))
+                body = b"local secret"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        self.httpd = http.server.HTTPServer(("127.0.0.1", 0), H)
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+@pytest.fixture
+def local_server():
+    srv = _LocalServer()
+    yield srv
+    srv.close()
+
+
+def _rebinding_dns(monkeypatch, name, first, then):
+    """getaddrinfo answers `first` for `name` on the first lookup and `then` afterwards."""
+    real = net.socket.getaddrinfo
+    calls = []
+
+    def fake(host, port, *a, **kw):
+        if host != name:
+            return real(host, port, *a, **kw)
+        calls.append(host)
+        ip = first if len(calls) == 1 else then
+        return [(net.socket.AF_INET, net.socket.SOCK_STREAM, 6, "", (ip, port or 0))]
+
+    monkeypatch.setattr(net.socket, "getaddrinfo", fake)
+    return calls
+
+
+def test_dns_rebinding_cannot_reach_this_pc(monkeypatch, local_server):
+    """G-34 / FR-SEC-06: the name check sees a public address, the second lookup answers
+    127.0.0.1. The request must be stopped and the local server must see nothing."""
+    net.configure({})
+    calls = _rebinding_dns(monkeypatch, "rebind.example", "93.184.216.34", "127.0.0.1")
+    with pytest.raises(net.NetError, match="blocked"):
+        net.http_request("GET", f"http://rebind.example:{local_server.port}/", timeout_s=5)
+    assert local_server.hosts == []
+    assert len(calls) == 2            # name check, then the lookup the connection really uses
+
+
+def test_connection_uses_the_checked_address_without_a_new_lookup(local_server):
+    """The pinned transport connects to the address its resolver returned (never resolving
+    again) and still sends the original host name."""
+    looked_up = []
+
+    def resolve(host, port):
+        looked_up.append(host)
+        return [(net.socket.AF_INET, net.socket.SOCK_STREAM, 6, "", ("127.0.0.1", port))]
+
+    with httpx.Client(transport=net.pinned_transport(resolve=resolve), timeout=5) as c:
+        r = c.get(f"http://checked.example:{local_server.port}/")
+    assert r.text == "local secret"
+    assert looked_up == ["checked.example"]
+    assert local_server.hosts == [f"checked.example:{local_server.port}"]
+
+
+def _self_signed(tmp_path, name):
+    crypto = pytest.importorskip("cryptography")  # noqa: F841
+    import datetime
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+    key = ec.generate_private_key(ec.SECP256R1())
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (x509.CertificateBuilder().subject_name(subject).issuer_name(subject).public_key(key.public_key())
+            .serial_number(x509.random_serial_number()).not_valid_before(now - datetime.timedelta(days=1))
+            .not_valid_after(now + datetime.timedelta(days=1))
+            .add_extension(x509.SubjectAlternativeName([x509.DNSName(name)]), critical=False)
+            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+            .sign(key, hashes.SHA256()))
+    cf, kf = tmp_path / "cert.pem", tmp_path / "key.pem"
+    cf.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    kf.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                     serialization.NoEncryption()))
+    return cf, kf
+
+
+def test_https_still_checks_the_certificate_against_the_host_name(tmp_path, local_server):
+    """Connecting to a pinned IP must not weaken TLS: the certificate is checked against the
+    URL's host name, so the right name passes and a wrong name fails."""
+    import ssl
+    cf, kf = _self_signed(tmp_path, "pinned.example")
+    server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_ctx.load_cert_chain(cf, kf)
+    local_server.httpd.socket = server_ctx.wrap_socket(local_server.httpd.socket, server_side=True)
+    client_ctx = ssl.create_default_context(cafile=str(cf))
+
+    def resolve(host, port):
+        return [(net.socket.AF_INET, net.socket.SOCK_STREAM, 6, "", ("127.0.0.1", port))]
+
+    with httpx.Client(transport=net.pinned_transport(resolve=resolve, verify=client_ctx), timeout=5) as c:
+        assert c.get(f"https://pinned.example:{local_server.port}/").text == "local secret"
+        with pytest.raises(httpx.ConnectError):
+            c.get(f"https://other.example:{local_server.port}/")
+
+
+def test_public_addresses_rejects_any_private_answer(monkeypatch):
+    def fake(host, port, *a, **kw):
+        return [(net.socket.AF_INET, net.socket.SOCK_STREAM, 6, "", ("8.8.8.8", port)),
+                (net.socket.AF_INET, net.socket.SOCK_STREAM, 6, "", ("10.0.0.1", port))]
+    monkeypatch.setattr(net.socket, "getaddrinfo", fake)
+    with pytest.raises(net.NetError, match="blocked"):
+        net.public_addresses("mixed.example", 80)
+
+
+def test_allow_private_setting_also_lifts_the_pinned_check(local_server):
+    net.configure({"net.allow_private_hosts": "1"})
+    try:
+        assert net.http_request("GET", f"http://127.0.0.1:{local_server.port}/", timeout_s=5) == "local secret"
     finally:
         net.configure({})
 
