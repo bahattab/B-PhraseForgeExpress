@@ -2,11 +2,28 @@
 
 | | |
 |---|---|
-| Target repo | `https://github.com/bahattab/B-PhraseForgeExpress`, inventory and gap analysis checked against release **0.6.0** (`6c4904f`) |
+| Target repo | `https://github.com/bahattab/B-PhraseForgeExpress`, inventory and gap analysis checked against release **0.6.3** (`43ef4ee`) and `main` after it (`af02529`) |
 | Reference product | PhraseExpress 18.0.84.0, installed at `C:\Program Files (x86)\PhraseExpress` |
-| Date | 2026-11-02 (v4) · 2026-10-30 (v3) · 2026-10-29 (v1, v2) |
-| Status | Draft v4 — PF rows changed by 0.5.7–0.6.0 re-verified against 0.6.0; PE export routes corrected from the vendor documentation (Section 1.2 H, U-15); Phase 0 security items released in 0.5.5 (#15, #16) |
+| Date | 2026-11-04 (v5) · 2026-11-02 (v4) · 2026-10-30 (v3) · 2026-10-29 (v1, v2) |
+| Status | Draft v5 — security work of 0.6.1–0.6.3 recorded (G-34 closed, red-team review R1–R11, Section 7.5.1); trust-model storage recorded as decision D7; PE export routes from the vendor documentation (U-15) |
 | Method | Static analysis only. No PhraseExpress binary was executed. No PhraseExpress code, assets, keys or text are reproduced here. |
+
+---
+
+## Status note (v5)
+
+v5 records releases **0.6.1–0.6.3** (2026-11-02 to 2026-11-04) and `main` after 0.6.3. Most of it is security work. Two feature PRs came from a parallel session and were merged into `main` on 2026-11-04: #7 (multiple-choice autotext, inside the 0.6.3 release) and #24 (spell check, after 0.6.3; it updated rows E2 and G-20 itself). Section 1.2 is otherwise as in v4.
+
+| Release | PR | Change |
+|---|---|---|
+| 0.6.1 | #21 | **G-34 closed**: `{#http}` connects only to an address it resolved and checked (pinned httpcore backend), so DNS rebinding no longer works without a proxy |
+| 0.6.2 | #22 | Red-team review of 0.6.1, findings R1–R9 fixed (Section 7.5.1): output target "Specific program" on imported/synced phrases, `{#key}` Win-key aliases and Ctrl+Esc, synced/opened device settings (AI base URLs, proxy, paths, file-search commands), secrets in settings exports, URLs in the log, password-manager clipboard content, cross-host redirect headers, CGNAT range, XML depth |
+| 0.6.3 | #23, #7 | R10: synced/imported `{#var}` values send the phrases that read them back for approval; R11: the update notice opens only this project's GitHub release links. #7: when several phrases share one autotext, a "Select phrase" menu opens at the cursor; if only one of them is allowed in the current program it expands directly (`popup.py`, trigger manager). Not mapped to a Section 1.2 row: whether PE behaves the same way is not in the static evidence [U] |
+| `main` after 0.6.3 | #24 | Spell check in the phrase editor (FR-EDT-01): underline, suggestions, add/ignore, Hunspell dictionaries through `spylls`, downloaded from LibreOffice (`spell.py`, `ui/spell_ui.py`). G-20 open → partial |
+
+Gap count on `main`: **6 of 34 closed** (G-34 added), 15 partial (G-20 added by #24), 13 open. The trust gate grew beyond FR-SEC-04's wording (fingerprints instead of `trusted_hash`, device-only settings); decision D7 (Section 5.9) records the design as built.
+
+Evidence for v5 [REPO]: `main` at `af02529` (0.6.3 plus #24); `registry.catalog()` 153 commands; `db.py` 16 tables; Arabic table 1,298 entries; `pytest --collect-only` 829 tests in 57 files (816 in 56 at the 0.6.3 tag); Windows CI green on every merged head (#21, #22, #23) including the frozen-EXE self-test and silent install/uninstall.
 
 ---
 
@@ -328,7 +345,7 @@ Priority: **M** must-have (core parity, or a security defect), **S** should-have
 
 PE evidence for each gap: Section 1.2. Also open: `test_filesearch.py::test_speed_gate_50k_entries_answers_in_milliseconds` (median < 50 ms) was reported failing on slower machines in 0.5.4; it passed in the 0.5.6 Linux run, so its status on slower Windows machines is unconfirmed.
 
-**Summary for 0.6.1:** G-34 closed → 6 of 34 closed, 14 partial, 14 open.
+**Summary for `main` after 0.6.3:** G-20 partial (#24) → 6 closed, 15 partial, 13 open. **Summary for 0.6.3:** unchanged from 0.6.1 (the red-team fixes harden closed gaps G-01, G-02 and G-34 and add no new gap). **Summary for 0.6.1:** G-34 closed → 6 of 34 closed, 14 partial, 14 open.
 
 **Summary for 0.6.0:** no gap changed state between 0.5.6 and 0.6.0. G-15, G-16 and G-31 moved forward inside "partial"; G-34 is still the open security item. The counts below still hold.
 
@@ -348,7 +365,7 @@ Format: **FR-ID — statement.** *Acceptance:* testable criteria. *Test:* ID in 
   *Acceptance:* (a) after setting a key, `SELECT value FROM settings` contains no substring of the key; (b) on a fresh DB the key round-trips through the UI; (c) a DB copied to another Windows user cannot decrypt it and the UI shows "re-enter key". *Test:* T-SEC-01.
 - **FR-SEC-02 — Secrets and device-local settings are excluded from every sync upload, cloud backup and export.** *Acceptance:* the uploaded snapshot (or change set) contains none of the FR-SEC-01 keys; `export_dict()` omits them unless the user passes `include_secrets=True` and enters a password used to encrypt the export with AES-GCM. *Test:* T-SEC-02.
 - **FR-SEC-03 — Migration.** On the first start of schema v3, existing plaintext secrets are encrypted in place, and the old rows are overwritten and the DB vacuumed. *Acceptance:* after migration, `strings phraseforge.db` finds no former key. *Test:* T-SEC-03.
-- **FR-SEC-04 — Phrase trust levels.** Each phrase has `origin ∈ {local, imported, synced, plugin}` and `trusted_hash` (SHA-256 of its content when last approved). *Acceptance:* a phrase whose content hash ≠ `trusted_hash` and whose origin ≠ local cannot run privileged macros (FR-SEC-05) until it is approved. Editing a phrase locally re-approves it. *Test:* T-SEC-04.
+- **FR-SEC-04 — Phrase trust levels.** *(As built since 0.5.5, extended in 0.6.2/0.6.3: a quarantine table plus fingerprints instead of the two columns below; see decision D7, Section 5.9.)* Each phrase has `origin ∈ {local, imported, synced, plugin}` and `trusted_hash` (SHA-256 of its content when last approved). *Acceptance:* a phrase whose content hash ≠ `trusted_hash` and whose origin ≠ local cannot run privileged macros (FR-SEC-05) until it is approved. Editing a phrase locally re-approves it. *Test:* T-SEC-04.
 - **FR-SEC-05 — Privileged macros** (`run, open` with non-http targets, `http` to non-public or user-unapproved hosts, `sql`/`dbquery` with write statements or ODBC, `outputfile`, `mail -send`, `ad`, plugin calls flagged privileged) require approval on first use for each (phrase, content hash). A trigger that fires without user input (time, app focus, clipboard) **never** shows an approval prompt; it skips execution and logs it. *Acceptance:* an imported phrase with `{#run calc.exe}` fired by a time trigger does not start calc and writes a log entry; the same phrase fired by its hotkey shows one approval dialog. *Test:* T-SEC-05.
 - **FR-SEC-06 — `{#http}` blocks link-local, loopback and RFC1918 targets by default** (setting `net.allow_private_hosts=false`), after DNS resolution (DNS-rebinding safe: connect to the resolved IP). *Test:* T-SEC-06.
 - **FR-SEC-07 — Folder/file passwords use Argon2id** (fallback scrypt; parameters stored with the hash, salt ≥ 16 bytes). *Acceptance:* the stored hash format is `$argon2id$…`; legacy SHA-256 hashes are upgraded on the next successful unlock. *Test:* T-SEC-07.
@@ -570,6 +587,17 @@ Recommendation: **A**, falling back to **B** for content and notes if [U-08] blo
 | B. Ship a COM add-in (like `pexmsol.dll`) | Push-based context; works when the mail window isn't active | x64 COM DLL, registration, Office trust centre; high maintenance |
 | C. Microsoft Graph | Works with new Outlook / web | Needs Entra app registration and OAuth; only server-side mail, not the draft being edited |
 
+### 5.9 Decision D7 — trust-model storage (as built, recorded in v5)
+
+FR-SEC-04 asked for two columns on every phrase, `origin` and `trusted_hash`. 0.5.5 shipped a different design, and 0.6.2/0.6.3 extended it after the red-team review.
+
+| Option | Pros | Cons |
+|---|---|---|
+| A. `origin` + `trusted_hash` columns on `phrases` (FR-SEC-04 as written) | One place per phrase; easy to query | Schema change on every phrase; the hash covers content only, so it misses what changes behaviour outside the content (output targets, folder settings, variables); sync copies the columns, so trust would travel between PCs unless filtered |
+| **B. Per-PC `phrase_quarantine` table + fingerprint comparison on untrusted writes (as built)** | Trust stays on the PC that granted it; a sync or import compares fingerprints before and after and quarantines only what changed; the fingerprint can cover more than content | Two mechanisms to keep in step (the table and the fingerprint); a phrase changed by a path that is neither import nor sync is not re-checked (none known) |
+
+**Chosen: B.** The fingerprint (`db.phrase_fingerprints`) covers the content of every language version, the phrase's and its folders' output target and argument (0.6.2), and the values of the global variables the phrase reads (0.6.3; a run-time variable name counts all of them). Untrusted writes are `restore_from(untrusted="synced"|"imported")` (sync pull, File > Open) and every importer (`@untrusted_import`, which also re-quarantines existing phrases whose fingerprint the import changed). Device settings (`db.is_device_setting`: network, proxy, AI endpoints, program and file paths, sync and backup locations, file-search commands) never come from a pulled or opened file, a settings import or the migration file. FR-SEC-04's acceptance criteria still hold with B; the column names in FR-SEC-04 and FR-IMP-02 are superseded by this record.
+
 ---
 
 ## 6. Implementation plan
@@ -590,22 +618,26 @@ Each phase ends with an AMA-style acceptance gate: all FR tests green, performan
 
 Critical path: P0 → P1 → P2 → P3 → P5. P4 can start after P2 in parallel with P3; P6 and P7 can run in parallel after P2.
 
-### 6.1 Phase status at 0.6.0 (v4)
+### 6.1 Phase status at 0.6.3 (v5)
 
 | Phase | Status | Done | Left |
 |---|---|---|---|
 | P0 | **mostly done** | FR-SEC-01..03 (secrets sealed, device-only, migrated); FR-SEC-06 incl. DNS rebinding (0.6.1); FR-SEC-07 (salted scrypt, the allowed fallback); FR-APP-01 (single instance); FR-QA-01 hang and Windows crash (one-process run passes) | perf harness `bench/` and baseline numbers (Section 7.4) not built; FR-QA-01 < 3 min target and `pytest-timeout` |
-| P2 (pulled forward) | **partly done** | FR-SEC-04/05 trust gate for imported and synced phrases (`security.py`, `phrase_quarantine` table); FR-SEC-08 lock before expansion | `origin`/`trusted_hash` columns as specified (0.5.5 uses a quarantine table instead; record it as a decision); FR-SEC-08 `passcheck` modes; FR-DAT-00..05 |
+| P2 (pulled forward) | **partly done** | FR-SEC-04/05 trust gate for imported and synced phrases (`security.py`, `phrase_quarantine` table), hardened in 0.6.2/0.6.3 (output targets, Win-key aliases, device settings, variables); storage recorded as decision D7; FR-SEC-08 lock before expansion | FR-SEC-08 `passcheck` modes; FR-DAT-00..05 |
 | P5 (started early, user request) | **partly done** | FR-IMP-01 text route and folder tree; FR-IMP-05 HTML/DOCX export; OneNote exchange (outside the FR list) | FR-IMP-01 real-sample check and macro translation (needs P3 `pe_compat`); FR-IMP-02 `phraseexpress` tag and `origin` (imports use the 0.5.5 quarantine instead); FR-IMP-04 importers; FR-IMP-05 XML/XLSX |
 | P1, P3, P4, P6–P8 | not started | — | All their FRs |
 
-**Next step on the critical path (unchanged in v4):** the 0.5.7–0.6.0 releases went to user-requested features, sync, import/export and UI quality; P0 is where v3 left it. Finish P0 (G-34 closed in 0.6.1; build the `bench/` harness, so P1 has the baseline numbers it is measured against), then start P1 with a `pfhook.dll` spike that measures P-01 on a Windows runner.
+**Next step on the critical path (v5):** P0 now lacks only the `bench/` harness and the FR-QA-01 timing items. Build `bench/` first, so P1 has the baseline numbers it is measured against: P-02 (matcher decision) and P-06 (popup with 10k phrases) can run on any OS in CI; P-01, P-03, P-04 and P-08 need a Windows runner with an interactive desktop (Section 7.3). Then start P1 with a `pfhook.dll` spike that measures P-01.
+
+(v4 note: the 0.5.7–0.6.0 releases went to user-requested features, sync, import/export and UI quality; 0.6.1–0.6.3 went to security.)
 
 ---
 
 ## 7. Testing and quality
 
 ### 7.1 Current baseline [REPO]
+
+`main` after 0.6.3 (`af02529`): **829 tests** in 57 files (adds `test_spell.py` from #24). 0.6.3: **816 tests collected** in 56 files (`pytest --collect-only`, Linux). New since 0.6.0: the DNS-rebinding and TLS-name tests (`test_security.py`), and `test_redteam.py` (58 cases). Each red-team case was run against the release before its fix and failed there; the control cases pass on both. Windows CI ran the full suite, the frozen-EXE self-test and the silent install/uninstall green on `5df197c` (#21), `308dd6d` (#22) and `0b39832` (#23).
 
 0.6.0: **750 tests collected** (`pytest --collect-only`, Linux). Windows CI ran the full suite green on `6c4904f`, then the frozen-EXE self-test (which now also checks `PySide6.QtPdf`, the OneNote COM wrappers and the built-in Google client) and a silent install/uninstall. New since 0.5.6: tests for Drive folder detection, automatic sync, quick toolbar, drag and drop, OneNote exchange (with a fake COM client), export formats, PhraseExpress text import (incl. Windows line ends and UTF-16) and the visual audit (contrast ratios, primary buttons, icon palette, Arabic keys). OneNote, Windows OCR and clipboard paths are still checked only with fakes or on the CI runner, not on a machine with OneNote and PhraseExpress installed.
 
@@ -675,6 +707,11 @@ Held up: XML entity expansion and XXE (expat limits, no external entities), syml
 Fixed in 0.6.3:
 - **R10 (Medium):** synced or imported `{#var}` values could change what an "Always allow" phrase runs. The fingerprint now includes the values of the global variables a phrase reads (`{#var}`/`{#get}`; a run-time name counts every variable), so a pull or import that changes one sends the phrase back for approval. `quarantine_writes` also quarantines existing phrases whose fingerprint an import changed. The user's own `{#set -scope global}` changes nothing.
 - **R11 (Low):** the update notice opened the URL from the GitHub API answer without a check. `updates.safe_release_url` accepts only `https://github.com/bahattab/B-PhraseForgeExpress/releases/…` (no credentials, no other port), and the notice falls back to the releases page.
+
+Review of PR #7 (multiple-choice autotext, merged from a parallel session, shipped in 0.6.3), fixed in 0.6.4:
+- Held up: a phrase chosen from the menu goes through the same expansion path as any other, so the folder password (`unlocked_for`) and the trust gate (`approved_for`) still apply; disabled folders and per-program restrictions are respected.
+- **R12 (Low):** a delimiter-completed shared autotext (`sig` + Space) lost the delimiter: it was swallowed when the menu opened and never re-typed. The `choose:` command now carries the delimiter, and the chosen phrase re-types it.
+- **R13 (Low):** the menu listed the names of phrases in locked folders, which the normal menu hides, and it erased the typed abbreviation before the folder was unlocked. Locked phrases now show as "Locked phrase", and the abbreviation is erased by the chosen phrase's own expansion, after unlock and approval; cancelling leaves what was typed.
 
 Still open: Linux single-instance socket squatting by the same user; with a proxy, `{#http}` relies on the name check only.
 

@@ -683,7 +683,13 @@ class _Panel(QFrame):
         elif key == CHOICE:
             for pid in pop.choice_ids:
                 p = st.get_phrase(pid)
-                if p is not None:
+                if p is None:
+                    continue
+                if LOCKS.is_locked(st, p.folder_id):
+                    # like the normal menu, a locked folder does not show its phrases' names;
+                    # choosing the row asks for the folder password first
+                    self.add_row("phrase", p.id, tr("Locked phrase"))
+                else:
                     self.add_row("phrase", p.id, p.description, right=pop.right_text(p))
             if self.list.count() == 0:
                 self.add_row("empty", None, "(empty)")

@@ -300,13 +300,13 @@ def test_shared_autotext_offers_a_choice(store):
     store.add_phrase(Phrase("Other", "x", triggers=[at("sx#")]))
     m, exp, cmds, *_ = manager(store)
     assert type_text(m, "sg#")[-1] is True                    # completing key swallowed
-    assert cmds[-1] == f"choose:{a.id},{b.id}:2" and exp == []
+    assert cmds[-1] == f"choose:{a.id},{b.id}:2:" and exp == []          # no delimiter to re-type
     # delimiter-completed autotext too
     c = store.add_phrase(Phrase("Sig 1", "one", triggers=[Trigger(TriggerKind.AUTOTEXT, "sig")]))
     d = store.add_phrase(Phrase("Sig 2", "two", triggers=[Trigger(TriggerKind.AUTOTEXT, "SIG")]))
     m, exp, cmds, *_ = manager(store)
     type_text(m, " sig ")
-    assert cmds[-1] == f"choose:{c.id},{d.id}:3" and exp == []
+    assert cmds[-1] == f"choose:{c.id},{d.id}:3:32" and exp == []        # the space comes back (0.6.4)
 
 
 def test_shared_autotext_uses_the_phrase_allowed_in_this_program(store):

@@ -12,9 +12,10 @@ Commands passed to on_command (the app handles each one):
   "folder_popup:<folder_id|last_used|clipboard_cache>:<erase_chars>"
                                              a folder's own autotext/hotkey: erase the typed
                                              abbreviation, then show that folder's popup
-  "choose:<phrase_id,phrase_id,...>:<erase_chars>"
-                                             several phrases share the typed autotext: erase it,
-                                             then show a menu of those phrases
+  "choose:<phrase_id,phrase_id,...>:<erase_chars>:<delimiter code point or empty>"
+                                             several phrases share the typed autotext: show a
+                                             menu of those phrases; the chosen one erases the
+                                             abbreviation and re-types the delimiter
   "smartcomplete:<phrase_id>:<typed_len>"    show the SmartComplete tip for this phrase
   "autocomplete:<word>:<typed_len>"          show the tip with a word completion
   "suggest_hide"                             hide the tip
@@ -565,7 +566,8 @@ class TriggerManager:
             return False
         if len(allowed) > 1:                              # PhraseExpress multiple-choice autotext
             ids = ",".join(str(c.phrase_id) for c in allowed)
-            self._emit(self.on_command, f"choose:{ids}:{m.erase_chars}")
+            delim = str(ord(m.trailing_delimiter)) if m.trailing_delimiter else ""
+            self._emit(self.on_command, f"choose:{ids}:{m.erase_chars}:{delim}")
             return True
         if allowed[0] is not t:                           # only another phrase is allowed here
             m = replace(m, trigger=allowed[0], alternatives=())

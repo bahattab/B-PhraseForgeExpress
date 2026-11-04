@@ -1319,6 +1319,7 @@ AR_EXTRA = {
     'From PhraseExpress': 'من PhraseExpress',
     'Imported. {n} setting(s) that only belong to this PC were kept as they are (network and proxy, server addresses, program and file paths, sync and backup folders). Set them here if you need to.': 'تم الاستيراد. أُبقي {n} من الإعدادات الخاصة بهذا الجهاز كما هي (الشبكة والوكيل، عناوين الخوادم، مسارات البرامج والملفات، مجلدات المزامنة والنسخ الاحتياطي). اضبطها هنا إن احتجت.',
     'Phrase not run': 'لم تُنفَّذ العبارة',
+    'Locked phrase': 'عبارة مقفلة',
     'From OneNote (running)...': 'من OneNote (المفتوح)...',
     'From a OneNote file (.one)...': 'من ملف OneNote \u200f(.one)...',
     'Document (.docx, .pdf, .html, .mht)...': 'مستند \u200f(.docx، \u200f.pdf، \u200f.html، \u200f.mht)...',
