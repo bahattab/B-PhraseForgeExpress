@@ -293,6 +293,31 @@ def test_folder_autotext_and_hotkey_open_folder_popup(store):
     assert exp == []
 
 
+def test_shared_autotext_offers_a_choice(store):
+    """PhraseExpress multiple-choice autotext: phrases sharing one abbreviation open a menu."""
+    a = store.add_phrase(Phrase("Formal", "Kind regards", triggers=[at("sg#")]))
+    b = store.add_phrase(Phrase("Short", "Cheers", triggers=[at("sg#")]))
+    store.add_phrase(Phrase("Other", "x", triggers=[at("sx#")]))
+    m, exp, cmds, *_ = manager(store)
+    assert type_text(m, "sg#")[-1] is True                    # completing key swallowed
+    assert cmds[-1] == f"choose:{a.id},{b.id}:2" and exp == []
+    # delimiter-completed autotext too
+    c = store.add_phrase(Phrase("Sig 1", "one", triggers=[Trigger(TriggerKind.AUTOTEXT, "sig")]))
+    d = store.add_phrase(Phrase("Sig 2", "two", triggers=[Trigger(TriggerKind.AUTOTEXT, "SIG")]))
+    m, exp, cmds, *_ = manager(store)
+    type_text(m, " sig ")
+    assert cmds[-1] == f"choose:{c.id},{d.id}:3" and exp == []
+
+
+def test_shared_autotext_uses_the_phrase_allowed_in_this_program(store):
+    """The same abbreviation can mean different text per program: no menu when only one fits."""
+    store.add_phrase(Phrase("Word only", "w", apps_include="winword.exe", triggers=[at("sg#")]))
+    b = store.add_phrase(Phrase("Anywhere", "x", triggers=[at("sg#")]))
+    m, exp, cmds, *_ = manager(store, exe="notepad.exe")
+    type_text(m, "sg#")
+    assert [e.phrase_id for e in exp] == [b.id] and not any(c.startswith("choose:") for c in cmds)
+
+
 def test_disabled_folder_triggers_are_ignored(store):
     f = store.add_folder(Folder("Off", enabled=False))
     store.set_folder_triggers(f.id, [at("of#")])

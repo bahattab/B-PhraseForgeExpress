@@ -276,7 +276,7 @@ def test_command_dispatch():
     fake = types.SimpleNamespace(
         poster=types.SimpleNamespace(posted=types.SimpleNamespace(emit=posted.append)),
         _jobs=queue.Queue(), store=Store(":memory:"))
-    for name in ("_build_commands", "register_command", "on_command", "_confirm_cmd"):
+    for name in ("_build_commands", "register_command", "on_command", "_confirm_cmd", "_folder_popup_cmd"):
         setattr(fake, name, types.MethodType(getattr(PhraseForgeApp, name), fake))
     fake._play = played.append
     fake._confirm = lambda pid, erase, hwnd: posted.append(("confirm", pid, erase))
@@ -286,6 +286,12 @@ def test_command_dispatch():
     fake.on_command("confirm:5:3")
     posted.pop()()                                   # run the posted lambda
     assert posted[-1] == ("confirm", 5, 3)
+    shown = []
+    fake._show_popup = lambda hwnd, folder=None, search=False: shown.append(folder)
+    fake.on_command("choose:7,9:3")                  # several phrases share one autotext
+    assert fake._jobs.get_nowait()[:2] == ("replace", "3:")   # [2] is the real foreground window on Windows
+    posted.pop()()
+    assert shown == ["choice:7,9"]
     fake.on_command("sound:popup_display")
     assert played == ["popup_display"]
     seen = []
