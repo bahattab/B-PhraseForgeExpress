@@ -536,6 +536,7 @@ class PhraseForgeApp(QObject):
         self._build_tray()
         self._build_triggers()
         self._build_cloud()
+        self._build_shared()
         self._build_local_backups()
         self._build_file_index()
         self._build_update_check()
@@ -569,6 +570,7 @@ class PhraseForgeApp(QObject):
         reg("toggle_expansion", lambda arg, hwnd: post(self._toggle_expansion))
         reg("open_main", lambda arg, hwnd: post(self.show_main))
         reg("open_settings", lambda arg, hwnd: post(self.show_settings))
+        reg("shared_sync", lambda arg, hwnd: post(lambda: self.shared_tick(manual=True)))
         reg("clear_clipboard_cache", lambda arg, hwnd: self.store.clear_clipboard(keep_pinned=True))
         reg("pause", lambda arg, hwnd: post(self._pause_cmd))
         reg("sound", lambda arg, hwnd: self._play(arg))   # "sound:<event>" from other layers
@@ -875,6 +877,38 @@ class PhraseForgeApp(QObject):
             return
         if not self._cloud_tick(force_sync=True):
             self._change_sync_timer.start()          # a sync is running: try again after the wait
+
+    # ---------------------------------------------------------- shared database (shared/)
+    def _build_shared(self):
+        """Sync the Shared folder with the shared database every shared.interval seconds."""
+        from PySide6.QtCore import QTimer
+        self._shared_error = ""
+        self._shared_next = time.monotonic() + 5
+        self._shared_timer = QTimer(self)
+        self._shared_timer.timeout.connect(self.shared_tick)
+        self._shared_timer.start(15_000)
+
+    def shared_tick(self, manual: bool = False) -> None:
+        from phraseforge.shared import service
+        if not manual and (not service.enabled(self.store) or time.monotonic() < self._shared_next):
+            return
+        self._shared_next = time.monotonic() + service.interval_s(self.store)
+
+        def work():
+            try:
+                res = service.sync(self.store)
+                if res is None:
+                    return                              # another sync is still running
+                if manual or self._shared_error:
+                    self.poster.posted.emit(lambda r=res: self.tray.notify("Shared database", r.summary()))
+                self._shared_error = ""
+            except Exception as e:                      # offline, wrong password ...: say it once
+                msg = str(e)
+                log.warning("shared database sync failed: %s", msg)
+                if manual or msg != self._shared_error:
+                    self.poster.posted.emit(lambda m=msg: self.tray.notify("Shared database", m[:240]))
+                self._shared_error = msg
+        threading.Thread(target=work, name="shared-sync", daemon=True).start()
 
     # ---------------------------------------------------------- automatic update check
     def _build_update_check(self):

@@ -186,7 +186,7 @@ def needs_rehash(stored: str) -> bool:
 # database file does not reveal them (other platforms: stored base64-encoded only).
 SECRET_SETTINGS = frozenset({"ai.openai_key", "ai.anthropic_key", "ai.openrouter_key", "ai.deepl_key",
                              "ai.gemini_key", "ai.opencode_key", "ai.kilocode_key", "ai.mistral_key",
-                             "net.proxy_password"})
+                             "net.proxy_password", "shared.password"})
 _SEALED = "dpapi:"
 
 # Settings that belong to this PC: never uploaded by sync, and kept when data comes from
@@ -198,7 +198,7 @@ DEVICE_SETTING_PREFIXES = (
     "sync.", "gdrive.", "backup.cloud_", "backup.directory", "ocr.cli_path", "ocr.log_file",
     "app.start_with_windows", "app.first_run_done", "ui.item_colors", "ui.trigger_extras",
     "updates.last_check", "updates.notified_version", "net.", "onenote.exe",
-    "filesearch.actions", "filesearch.commands", "filesearch.roots", "sound.",
+    "filesearch.actions", "filesearch.commands", "filesearch.roots", "sound.", "shared.",
     *sorted(SECRET_SETTINGS))
 DEVICE_SETTING_SUFFIXES = ("_url", "_endpoint", "_path", "_file", ".file", ".exe", "_dir", "_directory")
 
