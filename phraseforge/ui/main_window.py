@@ -2652,9 +2652,9 @@ class MainWindow(QMainWindow):
                 btn = box.addButton("Open download page", QMessageBox.AcceptRole)
                 box.exec()
                 if dl is not None and box.clickedButton() is dl:
-                    QDesktopServices.openUrl(QUrl(rel["setup_url"]))
+                    QDesktopServices.openUrl(QUrl(updates.safe_release_url(rel["setup_url"]) or updates.RELEASES_PAGE))
                 elif box.clickedButton() is btn:
-                    QDesktopServices.openUrl(QUrl(rel["url"]))
+                    QDesktopServices.openUrl(QUrl(updates.safe_release_url(rel["url"]) or updates.RELEASES_PAGE))
             else:
                 box.exec()
         return msg

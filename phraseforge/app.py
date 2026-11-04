@@ -889,7 +889,8 @@ class PhraseForgeApp(QObject):
             if rel and updates.is_newer(rel["version"], __version__) and \
                     st.setting("updates.notified_version", "") != rel["version"]:
                 st.set_setting("updates.notified_version", rel["version"])
-                url = rel.get("setup_url") or rel["url"]
+                url = updates.safe_release_url(rel.get("setup_url")) or updates.safe_release_url(rel.get("url")) \
+                    or updates.RELEASES_PAGE
 
                 def show(rel=rel, url=url):
                     from PySide6.QtCore import QUrl

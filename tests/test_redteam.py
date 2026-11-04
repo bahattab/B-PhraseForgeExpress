@@ -212,3 +212,90 @@ def test_deeply_nested_xml_is_refused_cleanly(tmp_path):
     f.write_text("<folder>" * 5000 + "</folder>" * 5000, encoding="utf-8")
     with pytest.raises(ValueError, match="nested"):
         pe.import_xml(Store(":memory:"), f)
+
+
+# ---------------------------------------------------------------- 0.6.3
+def test_sync_changing_a_variable_requarantines_the_phrases_that_read_it(tmp_path):
+    """An "Always allow" phrase builds {#run} from a global variable; a synced copy that only
+    changes the variable must send the phrase back for approval."""
+    from phraseforge.models import Phrase
+    local = Store(str(tmp_path / "local.db"))
+    tool = local.add_phrase(Phrase("Tool", "{#run {#var tool}}"))
+    plain = local.add_phrase(Phrase("Plain", "hello"))
+    local.set_var("tool", "notepad.exe")
+    local.backup_to(str(tmp_path / "remote.db"))
+    con = sqlite3.connect(str(tmp_path / "remote.db"))
+    with con:
+        con.execute("UPDATE vars SET value=? WHERE scope='global' AND name='tool'", (r"\\attacker\x.exe",))
+    con.close()
+    local.restore_from(tmp_path / "remote.db", untrusted="synced")
+    assert local.quarantine_origin(tool.id) == "synced"
+    assert not local.quarantine_origin(plain.id)
+
+
+def test_dynamic_variable_name_counts_every_variable(tmp_path):
+    from phraseforge.models import Phrase
+    local = Store(str(tmp_path / "local.db"))
+    p = local.add_phrase(Phrase("Dyn", "{#run {#var {#var which}}}"))
+    local.set_var("a", "1")
+    local.backup_to(str(tmp_path / "remote.db"))
+    con = sqlite3.connect(str(tmp_path / "remote.db"))
+    with con:
+        con.execute("UPDATE vars SET value='2' WHERE name='a'")
+    con.close()
+    local.restore_from(tmp_path / "remote.db", untrusted="synced")
+    assert local.quarantine_origin(p.id) == "synced"
+
+
+def test_import_that_changes_a_variable_requarantines_its_readers():
+    from phraseforge.models import Phrase
+    s = Store(":memory:")
+    p = s.add_phrase(Phrase("Tool", "{#run {#var tool -default notepad.exe}}"))
+    assert not s.quarantine_origin(p.id)
+    import_dict(s, {"format": "phraseforge", "vars": [{"name": "tool", "value": r"C:\x.bat", "scope": "global"}]})
+    assert s.quarantine_origin(p.id) == "imported"
+
+
+def test_local_variable_changes_do_not_quarantine():
+    """Only data from elsewhere counts: the user's own {#set -scope global} changes nothing."""
+    from phraseforge.models import Phrase
+    s = Store(":memory:")
+    p = s.add_phrase(Phrase("Counter", "{#run {#var tool}}"))
+    s.set_var("tool", "calc.exe")
+    assert not s.quarantine_origin(p.id)
+
+
+@pytest.mark.parametrize("url,ok", [
+    ("https://github.com/bahattab/B-PhraseForgeExpress/releases/tag/v0.6.3", True),
+    ("https://github.com/bahattab/B-PhraseForgeExpress/releases/download/v0.6.3/B-PhraseForgeExpress-Setup-0.6.3.exe", True),
+    ("http://github.com/bahattab/B-PhraseForgeExpress/releases/tag/v1", False),
+    ("https://evil.example/bahattab/B-PhraseForgeExpress/releases/x.exe", False),
+    ("https://github.com.evil.example/bahattab/B-PhraseForgeExpress/releases/x", False),
+    ("https://github.com/attacker/B-PhraseForgeExpress/releases/download/v1/x.exe", False),
+    ("https://user@github.com/bahattab/B-PhraseForgeExpress/releases/x", False),
+    ("https://github.com:8443/bahattab/B-PhraseForgeExpress/releases/x", False),
+    ("file:///C:/Windows/System32/calc.exe", False),
+    (r"\\attacker\share\x.exe", False), ("", False), (None, False),
+])
+def test_update_links_must_point_to_this_projects_releases(url, ok):
+    from phraseforge import updates
+    assert bool(updates.safe_release_url(url)) is ok
+
+
+def test_latest_release_drops_foreign_links():
+    import io
+    import json
+    from phraseforge import updates
+
+    class R(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    body = {"tag_name": "v9.9.9", "html_url": "https://evil.example/r",
+            "assets": [{"name": "B-PhraseForgeExpress-Setup-9.9.9.exe",
+                        "browser_download_url": "https://evil.example/Setup.exe"}]}
+    rel = updates.latest_release(opener=lambda req, timeout=0: R(json.dumps(body).encode()))
+    assert rel["url"] == updates.RELEASES_PAGE and rel["setup_url"] == ""

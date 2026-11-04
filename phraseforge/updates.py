@@ -9,6 +9,7 @@ import urllib.request
 
 RELEASES_API = "https://api.github.com/repos/bahattab/B-PhraseForgeExpress/releases/latest"
 RELEASES_PAGE = "https://github.com/bahattab/B-PhraseForgeExpress/releases"
+PROJECT_PATH = "/bahattab/B-PhraseForgeExpress"
 
 
 def version_tuple(v: str) -> tuple[int, ...]:
@@ -35,8 +36,28 @@ def latest_release(timeout: float = 6.0, opener=urllib.request.urlopen) -> dict 
     setup = next((a.get("browser_download_url") for a in data.get("assets") or []
                   if str(a.get("name", "")).lower().endswith(".exe") and "setup" in str(a.get("name", "")).lower()),
                  "")
-    return {"version": tag.lstrip("vV"), "url": data.get("html_url") or RELEASES_PAGE,
-            "name": data.get("name") or tag, "setup_url": setup or ""}
+    return {"version": tag.lstrip("vV"), "url": safe_release_url(data.get("html_url")) or RELEASES_PAGE,
+            "name": data.get("name") or tag, "setup_url": safe_release_url(setup)}
+
+
+def safe_release_url(url) -> str:
+    """`url` if it is an https link into this project's releases on github.com, else "".
+    The update notice opens it with one click, so a changed or spoofed API answer must not be
+    able to send the user to another site or a file of someone else's."""
+    from urllib.parse import urlsplit
+    if not isinstance(url, str) or not url:
+        return ""
+    try:
+        u = urlsplit(url)
+    except ValueError:
+        return ""
+    if u.scheme != "https" or (u.hostname or "").lower() != "github.com" or u.port not in (None, 443):
+        return ""
+    if u.username or u.password or "\\" in url:
+        return ""
+    if not u.path.startswith(PROJECT_PATH + "/releases/"):
+        return ""
+    return url
 
 
 def check_due(last_iso: str, now=None, hours: float = 24) -> bool:

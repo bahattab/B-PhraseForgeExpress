@@ -31,8 +31,8 @@ def test_version_compare():
 
 
 def test_latest_release_parsing_and_none():
-    rel = updates.latest_release(opener=_opener({"tag_name": "v9.0.0", "html_url": "https://example.invalid/r"}))
-    assert rel["version"] == "9.0.0" and rel["url"] == "https://example.invalid/r"
+    rel = updates.latest_release(opener=_opener({"tag_name": "v9.0.0", "html_url": "https://github.com/bahattab/B-PhraseForgeExpress/releases/tag/v9.0.0"}))
+    assert rel["version"] == "9.0.0" and rel["url"] == "https://github.com/bahattab/B-PhraseForgeExpress/releases/tag/v9.0.0"
     assert updates.latest_release(opener=_opener(code=404)) is None
     with pytest.raises(OSError):
         updates.latest_release(opener=_opener(code=500))
@@ -83,9 +83,9 @@ def test_release_setup_url_and_daily_check(monkeypatch, tmp_path):
     from datetime import datetime, timedelta
     from phraseforge.app import PhraseForgeApp
     from phraseforge.db import Store
-    data = {"tag_name": "v9.9.9", "html_url": "https://x/rel",
+    data = {"tag_name": "v9.9.9", "html_url": "https://github.com/bahattab/B-PhraseForgeExpress/releases/tag/v9.9.9",
             "assets": [{"name": "B-PhraseForgeExpress-portable.exe", "browser_download_url": "p"},
-                       {"name": "B-PhraseForgeExpress-Setup-9.9.9.exe", "browser_download_url": "https://x/setup.exe"}]}
+                       {"name": "B-PhraseForgeExpress-Setup-9.9.9.exe", "browser_download_url": "https://github.com/bahattab/B-PhraseForgeExpress/releases/download/v9.9.9/setup.exe"}]}
 
     class R(io.BytesIO):
         def __enter__(self):
@@ -94,7 +94,7 @@ def test_release_setup_url_and_daily_check(monkeypatch, tmp_path):
         def __exit__(self, *a):
             return False
     rel = updates.latest_release(opener=lambda req, timeout: R(_json.dumps(data).encode()))
-    assert rel["setup_url"] == "https://x/setup.exe" and rel["version"] == "9.9.9"
+    assert rel["setup_url"] == "https://github.com/bahattab/B-PhraseForgeExpress/releases/download/v9.9.9/setup.exe" and rel["version"] == "9.9.9"
     assert updates.check_due("") and not updates.check_due(datetime.now().isoformat())
     assert updates.check_due((datetime.now() - timedelta(hours=25)).isoformat())
 
