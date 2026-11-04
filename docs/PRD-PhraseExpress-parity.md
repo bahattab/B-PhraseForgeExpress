@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Target repo | `https://github.com/bahattab/B-PhraseForgeExpress`, inventory and gap analysis checked against release **0.6.3** (`43ef4ee`) |
+| Target repo | `https://github.com/bahattab/B-PhraseForgeExpress`, inventory and gap analysis checked against release **0.6.3** (`43ef4ee`) and `main` after it (`af02529`) |
 | Reference product | PhraseExpress 18.0.84.0, installed at `C:\Program Files (x86)\PhraseExpress` |
 | Date | 2026-11-04 (v5) · 2026-11-02 (v4) · 2026-10-30 (v3) · 2026-10-29 (v1, v2) |
 | Status | Draft v5 — security work of 0.6.1–0.6.3 recorded (G-34 closed, red-team review R1–R11, Section 7.5.1); trust-model storage recorded as decision D7; PE export routes from the vendor documentation (U-15) |
@@ -12,17 +12,18 @@
 
 ## Status note (v5)
 
-v5 records releases **0.6.1–0.6.3** (2026-11-02 to 2026-11-04). They were all security work; no PE-parity feature changed, so Section 1.2 is as in v4.
+v5 records releases **0.6.1–0.6.3** (2026-11-02 to 2026-11-04) and `main` after 0.6.3. Most of it is security work. Two feature PRs came from a parallel session and were merged into `main` on 2026-11-04: #7 (multiple-choice autotext, inside the 0.6.3 release) and #24 (spell check, after 0.6.3; it updated rows E2 and G-20 itself). Section 1.2 is otherwise as in v4.
 
 | Release | PR | Change |
 |---|---|---|
 | 0.6.1 | #21 | **G-34 closed**: `{#http}` connects only to an address it resolved and checked (pinned httpcore backend), so DNS rebinding no longer works without a proxy |
 | 0.6.2 | #22 | Red-team review of 0.6.1, findings R1–R9 fixed (Section 7.5.1): output target "Specific program" on imported/synced phrases, `{#key}` Win-key aliases and Ctrl+Esc, synced/opened device settings (AI base URLs, proxy, paths, file-search commands), secrets in settings exports, URLs in the log, password-manager clipboard content, cross-host redirect headers, CGNAT range, XML depth |
-| 0.6.3 | #23 | R10: synced/imported `{#var}` values send the phrases that read them back for approval; R11: the update notice opens only this project's GitHub release links |
+| 0.6.3 | #23, #7 | R10: synced/imported `{#var}` values send the phrases that read them back for approval; R11: the update notice opens only this project's GitHub release links. #7: when several phrases share one autotext, a "Select phrase" menu opens at the cursor; if only one of them is allowed in the current program it expands directly (`popup.py`, trigger manager). Not mapped to a Section 1.2 row: whether PE behaves the same way is not in the static evidence [U] |
+| `main` after 0.6.3 | #24 | Spell check in the phrase editor (FR-EDT-01): underline, suggestions, add/ignore, Hunspell dictionaries through `spylls`, downloaded from LibreOffice (`spell.py`, `ui/spell_ui.py`). G-20 open → partial |
 
-Gap count: **6 of 34 closed** (G-34 added), 14 partial, 14 open. The trust gate grew beyond FR-SEC-04's wording (fingerprints instead of `trusted_hash`, device-only settings); decision D7 (Section 5.9) records the design as built.
+Gap count on `main`: **6 of 34 closed** (G-34 added), 15 partial (G-20 added by #24), 13 open. The trust gate grew beyond FR-SEC-04's wording (fingerprints instead of `trusted_hash`, device-only settings); decision D7 (Section 5.9) records the design as built.
 
-Evidence for v5 [REPO]: `43ef4ee`; `registry.catalog()` 153 commands; `db.py` 16 tables; Arabic table 1,278 entries; `pytest --collect-only` 816 tests in 56 files; Windows CI green on every merged head (#21, #22, #23) including the frozen-EXE self-test and silent install/uninstall.
+Evidence for v5 [REPO]: `main` at `af02529` (0.6.3 plus #24); `registry.catalog()` 153 commands; `db.py` 16 tables; Arabic table 1,298 entries; `pytest --collect-only` 829 tests in 57 files (816 in 56 at the 0.6.3 tag); Windows CI green on every merged head (#21, #22, #23) including the frozen-EXE self-test and silent install/uninstall.
 
 ---
 
@@ -344,7 +345,7 @@ Priority: **M** must-have (core parity, or a security defect), **S** should-have
 
 PE evidence for each gap: Section 1.2. Also open: `test_filesearch.py::test_speed_gate_50k_entries_answers_in_milliseconds` (median < 50 ms) was reported failing on slower machines in 0.5.4; it passed in the 0.5.6 Linux run, so its status on slower Windows machines is unconfirmed.
 
-**Summary for 0.6.3:** unchanged from 0.6.1 (the red-team fixes harden closed gaps G-01, G-02 and G-34 and add no new gap). **Summary for 0.6.1:** G-34 closed → 6 of 34 closed, 14 partial, 14 open.
+**Summary for `main` after 0.6.3:** G-20 partial (#24) → 6 closed, 15 partial, 13 open. **Summary for 0.6.3:** unchanged from 0.6.1 (the red-team fixes harden closed gaps G-01, G-02 and G-34 and add no new gap). **Summary for 0.6.1:** G-34 closed → 6 of 34 closed, 14 partial, 14 open.
 
 **Summary for 0.6.0:** no gap changed state between 0.5.6 and 0.6.0. G-15, G-16 and G-31 moved forward inside "partial"; G-34 is still the open security item. The counts below still hold.
 
@@ -636,7 +637,7 @@ Critical path: P0 → P1 → P2 → P3 → P5. P4 can start after P2 in parallel
 
 ### 7.1 Current baseline [REPO]
 
-0.6.3: **816 tests collected** in 56 files (`pytest --collect-only`, Linux). New since 0.6.0: the DNS-rebinding and TLS-name tests (`test_security.py`), and `test_redteam.py` (58 cases). Each red-team case was run against the release before its fix and failed there; the control cases pass on both. Windows CI ran the full suite, the frozen-EXE self-test and the silent install/uninstall green on `5df197c` (#21), `308dd6d` (#22) and `0b39832` (#23).
+`main` after 0.6.3 (`af02529`): **829 tests** in 57 files (adds `test_spell.py` from #24). 0.6.3: **816 tests collected** in 56 files (`pytest --collect-only`, Linux). New since 0.6.0: the DNS-rebinding and TLS-name tests (`test_security.py`), and `test_redteam.py` (58 cases). Each red-team case was run against the release before its fix and failed there; the control cases pass on both. Windows CI ran the full suite, the frozen-EXE self-test and the silent install/uninstall green on `5df197c` (#21), `308dd6d` (#22) and `0b39832` (#23).
 
 0.6.0: **750 tests collected** (`pytest --collect-only`, Linux). Windows CI ran the full suite green on `6c4904f`, then the frozen-EXE self-test (which now also checks `PySide6.QtPdf`, the OneNote COM wrappers and the built-in Google client) and a silent install/uninstall. New since 0.5.6: tests for Drive folder detection, automatic sync, quick toolbar, drag and drop, OneNote exchange (with a fake COM client), export formats, PhraseExpress text import (incl. Windows line ends and UTF-16) and the visual audit (contrast ratios, primary buttons, icon palette, Arabic keys). OneNote, Windows OCR and clipboard paths are still checked only with fakes or on the CI runner, not on a machine with OneNote and PhraseExpress installed.
 
