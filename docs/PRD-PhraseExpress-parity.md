@@ -219,7 +219,7 @@ PE macro names [C-EXE, from the macro name table], compared with PF's 153 comman
 | E2 | Rich editor with spell check, tables, images, find/replace, character map, font dialog, DOCX/Markdown/HTML import/export | [C-EXE] TFrmRV*, TRichForm | 🟡 HTML QTextEdit, spell check (G-20, partial); DOCX/PDF/HTML/MHT **export** (`documents.py`, HTML/MHT 0.5.9+); no DOCX/Markdown import into the editor |
 | E3 | Popup menu, QuickKeys, QuickSearch (inline, case, subfolders, Quick Jump), repeat last output, dark mode, ~20 colours | [C-DATA] `Popup/*`, `Search/*` | ✅ `popup.py` (verify Quick Jump and repeat-last) |
 | E4 | Clipboard cache window with auto-collect, dedupe, plain-only, trim | [C-DATA] `ClipCache/*` | ✅ |
-| E5 | Autotext learning (word graph + corrections, `words.pal`), learns from Outlook, AutoCorrect | [C-DATA] words.pal is an encrypted ZIP; [C-EXE] `<connections><corrections>` | 🟡 sentence-repeat learner, AutoComplete word learner |
+| E5 | Autotext learning (word graph + corrections, `words.pal`), learns from Outlook, AutoCorrect | [C-DATA] words.pal is an encrypted ZIP; [C-EXE] `<connections><corrections>` | 🟡 sentence-repeat learner, AutoComplete word learner, learning from sent mail (Outlook Sent Items or .eml/.mbox, `mail_analysis.py`) |
 | E6 | First-start wizard, bubble help, tray hints | [C-EXE] | ✅ wizard, tray |
 | E7 | Settings dialog | [C-EXE] TSettingsForm | ✅ 26 pages |
 | E8 | Print / print preview | [C-EXE] | ✅ `main_dialogs.py` |
@@ -323,7 +323,7 @@ Priority: **M** must-have (core parity, or a security defect), **S** should-have
 | G-13 | Plugin system | M | L | FR-PLG-01..08 | open (engines hard-coded in `ai.py`) |
 | G-14 | AI parity (vision, image gen, Ollama pull, usage, DeepL, langdetect) | S | M | FR-AI-01..05 | partial: 8 providers + DeepL + language guess; no vision/image/pull/usage |
 | G-15 | Import from PhraseExpress | M | M | FR-IMP-01..03 | partial, **changed in 0.5.9**: per-phrase `.txt` (PE's documented text export: one file = one phrase, name = description; several files at once; a folder tree keeps its sub-folders), CSV/TXT/TSV tables, XML (layout guessed, no real PE sample yet); encrypted `.pexdb/.pexdbhub/.pxp` refused with instructions for the text route; no macro translation; triggers are lost in the text route (U-15) |
-| G-16 | Other importers/exporters | S | M | FR-IMP-04/05 | partial, **changed in 0.5.9**: TextExpander, macOS plist, PE CSV, DOCX/PDF/HTML/MHT export, OneNote section export and Publish; DOCX/RTF/XLSX/image **import** with PE's four options (copy, link, open, line by line; `importers/files.py`); no Texter/AHK/Breevy/Word AutoCorrect, no `.doc`/`.xls`, no XML/XLSX export |
+| G-16 | Other importers/exporters | S | M | FR-IMP-04/05 | partial, **changed in 0.5.9**: TextExpander, macOS plist, PE CSV, DOCX/RTF/PDF/HTML/MHT export, OneNote section export and Publish; DOCX/RTF/XLSX/image **import** with PE's four options (copy, link, open, line by line; `importers/files.py`); no Texter/AHK/Breevy/Word AutoCorrect, no `.doc`/`.xls`, no XML/XLSX export |
 | G-17 | Levels (language variants), hotkeys, `{#setlevel}` | S | L | FR-DAT-01 | partial: `phrase_versions(phrase_id, lang)` + active-language setting; no level hotkeys/`{#setlevel}` |
 | G-18 | Trash, comments, templates, links, folder prefix/suffix, multi-key sort | S | M | FR-DAT-02..05 | partial: folder abbreviation prefix, bulk sort |
 | G-19 | Multiple mounted phrase libraries | S | L | FR-DAT-06 | open |
