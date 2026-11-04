@@ -375,22 +375,13 @@ def _document(rt, args, opts):
     if not p.is_file():
         raise MacroError(f"file not found: {path}")
     ext = p.suffix.lower()
-    if ext in (".docx", ".docm", ".dotx"):
-        import zipfile
-        from xml.etree import ElementTree as ET
-        ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
-        with zipfile.ZipFile(p) as z:
-            root = ET.fromstring(z.read("word/document.xml"))
-        paras = []
-        for para in root.iter(ns + "p"):
-            paras.append("".join(t.text or "" for t in para.iter(ns + "t")))
-        return "\n".join(paras)
+    from phraseforge.importers import files as document_files
+    if ext in document_files.WORD_EXT:
+        return "\n".join(document_files.docx_paragraphs(p))
+    if ext == ".rtf":          # code pages and \uN escapes, so Arabic RTF reads correctly
+        return document_files.rtf_text(p)
     raw = p.read_bytes()
     text = raw.decode("utf-8-sig", errors="replace")
-    if ext == ".rtf":
-        text = re.sub(r"\\par[d]?", "\n", text)
-        text = re.sub(r"\{\\\*[^{}]*\}|\\[a-z]+-?\d* ?|[{}]", "", text)
-        return text.strip()
     if ext in (".htm", ".html"):
         from phraseforge.macros.engine import html_to_text
         return html_to_text(text)

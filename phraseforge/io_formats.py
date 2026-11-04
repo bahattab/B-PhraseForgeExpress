@@ -274,10 +274,14 @@ def auto_backup(store: Store, force: bool = False, min_hours: float = 24) -> Pat
 
 # ---------------------------------------------------------------- dispatch by file type
 @untrusted_import
-def import_file(store: Store, path: str | Path, into_folder_id: int | None = None):
-    """Import .json, .csv, a .textexpander group file, or a folder of .txt files."""
+def import_file(store: Store, path: str | Path, into_folder_id: int | None = None, mode: str = "copy"):
+    """Import .json, .csv, a .textexpander group file, a folder of .txt files, or a Word,
+    RTF, Excel or image file (mode: copy / link / open / lines, see importers/files.py)."""
     p = Path(path)
     ext = p.suffix.lower()
+    from phraseforge.importers import files as document_files
+    if ext in document_files.SUPPORTED:
+        return document_files.import_document_file(store, p, mode, into_folder_id)
     if p.is_dir():
         return import_text_folder(store, p, into_folder_id)
     if ext in (".pexdb", ".pexdbhub", ".pxp"):

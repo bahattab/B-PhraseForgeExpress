@@ -49,8 +49,8 @@ DICTIONARIES: dict[str, tuple[str, str, str, str]] = {
 WORD_RE = re.compile(r"[^\W\d_]+(?:['’][^\W\d_]+)*")
 # spans never checked: URLs, e-mail addresses, file paths, words joined to digits
 SKIP_RE = re.compile(r"(?:https?://|www\.)\S+|\S+@\S+\.\S+|[A-Za-z]:\\\S*|\S*\d\S*")
-_ARABIC = re.compile(r"[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]")
-_HARAKAT = re.compile(r"[ؐ-ًؚ-ٰٟۖ-ۭـ]")   # marks and tatweel
+_ARABIC = re.compile(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]")
+_HARAKAT = re.compile(r"[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED\u0640]")   # marks and tatweel
 
 
 def dictionaries_dir() -> Path:
