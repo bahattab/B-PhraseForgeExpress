@@ -778,6 +778,8 @@ class MainWindow(QMainWindow):
                                           key="New Phrase")
         self.btn_new_folder.setToolTip("New Folder (Ctrl+O)")
         self.btn_new_phrase.setToolTip("New Phrase (Ctrl+N)")
+        b = g.add_large("Signatures", "email", self.show_signatures)
+        b.setToolTip("E-mail signatures, dated footers and random quotes; export them to Outlook")
         g = t.add_group("Sync")
         b = g.add_large("Send/Receive\nupdates", "sync", self.sync_now)
         b.setToolTip("Synchronize your phrases with the cloud now (Ctrl+F5). "
@@ -2639,6 +2641,15 @@ class MainWindow(QMainWindow):
 
     def show_clipboard(self) -> None:
         self.panel.select("clipboard_cache", None)
+
+    def show_signatures(self) -> None:
+        from phraseforge.ui.signatures_dialog import SignaturesDialog
+        SignaturesDialog(self.store, self, on_edit=self._edit_signature).exec()
+        self.refresh_tree()
+
+    def _edit_signature(self, phrase_id: int) -> None:
+        self.refresh_tree()
+        self.select_phrase(phrase_id)
 
     def show_suggestions(self) -> None:
         from phraseforge.ui.suggestions_dialog import SuggestionsDialog

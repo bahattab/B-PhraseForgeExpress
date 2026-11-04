@@ -1217,6 +1217,7 @@ class PhraseForgeApp(QObject):
         # language version: chosen in the phrase menu, else the active language (Settings)
         lang = getattr(req, "language", "") or self.store.setting("phrase.active_language", "")
         p.content, p.content_format = self.store.phrase_text(p, lang)
+        ctx.content_format = p.content_format
         if not approved_for(self, p, req):
             return
         if "{#selection" in p.content and not ctx.selected_text:
