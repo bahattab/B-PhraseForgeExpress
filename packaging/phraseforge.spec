@@ -58,6 +58,8 @@ hiddenimports += ["winrt.windows.media.ocr", "winrt.windows.globalization", "win
                   "winrt.windows.foundation.collections", "winrt.runtime", "winrt.system"]
 # OneNote COM client (comtypes generates its wrapper modules at run time) and ODBC queries.
 hiddenimports += collect_submodules("comtypes") + ["pyodbc", "win32com.client", "PySide6.QtPdf"]
+# Spell check: spylls is imported lazily; its own sample dictionaries are not needed
+hiddenimports += collect_submodules("spylls")
 
 # Qt modules PhraseForge never uses; keeps the build much smaller.
 excludes = [

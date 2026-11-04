@@ -86,6 +86,7 @@ PAGES: list[tuple[str, str, str | None]] = [
     ("phrase_menu_hotkeys", "Hotkeys", "phrase_menu"),
     ("phrase_menu_quicksearch", "Quick Search", "phrase_menu"),
     ("autocomplete", "AutoComplete", None),
+    ("spell_check", "Spell check", None),
     ("expert", "Expert Options", None),
     ("expert_text_insertion", "Text Insertion", "expert"),
     ("expert_delays", "Delays", "expert"),
@@ -446,6 +447,29 @@ def _run_with_wait(parent, text, fn):
     return run_with_wait(parent, text, fn)
 
 
+class _WordList(QPlainTextEdit):
+    """spell.user_words (a JSON list) shown as one word per line."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setProperty("pf_user", True)
+
+    def value(self) -> str:
+        words = []
+        for line in self.toPlainText().splitlines():
+            w = line.strip()
+            if w and w not in words:
+                words.append(w)
+        return json.dumps(words, ensure_ascii=False)
+
+    def set_value(self, v: str) -> None:
+        try:
+            words = json.loads(v or "[]")
+        except ValueError:
+            words = []
+        self.setPlainText("\n".join(str(x) for x in words) if isinstance(words, list) else "")
+
+
 def _wrap_label(text: str) -> QLabel:
     lab = QLabel(text)
     lab.setWordWrap(True)
@@ -569,6 +593,8 @@ class SettingsDialog(QDialog):
             get, put = (lambda w=widget: str(w.value())), (lambda v, w=widget: w.setValue(int(v or 0)))
         elif isinstance(widget, DataCombo):
             get, put = widget.value, widget.set_value
+        elif isinstance(widget, _WordList):
+            get, put = widget.value, widget.set_value
         elif isinstance(widget, QPlainTextEdit):
             get, put = widget.toPlainText, widget.setPlainText
         elif isinstance(widget, QLineEdit):
@@ -606,6 +632,11 @@ class SettingsDialog(QDialog):
         for prov, val in self._ai_keys.items():
             self.store.set_setting(self._key_setting(prov), val)
         self.store.set_excluded_apps(self.excluded.toPlainText().splitlines())
+        try:                               # open phrase editors pick up the new spell settings
+            from phraseforge import spell
+            spell.checker_for(self.store).refresh()
+        except Exception:
+            pass
 
     def values(self) -> dict[str, str]:
         """Current (unsaved) control values by setting key."""
@@ -2151,6 +2182,95 @@ class SettingsDialog(QDialog):
         lay.addWidget(g)
         lay.addStretch(1)
         return w
+
+    # ---- Spell check (PRD FR-EDT-01)
+    def _page_spell_check(self) -> QWidget:
+        from phraseforge import spell
+        w, lay = self._page()
+        lay.setSpacing(6)
+        lay.addWidget(_wrap_label(
+            "Misspelt words in the phrase editor get a red wavy underline. Right-click one for suggestions, "
+            "Add to dictionary or Ignore all. Words with Arabic letters use the Arabic dictionary, all other "
+            "words the Latin one, so both languages can be mixed in one phrase."))
+        lay.addWidget(self.bind("spell.enabled", QCheckBox("Check spelling in the phrase editor")))
+        g, gl = _group("Dictionaries")
+        grid = QGridLayout()
+        self.spell_rows = {}
+        for row, (script, label) in enumerate((("latin", "Latin-script words:"), ("arabic", "Arabic-script words:"))):
+            items = [(tr("Off"), "")] + [(name, code) for code, (name, _p, sc, _l) in spell.DICTIONARIES.items()
+                                         if sc == script]
+            combo = self.bind("spell." + script, DataCombo(items))
+            status = QLabel()
+            status.setProperty("pf_user", True)
+            button = QPushButton(tr("Download"))
+            button.clicked.connect(lambda _=False, c=combo, st=status, b=button: self._spell_download(c, st, b))
+            combo.currentIndexChanged.connect(lambda _=0, c=combo, st=status, b=button: self._spell_status(c, st, b))
+            grid.addWidget(QLabel(label), row, 0)
+            grid.addWidget(combo, row, 1)
+            grid.addWidget(button, row, 2)
+            grid.addWidget(status, row, 3)
+            self.spell_rows[script] = (combo, status, button)
+        grid.setColumnStretch(3, 1)
+        gl.addLayout(grid)
+        gl.addWidget(_wrap_label(
+            "Dictionaries are downloaded from the LibreOffice dictionaries project (github.com/LibreOffice/"
+            "dictionaries) into PhraseForge's data folder. Each one has its own license, shown next to it."))
+        lay.addWidget(g)
+        g, gl = _group("Your own words (one per line)")
+        self.spell_words = _WordList()
+        self.bind("spell.user_words", self.spell_words)
+        gl.addWidget(self.spell_words)
+        lay.addWidget(g, 1)
+        for combo, status, button in self.spell_rows.values():
+            self._spell_status(combo, status, button)
+        return w
+
+    def _spell_status(self, combo, status: QLabel, button: QPushButton) -> None:
+        from phraseforge import spell
+        code = combo.value()
+        if not code:
+            status.setText("")
+            button.setEnabled(False)
+            return
+        lic = spell.DICTIONARIES[code][3]
+        have = spell.installed(code)
+        status.setText(tr("Installed") + f" · {lic}" if have else tr("Not downloaded") + f" · {lic}")
+        button.setText(tr("Download again") if have else tr("Download"))
+        button.setEnabled(True)
+
+    def _spell_download(self, combo, status: QLabel, button: QPushButton) -> None:
+        """Download in a worker thread; the result comes back to the UI thread through a queued call."""
+        import threading
+        from PySide6.QtCore import QTimer
+        from phraseforge import spell
+        code = combo.value()
+        if not code:
+            return
+        button.setEnabled(False)
+        status.setText(tr("Downloading..."))
+        result: list = []
+
+        def work():
+            try:
+                spell.download(code)
+                spell.checker_for(self.store).reload(code)
+                result.append(None)
+            except Exception as e:            # network, HTTP or disk error: show it, keep old files
+                result.append(e)
+
+        def poll():
+            if not result:
+                return
+            timer.stop()
+            err = result[0]
+            self._spell_status(combo, status, button)
+            if err is not None:
+                status.setText(tr("Download failed") + f": {err}")
+        timer = QTimer(self)
+        timer.timeout.connect(poll)
+        timer.start(200)
+        self._spell_timer = timer
+        threading.Thread(target=work, name=f"spell-download-{code}", daemon=True).start()
 
     # ---- Expert options
     def _page_expert(self) -> QWidget:

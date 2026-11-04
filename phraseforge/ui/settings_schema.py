@@ -179,6 +179,11 @@ SCHEMA: dict[str, str] = {
     "quicksearch.match_case": "0",
     "quicksearch.subfolders": "1",
     "quicksearch.quick_jump": "1",
+    # Spell check (phraseforge/spell.py)
+    "spell.enabled": "1",
+    "spell.latin": "en_US",
+    "spell.arabic": "ar",
+    "spell.user_words": "[]",
     # AutoComplete
     "autocomplete.learn_corrections": "0",
     "learning.enabled": DEFAULT_SETTINGS["learning.enabled"],   # "Suggest entered sentences"

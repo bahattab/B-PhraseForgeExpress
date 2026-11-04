@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import logging
 import re
 
 from PySide6.QtCore import QEvent, QObject, QRectF, QSizeF, Qt, QTimer, Signal
@@ -62,6 +63,8 @@ DISPLAY = {
 }
 KEY_NAMES = {"enter", "tab", "esc", "bksp", "del", "up", "down", "left", "right", "home", "end",
              "pgup", "pgdn", "ins"} | {f"f{i}" for i in range(1, 13)}
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------- tokens
@@ -418,6 +421,7 @@ class ChipTextEdit(QTextEdit):
 
     def contextMenuEvent(self, e):
         c = self.cursorForPosition(e.pos())
+        self.menu_cursor = c            # where the user clicked (spelling suggestions use it)
         hit = self.chip_at(c.position())
         m = QMenu(self)
         if self.context_menu_hook:
@@ -646,6 +650,14 @@ class PhraseEditor(QWidget):
         self.content_edit.chip_activated.connect(self.edit_chip)
         self.content_edit.cursorPositionChanged.connect(self._emit_status)
         self.content_edit.context_menu_hook = self._build_context_menu
+        self.spell_checker = self.spell_highlighter = None
+        try:                              # spell check (Settings > Spell check); optional
+            from phraseforge import spell
+            from phraseforge.ui.spell_ui import SpellHighlighter
+            self.spell_checker = spell.checker_for(store)
+            self.spell_highlighter = SpellHighlighter(self.content_edit.document(), self.spell_checker)
+        except Exception:
+            log.exception("spell check unavailable")
         self._saver = _FocusOutSaver(self._autosave)
         for w in (self.description, self.content_edit):
             w.installEventFilter(self._saver)
@@ -990,6 +1002,11 @@ class PhraseEditor(QWidget):
     # -------------------------------------------------- context menu (16_context_menu_content)
     def _build_context_menu(self, m: QMenu, hit) -> None:
         ed = self.content_edit
+        if self.spell_checker is not None and not hit:
+            from phraseforge.ui.spell_ui import add_spelling_actions
+            if add_spelling_actions(m, ed, getattr(ed, "menu_cursor", None), self.spell_checker,
+                                    self.spell_highlighter):
+                m.addSeparator()
         if hit:
             m.addAction(f'Edit macro "{display_name(hit[1])}"').triggered.connect(lambda: self.edit_chip(hit[0]))
         else:
