@@ -304,8 +304,52 @@ def export_mht(entries: list["Entry"], path: str | Path, ui_lang: str = "en",
     return len(entries)
 
 
+# ------------------------------------------------------------------ RTF
+def build_rtf(entries: list["Entry"], ui_lang: str = "en", title: str | None = None) -> str:
+    """Rich Text: the same layout as the Word export (title, folders, phrase names in bold,
+    triggers, text, language versions). Each paragraph gets its own direction, so Arabic
+    reads right to left; characters are written as \\uN escapes, so no code page is needed."""
+    from phraseforge.rtf import escape
+    lab = LABELS.get(ui_lang, LABELS["en"])
+    head, sub = _header(entries, ui_lang, title)
+    rtl_ui = ui_lang == "ar"
+    out = []
+
+    def para(text: str, fmt: str = "", rtl: bool | None = None) -> None:
+        r = is_rtl(text) if rtl is None else rtl
+        direction = "\\rtlpar\\qr" if r else "\\ltrpar\\ql"
+        out.append("\\pard" + direction + "\\sa120 " + (("{" + fmt + " " + escape(text) + "}") if fmt else escape(text))
+                   + "\\par\n")
+
+    para(head, "\\b\\fs36", rtl_ui or None)
+    para(sub, "\\cf2\\fs20", rtl_ui or None)
+    folder = None
+    for e in entries:
+        if e.folder != folder:
+            folder = e.folder
+            para(folder or lab["nofolder"], "\\b\\cf1\\fs28", is_rtl(folder) or (rtl_ui and not folder))
+        para(e.description or "-", "\\b\\fs24")
+        for kind, value in e.triggers:
+            para(f"{lab[kind]}: {value}", "\\cf1\\fs18", rtl_ui)
+        for chunk in (e.text.split("\n\n") if e.text else []):
+            para(chunk)
+        for lang, text in e.versions:
+            para(f"{lab['version']} \u200e{lang}\u200e:", "\\i\\cf2\\fs18", rtl_ui)
+            for chunk in text.split("\n\n"):
+                para(chunk)
+    return ("{\\rtf1\\ansi\\ansicpg1252\\deff0\\uc1{\\fonttbl{\\f0\\fnil\\fcharset0 Segoe UI;}}"
+            "{\\colortbl;\\red43\\green87\\blue154;\\red102\\green102\\blue102;}\\f0\\fs21\n"
+            + "".join(out) + "}")
+
+
+def export_rtf(entries: list["Entry"], path: str | Path, ui_lang: str = "en", title: str | None = None) -> int:
+    Path(path).write_text(build_rtf(entries, ui_lang, title), encoding="ascii")
+    return len(entries)
+
+
 EXPORT_FORMATS = (
     ("Word Document (*.docx)", ".docx"),
+    ("Rich Text Format (*.rtf)", ".rtf"),
     ("PDF (*.pdf)", ".pdf"),
     ("Web Page (*.html)", ".html"),
     ("Single File Web Page (*.mht)", ".mht"),
@@ -317,7 +361,7 @@ EXPORT_FORMATS = (
 
 def export(store: Store, phrases: list[Phrase], path: str | Path, ui_lang: str = "en",
            language: str = "", include_versions: bool = True) -> int:
-    """Write .docx, .pdf, .html or .mht by the file extension."""
+    """Write .docx, .rtf, .pdf, .html or .mht by the file extension."""
     entries = collect(store, phrases, language, include_versions)
     ext = Path(path).suffix.lower()
     if ext == ".docx":
@@ -328,4 +372,6 @@ def export(store: Store, phrases: list[Phrase], path: str | Path, ui_lang: str =
         return export_html(entries, path, ui_lang)
     if ext == ".mht":
         return export_mht(entries, path, ui_lang)
+    if ext == ".rtf":
+        return export_rtf(entries, path, ui_lang)
     raise ValueError(f"Unsupported document type: {ext}")
