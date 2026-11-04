@@ -623,6 +623,20 @@ class SettingsDialog(QDialog):
             put(self.store.setting(key, SCHEMA.get(key, "")))
         self.excluded.setPlainText("\n".join(sorted(self.store.excluded_apps())))
         self._sync_enabled()
+        self._apply_policy()
+
+    def _apply_policy(self) -> None:
+        """Settings the administrator's policy forces or locks are shown but cannot be changed
+        (the store refuses them anyway)."""
+        from phraseforge import policy
+        pol = policy.current()
+        if not pol.active:
+            return
+        tip = tr("Set by your administrator.") + (" " + pol.message if pol.message else "")
+        for key, _get, _put, w in self._bindings:
+            if w is not None and pol.setting_locked(key):
+                w.setEnabled(False)
+                w.setToolTip(tip)
 
     def save(self) -> None:
         self._stash_ai_key()
@@ -648,6 +662,7 @@ class SettingsDialog(QDialog):
         self._ai_keys = {}
         self._load_ai_key()
         self._sync_enabled()
+        self._apply_policy()
 
     def accept(self) -> None:
         self.save()

@@ -292,6 +292,9 @@ class MacroEngine:
         fn = entry[1]
         args = [self.eval_token(t, rt) for t in call.args]
         opts = {k: self.eval_token(v, rt) for k, v in call.opts.items()}
+        from phraseforge import policy
+        if policy.current().macro_disabled(entry[0].name) or policy.current().macro_disabled(call.name):
+            return [TextAction(f"[{call.name}: disabled by your administrator]")]
         if not getattr(rt.ctx, "allow_privileged", True):
             from phraseforge.security import privileged_reason
             if privileged_reason(entry[0].name, args, opts):

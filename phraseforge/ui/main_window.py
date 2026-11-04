@@ -20,6 +20,7 @@ from typing import Any, Callable
 from PySide6.QtCore import QEvent, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QCursor, QDesktopServices, QFont, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication, QCheckBox, QDialog, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow,
     QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSplitter, QStackedWidget, QStatusBar, QToolBar, QToolButton,
     QVBoxLayout, QWidget,
@@ -30,6 +31,7 @@ from phraseforge.host import Cancelled, ExpansionContext, FormField
 from phraseforge.models import Folder, Phrase, Trigger
 from phraseforge.ui import pe_style
 from phraseforge.ui.i18n import tr
+from phraseforge.ui.policy_ui import editing_allowed, settings_allowed
 from phraseforge.ui.iconset import icon
 from phraseforge.ui.main_dialogs import (
     FileMenu, FindReplaceDialog, FolderDialog, HistoryDialog, MoveToDialog, PhrasePropertiesDialog,
@@ -486,6 +488,11 @@ class MainWindow(QMainWindow):
         self.setStatusBar(sb)
 
         self._build_search()
+        if not editing_allowed():
+            self.policy_label = QLabel(tr("Editing phrases is locked by your administrator."))
+            sb.addPermanentWidget(self.policy_label)
+            self.panel.tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            self.panel.tree.setDragEnabled(False)
         self._build_user_label()
         self._build_file_menu()
         self._build_phrases_tab()
@@ -778,6 +785,8 @@ class MainWindow(QMainWindow):
                                           key="New Phrase")
         self.btn_new_folder.setToolTip("New Folder (Ctrl+O)")
         self.btn_new_phrase.setToolTip("New Phrase (Ctrl+N)")
+        b = g.add_large("Signatures", "email", self.show_signatures)
+        b.setToolTip("E-mail signatures, dated footers and random quotes; export them to Outlook")
         g = t.add_group("Sync")
         b = g.add_large("Send/Receive\nupdates", "sync", self.sync_now)
         b.setToolTip("Synchronize your phrases with the cloud now (Ctrl+F5). "
@@ -1085,6 +1094,8 @@ class MainWindow(QMainWindow):
                     pass
         if kind == "phrase":
             self._push_view_options(ed)
+        if not editing_allowed() and kind in ("phrase", "folder", "last_used", "clipboard_cache"):
+            ed.setToolTip(tr("Editing phrases is locked by your administrator."))
         self._editors[kind] = ed
         self.editor_stack.addWidget(ed)
         return ed
@@ -1095,6 +1106,8 @@ class MainWindow(QMainWindow):
 
     def save_current(self) -> bool:
         """Save the visible editor if it has changes. Returns False only when saving failed."""
+        if not editing_allowed():
+            return True                                 # nothing can be changed, nothing to save
         ed = self.editor_stack.currentWidget()
         if ed is self.blank or not hasattr(ed, "save"):
             return True
@@ -1162,6 +1175,8 @@ class MainWindow(QMainWindow):
                     load()
                 except TypeError:
                     pass
+            if not editing_allowed() and kind != "clip":
+                ed.setEnabled(False)                    # load() enables the editor again
             self.editor_stack.setCurrentWidget(ed)
         else:
             self.editor_stack.setCurrentWidget(self.blank)
@@ -1392,6 +1407,10 @@ class MainWindow(QMainWindow):
                   self.btn_copy, self.btn_color):
             b.setEnabled(item)
         self.btn_paste.setEnabled(bool(self._clip))
+        if not editing_allowed():                       # administrator's policy (policy.py)
+            for b in (self.btn_new_folder, self.btn_new_phrase, self.btn_restrict, self.btn_up, self.btn_down,
+                      self.btn_move, self.btn_dup, self.btn_cut, self.btn_paste, self.btn_color, self.btn_import):
+                b.setEnabled(False)
         self.btn_two.setChecked(not self.three_columns)
         self.btn_three.setChecked(self.three_columns)
         self.btn_flat.setChecked(self.panel.flat)
@@ -2623,6 +2642,8 @@ class MainWindow(QMainWindow):
     # ================================================================= other windows
     def show_settings(self) -> None:
         self.save_current()
+        if not settings_allowed(self):
+            return
         from phraseforge.ui.settings_dialog import SettingsDialog
         SettingsDialog(self.store, parent=self).exec()
 
@@ -2639,6 +2660,15 @@ class MainWindow(QMainWindow):
 
     def show_clipboard(self) -> None:
         self.panel.select("clipboard_cache", None)
+
+    def show_signatures(self) -> None:
+        from phraseforge.ui.signatures_dialog import SignaturesDialog
+        SignaturesDialog(self.store, self, on_edit=self._edit_signature).exec()
+        self.refresh_tree()
+
+    def _edit_signature(self, phrase_id: int) -> None:
+        self.refresh_tree()
+        self.select_phrase(phrase_id)
 
     def show_suggestions(self) -> None:
         from phraseforge.ui.suggestions_dialog import SuggestionsDialog

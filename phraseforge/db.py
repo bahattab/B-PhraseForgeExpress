@@ -11,6 +11,7 @@ import functools
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -20,9 +21,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
+from phraseforge import policy
 from phraseforge.models import (
     AutotextMode, ClipboardEntry, Folder, OutputMode, Phrase, Trigger, TriggerKind,
 )
+
+log = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 2
 
@@ -249,6 +253,17 @@ def untrusted_import(fn):
     return wrapper
 
 
+def _editable(fn):
+    """Store methods that change phrases or folders: refused while the administrator's
+    policy disables editing (policy.py), except inside Store.policy_bypass() (sync pulls)."""
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        if policy.current().editing_disabled and not getattr(self._qlocal, "bypass", 0):
+            raise policy.PolicyError(policy.current().notice("Editing phrases"))
+        return fn(self, *args, **kwargs)
+    return wrapper
+
+
 class Store:
     def __init__(self, path: str | Path = ":memory:"):
         self.path = str(path)
@@ -398,6 +413,7 @@ class Store:
         self.conn.close()
 
     # ------------------------------------------------------------ folders
+    @_editable
     def add_folder(self, f: Folder) -> Folder:
         with self.lock, self.conn:
             cur = self.conn.execute(
@@ -412,6 +428,7 @@ class Store:
         self._changed("folder", f.id)
         return f
 
+    @_editable
     def update_folder(self, f: Folder) -> None:
         with self.lock, self.conn:
             self.conn.execute(
@@ -429,6 +446,7 @@ class Store:
             return [self._row_trigger(r) for r in self.conn.execute(
                 "SELECT * FROM triggers WHERE folder_id=? ORDER BY id", (folder_id,))]
 
+    @_editable
     def set_folder_triggers(self, folder_id: int, triggers: list[Trigger]) -> None:
         with self.lock, self.conn:
             self._write_owner_triggers("folder_id", folder_id, triggers)
@@ -439,11 +457,13 @@ class Store:
             return [self._row_trigger(r) for r in self.conn.execute(
                 "SELECT * FROM triggers WHERE special=? ORDER BY id", (special,))]
 
+    @_editable
     def set_special_triggers(self, special: str, triggers: list[Trigger]) -> None:
         with self.lock, self.conn:
             self._write_owner_triggers("special", special, triggers)
         self._changed("folder", None)
 
+    @_editable
     def delete_folder(self, folder_id: int) -> None:
         with self.lock, self.conn:
             self.conn.execute("DELETE FROM folders WHERE id=?", (folder_id,))
@@ -492,6 +512,7 @@ class Store:
         return out
 
     # ------------------------------------------------------------ phrases
+    @_editable
     def add_phrase(self, p: Phrase, record_history: bool = False) -> Phrase:
         now = _now()
         p.created = p.created or now
@@ -511,6 +532,7 @@ class Store:
         self._changed("phrase", p.id)
         return p
 
+    @_editable
     def update_phrase(self, p: Phrase, record_history: bool = True) -> None:
         with self.lock, self.conn:
             if record_history:
@@ -608,6 +630,7 @@ class Store:
             out[r[0]] = hashlib.sha256(blob.encode("utf-8")).hexdigest()
         return out
 
+    @_editable
     def delete_phrase(self, phrase_id: int) -> None:
         with self.lock, self.conn:
             self.conn.execute("DELETE FROM phrases WHERE id=?", (phrase_id,))
@@ -803,6 +826,9 @@ class Store:
 
     # ------------------------------------------------------------ settings
     def setting(self, key: str, default: str = "") -> str:
+        forced = policy.current().forced_value(key)
+        if forced is not None:
+            return forced                       # set by the administrator's policy file
         with self.lock:
             r = self.conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
         if not r:
@@ -810,6 +836,9 @@ class Store:
         return _unseal(r[0]) if key in SECRET_SETTINGS else r[0]
 
     def set_setting(self, key: str, value: str) -> None:
+        if policy.current().setting_locked(key):
+            log.info("a setting locked by the administrator's policy was not changed")
+            return
         value = _seal(str(value)) if key in SECRET_SETTINGS else str(value)
         with self.lock, self.conn:
             self.conn.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (key, value))
@@ -817,8 +846,13 @@ class Store:
 
     def settings(self) -> dict[str, str]:
         with self.lock:
-            return {r[0]: _unseal(r[1]) if r[0] in SECRET_SETTINGS else r[1]
-                    for r in self.conn.execute("SELECT key, value FROM settings")}
+            out = {r[0]: _unseal(r[1]) if r[0] in SECRET_SETTINGS else r[1]
+                   for r in self.conn.execute("SELECT key, value FROM settings")}
+        pol = policy.current()
+        out.update(pol.forced)
+        if not pol.stats_enabled:
+            out["features.usage_statistics"] = "0"
+        return out
 
     # ------------------------------------------------------------ language versions
     # PhraseExpress-style: one phrase, several language versions. The phrase's own
@@ -831,6 +865,7 @@ class Store:
             return []
         return [str(x).strip() for x in v if str(x).strip()] if isinstance(v, list) else []
 
+    @_editable
     def set_phrase_languages(self, langs: Iterable[str]) -> None:
         seen: list[str] = []
         for x in langs:
@@ -846,6 +881,7 @@ class Store:
                                      "WHERE phrase_id=? ORDER BY lang", (phrase_id,)).fetchall()
         return {r[0]: (r[1] or "", r[2] or "text") for r in rows}
 
+    @_editable
     def set_phrase_version(self, phrase_id: int, lang: str, content: str, content_format: str = "text") -> None:
         lang = (lang or "").strip()
         if not lang:
@@ -856,6 +892,7 @@ class Store:
             self._quarantine_if_untrusted(phrase_id)
         self._changed("phrase", phrase_id)
 
+    @_editable
     def delete_phrase_version(self, phrase_id: int, lang: str) -> None:
         with self.lock, self.conn:
             self.conn.execute("DELETE FROM phrase_versions WHERE phrase_id=? AND lang=?", (phrase_id, lang))
@@ -1029,13 +1066,26 @@ class Store:
             "excluded_apps": sorted(self.excluded_apps()),
         }
 
+    @contextmanager
+    def policy_bypass(self):
+        """Phrase changes on this thread inside the block are allowed even when the policy
+        disables editing: a sync pull is how an administrator hands out phrases."""
+        self._qlocal.bypass = getattr(self._qlocal, "bypass", 0) + 1
+        try:
+            yield
+        finally:
+            self._qlocal.bypass -= 1
+
     def restore_from(self, path: str | Path, untrusted: str | None = None) -> None:
         """Replace all data with a backup file, in place on the open connection.
 
         untrusted="synced"/"imported": the file came from elsewhere (cloud pull, a phrase file
         the user opened). This PC's quarantine list is kept, the file's own list is ignored,
         and every phrase the file adds or changes is quarantined (security.py). Without it
-        (restoring this PC's own backup) the backup's list is used as it is."""
+        (restoring this PC's own backup) the backup's list is used as it is.
+        While the policy disables editing only a sync pull may replace the phrases."""
+        if policy.current().editing_disabled and untrusted != "synced" and not getattr(self._qlocal, "bypass", 0):
+            raise policy.PolicyError(policy.current().notice("Editing phrases"))
         before = self.phrase_fingerprints() if untrusted else {}
         keep_q = self.quarantined() if untrusted else {}
         with self.lock:                   # raw values: API keys stay encrypted

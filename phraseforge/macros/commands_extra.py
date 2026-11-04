@@ -559,6 +559,47 @@ def _outlook(rt, args, opts):
     return ""
 
 
+@macro("signature", "Phrases", "{#signature}",
+       'E-mail signature from the Signatures folder: the default one, or {#signature "Name"}, '
+       "with its active footers and, if switched on, a random quote. -lang picks a language version.",
+       "{#signature}")
+def _signature(rt, args, opts):
+    from phraseforge import signatures
+    from phraseforge.macros.engine import MAX_INSERT_DEPTH, html_to_text
+    from phraseforge.macros.parser import parse
+    if rt.store is None:
+        return ""
+    name = _arg(args, 0, "")
+    key = "#signature:" + name.casefold()
+    if key in rt.insert_stack or len(rt.insert_stack) >= MAX_INSERT_DEPTH:
+        return ""                                   # a signature that inserts itself
+    sig = signatures.find(rt.store, name)
+    if sig is None:
+        if name:
+            raise MacroError(f"signature '{name}' not found")
+        return ""
+    from phraseforge.security import LOCKS
+    if LOCKS.is_locked(rt.store, sig.folder_id):
+        raise MacroError("the Signatures folder is locked")
+    lang = opts.get("lang") or rt.setting("phrase.active_language", "")
+    content, fmt = signatures.compose(rt.store, name, lang=lang, today=rt.now().date(), rng=rt.rng)
+    html_out = getattr(rt.ctx, "content_format", "") == "html"
+    if fmt == "html" and not html_out:
+        content = html_to_text(content)
+    elif fmt == "text" and html_out:
+        content = signatures._text_to_html(content)     # keep the line breaks in a formatted phrase
+    allow_before = rt.ctx.allow_privileged
+    parts = [sig] + signatures.footers(rt.store) + signatures.quotes(rt.store)
+    if any(rt.store.quarantine_origin(p.id) for p in parts) if hasattr(rt.store, "quarantine_origin") else False:
+        rt.ctx.allow_privileged = False             # an imported, unapproved signature cannot run {#run} ...
+    rt.insert_stack.append(key)
+    try:
+        return rt.engine.eval_nodes(parse(content), rt)
+    finally:
+        rt.insert_stack.pop()
+        rt.ctx.allow_privileged = allow_before
+
+
 AD_FIELDS = {"name": "displayName", "email": "mail", "nickname": "sAMAccountName",
              "telephone": "telephoneNumber", "street": "streetAddress", "zip": "postalCode", "city": "l",
              "company": "company", "department": "department", "title": "title", "firstname": "givenName",
