@@ -81,7 +81,7 @@ def test_policy_path_is_fixed(monkeypatch):
     monkeypatch.setenv("ProgramData", r"D:\PD")
     assert str(policy.policy_path()).replace("/", "\\").endswith(r"PD\PhraseForge\policy.toml")
     monkeypatch.setattr(policy.sys, "platform", "linux")
-    assert str(policy.policy_path()) == "/etc/phraseforge/policy.toml"
+    assert policy.policy_path().as_posix() == "/etc/phraseforge/policy.toml"   # also when run on Windows
 
 
 # ---------------------------------------------------------------- settings
