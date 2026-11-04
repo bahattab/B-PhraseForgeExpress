@@ -1352,4 +1352,9 @@ AR_EXTRA = {
     'English (UK)': 'الإنجليزية (المملكة المتحدة)',
     'Portuguese (Brazil)': 'البرتغالية (البرازيل)',
     'Persian': 'الفارسية',
+    # ---------------------------------------------------------------- file import modes
+    "Save a copy (the file's contents become the phrase)": 'حفظ نسخة (يصبح محتوى الملف هو العبارة)',
+    'Macro that loads the contents when the phrase is used': 'ماكرو يقرأ محتوى الملف عند استخدام العبارة',
+    'Macro that opens the file in its program': 'ماكرو يفتح الملف في برنامجه',
+    'Line by line (one phrase per paragraph or row)': 'سطرًا سطرًا (عبارة لكل فقرة أو صف)',
 }
