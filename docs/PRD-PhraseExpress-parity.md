@@ -215,7 +215,7 @@ PE macro names [C-EXE, from the macro name table], compared with PF's 153 comman
 | # | PE feature | Evidence | PF status |
 |---|---|---|---|
 | E1 | Ribbon main window (192 actions), tree, multi-column phrase list (`UI/PhraseCol*0–15`) | [C-EXE] TpexMWnd4 DFM | ✅ `ribbon.py`, `tree_panel.py`; 0.5.8+: customizable quick toolbar (`ui/quick_toolbar.py`), drag and drop of phrases and folders between list and tree |
-| E2 | Rich editor with spell check, tables, images, find/replace, character map, font dialog, DOCX/Markdown/HTML import/export | [C-EXE] TFrmRV*, TRichForm | 🟡 HTML QTextEdit, no spell check; DOCX/PDF/HTML/MHT **export** (`documents.py`, HTML/MHT 0.5.9+); no DOCX/Markdown import into the editor |
+| E2 | Rich editor with spell check, tables, images, find/replace, character map, font dialog, DOCX/Markdown/HTML import/export | [C-EXE] TFrmRV*, TRichForm | 🟡 HTML QTextEdit, spell check (G-20, partial); DOCX/PDF/HTML/MHT **export** (`documents.py`, HTML/MHT 0.5.9+); no DOCX/Markdown import into the editor |
 | E3 | Popup menu, QuickKeys, QuickSearch (inline, case, subfolders, Quick Jump), repeat last output, dark mode, ~20 colours | [C-DATA] `Popup/*`, `Search/*` | ✅ `popup.py` (verify Quick Jump and repeat-last) |
 | E4 | Clipboard cache window with auto-collect, dedupe, plain-only, trim | [C-DATA] `ClipCache/*` | ✅ |
 | E5 | Autotext learning (word graph + corrections, `words.pal`), learns from Outlook, AutoCorrect | [C-DATA] words.pal is an encrypted ZIP; [C-EXE] `<connections><corrections>` | 🟡 sentence-repeat learner, AutoComplete word learner |
@@ -326,7 +326,7 @@ Priority: **M** must-have (core parity, or a security defect), **S** should-have
 | G-17 | Levels (language variants), hotkeys, `{#setlevel}` | S | L | FR-DAT-01 | partial: `phrase_versions(phrase_id, lang)` + active-language setting; no level hotkeys/`{#setlevel}` |
 | G-18 | Trash, comments, templates, links, folder prefix/suffix, multi-key sort | S | M | FR-DAT-02..05 | partial: folder abbreviation prefix, bulk sort |
 | G-19 | Multiple mounted phrase libraries | S | L | FR-DAT-06 | open |
-| G-20 | Spell check | S | M | FR-EDT-01 | open |
+| G-20 | Spell check | S | M | FR-EDT-01 | partial: red underline, suggestions, Add to dictionary / Ignore all, one Hunspell dictionary per script via spylls, dictionaries downloaded from LibreOffice (`spell.py`, `ui/spell_ui.py`); 5,000 words highlighted in 104 ms (English) / 157 ms (Arabic) on Linux. Missing: the dictionary does not follow the phrase's language level yet |
 | G-21 | RTF, embedded files, Markdown/DOCX into editor | N | M | FR-EDT-02 | partial: RTF clipboard output |
 | G-22 | Dynamic folders | S | L | FR-DYN-01/02 | open |
 | G-23 | Macro recorder | N | L | FR-REC-01 | open |
