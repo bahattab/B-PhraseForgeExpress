@@ -708,6 +708,11 @@ Fixed in 0.6.3:
 - **R10 (Medium):** synced or imported `{#var}` values could change what an "Always allow" phrase runs. The fingerprint now includes the values of the global variables a phrase reads (`{#var}`/`{#get}`; a run-time name counts every variable), so a pull or import that changes one sends the phrase back for approval. `quarantine_writes` also quarantines existing phrases whose fingerprint an import changed. The user's own `{#set -scope global}` changes nothing.
 - **R11 (Low):** the update notice opened the URL from the GitHub API answer without a check. `updates.safe_release_url` accepts only `https://github.com/bahattab/B-PhraseForgeExpress/releases/…` (no credentials, no other port), and the notice falls back to the releases page.
 
+Review of PR #7 (multiple-choice autotext, merged from a parallel session, shipped in 0.6.3), fixed in 0.6.4:
+- Held up: a phrase chosen from the menu goes through the same expansion path as any other, so the folder password (`unlocked_for`) and the trust gate (`approved_for`) still apply; disabled folders and per-program restrictions are respected.
+- **R12 (Low):** a delimiter-completed shared autotext (`sig` + Space) lost the delimiter: it was swallowed when the menu opened and never re-typed. The `choose:` command now carries the delimiter, and the chosen phrase re-types it.
+- **R13 (Low):** the menu listed the names of phrases in locked folders, which the normal menu hides, and it erased the typed abbreviation before the folder was unlocked. Locked phrases now show as "Locked phrase", and the abbreviation is erased by the chosen phrase's own expansion, after unlock and approval; cancelling leaves what was typed.
+
 Still open: Linux single-instance socket squatting by the same user; with a proxy, `{#http}` relies on the name check only.
 
 ### 7.6 PE behaviour capture plan (to resolve `needs-PE-capture` and the unknowns)

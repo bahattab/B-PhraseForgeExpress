@@ -287,11 +287,15 @@ def test_command_dispatch():
     posted.pop()()                                   # run the posted lambda
     assert posted[-1] == ("confirm", 5, 3)
     shown = []
-    fake._show_popup = lambda hwnd, folder=None, search=False: shown.append(folder)
-    fake.on_command("choose:7,9:3")                  # several phrases share one autotext
-    assert fake._jobs.get_nowait()[:2] == ("replace", "3:")   # [2] is the real foreground window on Windows
+    fake._choice_cmd = types.MethodType(PhraseForgeApp._choice_cmd, fake)
+    fake._show_popup = lambda hwnd, folder=None, search=False, pending=(0, ""): shown.append((folder, pending))
+    fake.on_command("choose:7,9:3:32")               # several phrases share one autotext
+    assert fake._jobs.empty()                        # nothing erased until a phrase is chosen (0.6.4)
     posted.pop()()
-    assert shown == ["choice:7,9"]
+    assert shown == [("choice:7,9", (3, " "))]
+    fake.on_command("choose:7,9:2:")                 # completed by the autotext's own last key
+    posted.pop()()
+    assert shown[-1] == ("choice:7,9", (2, ""))
     fake.on_command("sound:popup_display")
     assert played == ["popup_display"]
     seen = []

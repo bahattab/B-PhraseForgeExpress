@@ -299,3 +299,47 @@ def test_latest_release_drops_foreign_links():
                         "browser_download_url": "https://evil.example/Setup.exe"}]}
     rel = updates.latest_release(opener=lambda req, timeout=0: R(json.dumps(body).encode()))
     assert rel["url"] == updates.RELEASES_PAGE and rel["setup_url"] == ""
+
+
+# ---------------------------------------------------------------- 0.6.4: review of PR #7
+def test_choice_menu_brings_back_the_delimiter_and_erases_only_on_choice():
+    """Several phrases share "sig": the space typed after it must come back, and the abbreviation
+    is erased by the chosen phrase's own expansion (after unlock/approval), not when the menu opens."""
+    import queue
+    from phraseforge.app import PhraseForgeApp
+    fake = types.SimpleNamespace(_jobs=queue.Queue(), _popup_app="notepad.exe", _popup_hwnd=42,
+                                 popup=types.SimpleNamespace(language=""))
+    shown = []
+    fake.poster = types.SimpleNamespace(posted=types.SimpleNamespace(emit=lambda fn: fn()))
+    fake._show_popup = lambda hwnd, folder=None, search=False, pending=(0, ""): (
+        shown.append(folder), setattr(fake, "_popup_pending", pending))
+    PhraseForgeApp._choice_cmd(fake, "5,6:3:32", 42)
+    assert shown == ["choice:5,6"] and fake._jobs.empty()
+    PhraseForgeApp._popup_phrase_chosen(fake, 6)
+    kind, req, hwnd = fake._jobs.get_nowait()
+    assert (kind, req.phrase_id, req.erase_chars, req.trailing_delimiter, hwnd) == ("expand", 6, 3, " ", 42)
+    PhraseForgeApp._popup_phrase_chosen(fake, 5)                 # the next pick from a normal menu
+    _, req2, _ = fake._jobs.get_nowait()
+    assert (req2.erase_chars, req2.trailing_delimiter) == (0, "")
+
+
+def test_choice_menu_hides_the_names_of_locked_phrases(tmp_path):
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from phraseforge.db import hash_password
+    from phraseforge.models import Folder, Phrase
+    from phraseforge.security import LOCKS
+    from phraseforge.ui.popup import PhrasePopup
+    s = Store(":memory:")
+    f = s.add_folder(Folder("Secret"))
+    f.password_hash = hash_password("pw")
+    s.update_folder(f)
+    a = s.add_phrase(Phrase("Public", "a"))
+    b = s.add_phrase(Phrase("Bank PIN", "1234", folder_id=f.id))
+    pop = PhrasePopup(s)
+    pop.show_at(10, 10, caret=None, folder=f"choice:{a.id},{b.id}")
+    rows = [(pop.list.item(i).text(), pop.list.item(i).data(0x0100)) for i in range(pop.list.count())]
+    texts = " ".join(t for t, _ in rows)
+    assert "Public" in texts and "Bank PIN" not in texts and "Locked phrase" in texts
+    pop.hide_all(force=True)

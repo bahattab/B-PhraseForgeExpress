@@ -574,8 +574,7 @@ class PhraseForgeApp(QObject):
         reg("popup_search", lambda arg, hwnd: post(lambda: self._show_popup(hwnd, search=True)))
         # trigger-layer events (triggers/manager.py)
         reg("folder_popup", lambda arg, hwnd: self._folder_popup_cmd(arg, hwnd))  # "<folder|last_used|clipboard_cache>:<erase>"
-        reg("choose", lambda arg, hwnd: self._folder_popup_cmd(  # "<id,id,...>:<erase>": phrases sharing an autotext
-            "choice:" + arg, hwnd))
+        reg("choose", lambda arg, hwnd: self._choice_cmd(arg, hwnd))  # "<id,id,...>:<erase>:<delim>": shared autotext
         reg("smartcomplete", lambda arg, hwnd: post(lambda: self._show_tip_phrase(arg)))   # "<pid>:<len>"
         reg("autocomplete", lambda arg, hwnd: post(lambda: self._show_tip_word(arg)))      # "<word>:<len>"
         reg("suggest_hide", lambda arg, hwnd: post(self._hide_tip))
@@ -708,6 +707,24 @@ class PhraseForgeApp(QObject):
             self._jobs.put(("replace", f"{erase}:", hwnd))      # remove the typed abbreviation first
         folder = int(owner) if owner.isdigit() else owner
         self.poster.posted.emit(lambda: self._show_popup(hwnd, folder=folder))
+
+    def _choice_cmd(self, arg: str, hwnd: int):
+        """Several phrases share the typed autotext: show them in a menu. Unlike a folder popup,
+        the abbreviation is erased only once a phrase is chosen, by its own expansion (after its
+        folder is unlocked and it is approved): cancelling the menu or the password prompt leaves
+        what was typed. The delimiter typed after the abbreviation is typed again after it."""
+        ids, _, rest = arg.partition(":")
+        erase, _, delim = rest.partition(":")
+        pending = (int(erase) if erase.isdigit() else 0, chr(int(delim)) if delim.isdigit() else "")
+        self.poster.posted.emit(lambda: self._show_popup(hwnd, folder="choice:" + ids, pending=pending))
+
+    def _popup_phrase_chosen(self, pid: int):
+        erase, delim = getattr(self, "_popup_pending", (0, ""))
+        self._popup_pending = (0, "")
+        self._jobs.put(("expand", ExpansionRequest(
+            phrase_id=pid, erase_chars=erase, trailing_delimiter=delim,
+            context=ExpansionContext(app_exe=self._popup_app),
+            language=getattr(self.popup, "language", "")), self._popup_hwnd))
 
     def _ensure_tip(self):
         if self.tip is None:
@@ -1459,14 +1476,14 @@ class PhraseForgeApp(QObject):
         c = QCursor.pos()
         return c.x(), c.y()
 
-    def _show_popup(self, hwnd, folder=None, search: bool = False):
+    def _show_popup(self, hwnd, folder=None, search: bool = False, pending: tuple[int, str] = (0, "")):
+        """pending: (abbreviation chars to erase, delimiter to re-type) for the phrase chosen
+        from a multiple-choice autotext menu; nothing for every other menu."""
         from phraseforge.ui.popup import PhrasePopup
+        self._popup_pending = pending
         if self.popup is None:
             self.popup = PhrasePopup(self.store)
-            self.popup.phrase_chosen.connect(
-                lambda pid: self._jobs.put(("expand", ExpansionRequest(
-                    phrase_id=pid, context=ExpansionContext(app_exe=self._popup_app),
-                    language=getattr(self.popup, "language", "")), self._popup_hwnd)))
+            self.popup.phrase_chosen.connect(self._popup_phrase_chosen)
             if hasattr(self.popup, "clipboard_chosen"):
                 self.popup.clipboard_chosen.connect(
                     lambda text: self._jobs.put(("text", text, self._popup_hwnd)))
