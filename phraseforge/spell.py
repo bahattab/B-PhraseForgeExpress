@@ -60,6 +60,8 @@ def dictionaries_dir() -> Path:
 
 
 def installed(code: str) -> bool:
+    if code not in DICTIONARIES:          # settings can arrive by sync: never build a path from them
+        return False
     base = dictionaries_dir() / code
     return base.with_suffix(".aff").is_file() and base.with_suffix(".dic").is_file()
 
@@ -119,6 +121,8 @@ class SpellChecker:
         self._dicts: dict[str, object] = {}
         self._loading: set[str] = set()
         self._failed: dict[str, str] = {}
+        self._suggested: dict[tuple[str, str], list[str]] = {}   # finished suggestion searches
+        self._searching: set[tuple[str, str]] = set()            # searches running in the background
         self._cache: dict[tuple[str, str], bool] = {}
         self._ignored: set[str] = set()
         self._conf: tuple[bool, str, str, frozenset[str]] | None = None   # settings, read once
@@ -146,8 +150,10 @@ class SpellChecker:
         return self._settings()[0]
 
     def code_for(self, script: str) -> str:
+        """The dictionary for a script; "" (off) for a code that is not in DICTIONARIES."""
         s = self._settings()
-        return s[2] if script == "arabic" else s[1]
+        code = s[2] if script == "arabic" else s[1]
+        return code if code in DICTIONARIES else ""
 
     def user_words(self) -> set[str]:
         return set(self._settings()[3])
@@ -222,6 +228,7 @@ class SpellChecker:
             self._dicts.pop(code, None)
             self._failed.pop(code, None)
             self._cache = {k: v for k, v in self._cache.items() if k[0] != code}
+            self._suggested = {k: v for k, v in self._suggested.items() if k[0] != code}
 
     # ---------------------------------------------------------------- checking
     def is_misspelled(self, word: str) -> bool:
@@ -240,6 +247,41 @@ class SpellChecker:
             hit = not (d.lookup(w) or (w[:1].isupper() and d.lookup(w.lower())))
             self._cache[key] = hit
         return hit
+
+    MAX_SEARCHES = 3          # a slow word must not hold up suggestions for the next one
+
+    def suggest_within(self, word: str, timeout: float = 0.4, limit: int = 6) -> list[str] | None:
+        """Suggestions found within `timeout` seconds, or None if the search is still running.
+        Hunspell suggestions can take seconds for a long Arabic word (30 s measured), so the
+        search runs in a background thread and its result is kept: the menu opens at once,
+        and the next right-click on the word shows what was found."""
+        w = normalize(word)
+        key = (self.code_for(script_of(w)), w)
+        if key in self._suggested:
+            return self._suggested[key]
+        with self._lock:
+            busy = key in self._searching or len(self._searching) >= self.MAX_SEARCHES
+            if not busy:
+                self._searching.add(key)
+        if busy:          # already running, or too many slow ones: a later click shows the result
+            return None
+        done = threading.Event()
+
+        def work():
+            try:
+                if len(self._suggested) > 500:
+                    self._suggested.clear()
+                self._suggested[key] = self.suggest(word, limit)
+            except Exception:
+                log.exception("spelling suggestions failed")
+                self._suggested[key] = []
+            finally:
+                with self._lock:
+                    self._searching.discard(key)
+                done.set()
+        threading.Thread(target=work, name="spell-suggest", daemon=True).start()
+        done.wait(timeout)
+        return self._suggested.get(key)
 
     def suggest(self, word: str, limit: int = 6) -> list[str]:
         w = normalize(word)

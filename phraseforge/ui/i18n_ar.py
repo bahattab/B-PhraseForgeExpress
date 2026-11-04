@@ -299,6 +299,7 @@ AR_EXTRA = {
     "query databases": "تستعلم قواعد بيانات",
     "create or change phrases": "تنشئ عبارات أو تغيّرها",
     "press Windows-key shortcuts": "تضغط اختصارات مفتاح Windows",
+    "read files from a network share": "تقرأ ملفات من مجلد مشترك على الشبكة",
     "Phrase not run": "لم يتم تشغيل العبارة",
     '"{name}" was skipped: it is not approved on this PC and was started automatically.':
         'تم تخطي "{name}": لم تتم الموافقة عليها على هذا الجهاز وبدأت تلقائيًا.',
@@ -1361,6 +1362,7 @@ AR_EXTRA = {
     'Add to dictionary': 'إضافة إلى القاموس',
     'Ignore all': 'تجاهل الكل',
     '(no suggestions)': '(لا توجد اقتراحات)',
+    '(still looking for suggestions; right-click again)': '(ما زال البحث عن اقتراحات جاريًا؛ انقر بالزر الأيمن مرة أخرى)',
     'English (US)': 'الإنجليزية (الولايات المتحدة)',
     'English (UK)': 'الإنجليزية (المملكة المتحدة)',
     'Portuguese (Brazil)': 'البرتغالية (البرازيل)',
