@@ -1,0 +1,16 @@
+# PhraseForge administrator policy (example).
+# Copy to %ProgramData%\PhraseForge\policy.toml and make it read-only for users
+# (only Administrators may change it). PhraseForge reads it when it starts.
+# A file that cannot be read keeps Settings and phrase editing locked.
+
+settings_locked  = false          # true: the Settings window does not open
+editing_disabled = false          # true: phrases and folders cannot be created, changed or deleted
+                                  #       (a cloud sync pull may still bring new phrases)
+stats_enabled    = true           # false: no usage statistics are recorded
+macros_disabled  = ["run", "http", "dbquery"]   # these macros print a notice instead of running
+locked_settings  = ["sync.*", "ai.*"]           # cannot be changed; * matches anything
+message          = "Questions? Call the IT help desk."   # added to every "locked" notice
+
+[settings]                        # forced values; the user's own value is ignored
+"app.check_updates" = "0"
+"learning.enabled"  = "0"

@@ -21,7 +21,8 @@ from typing import Any, Callable
 from PySide6.QtCore import QObject, Qt, Signal, Slot
 from PySide6.QtWidgets import QApplication
 
-from phraseforge import paths
+from phraseforge import paths, policy
+from phraseforge.policy import PolicyError
 from phraseforge.db import Store
 from phraseforge.host import (
     Cancelled, ExpansionContext, ExpansionRequest, FormField, TextAction,
@@ -1077,6 +1078,12 @@ class PhraseForgeApp(QObject):
             return
         try:
             fn(arg, hwnd)
+        except PolicyError as e:            # e.g. "new phrase" while the administrator disabled editing
+            log.info("command %r refused by policy: %s", cmd, e)
+            try:
+                self.tray.notify("PhraseForge", str(e))
+            except Exception:
+                pass
         except Exception:
             log.exception("command %r failed", cmd)
 
@@ -1698,6 +1705,9 @@ class PhraseForgeApp(QObject):
         _bring_to_front(self.main_window)
 
     def show_settings(self):
+        from phraseforge.ui.policy_ui import settings_allowed
+        if not settings_allowed():
+            return
         from phraseforge.ui.settings_dialog import SettingsDialog
         _exec_in_front(SettingsDialog(self.store))
         try:
@@ -1816,6 +1826,10 @@ def main(argv: list[str] | None = None) -> int:
     def _unhandled(*exc):
         # An error in a menu or button handler used to be written only to the log, so the
         # click looked as if it did nothing; show it too.
+        if isinstance(exc[1], PolicyError):          # refused by the administrator's policy
+            from phraseforge.ui.policy_ui import show_policy_error
+            show_policy_error(None, exc[1])
+            return
         log.error("".join(traceback.format_exception(*exc)))
         try:
             app.tray.notify("PhraseForge error", f"{exc[0].__name__}: {exc[1]}"[:200])
@@ -1827,7 +1841,7 @@ def main(argv: list[str] | None = None) -> int:
             app.sticky_notes().restore()
     except Exception:
         log.exception("restoring sticky notes")
-    if store.setting("app.first_run_done", "0") != "1":
+    if store.setting("app.first_run_done", "0") != "1" and not policy.current().editing_disabled:
         from phraseforge.ui.wizard import FirstRunWizard
         FirstRunWizard(store).exec()
     # a second launch (e.g. the Start-menu shortcut) brings this window to the front
