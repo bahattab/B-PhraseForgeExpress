@@ -92,7 +92,25 @@ def test_pdf_written_with_rtl_blocks(store, tmp_path):
 
 def test_unknown_extension(store, tmp_path):
     with pytest.raises(ValueError):
-        documents.export(store, store.phrases(), tmp_path / "x.rtf")
+        documents.export(store, store.phrases(), tmp_path / "x.xyz")
+
+
+def test_rtf_export_reads_back_with_arabic_right_to_left(store, tmp_path):
+    from phraseforge.importers.files import rtf_text
+    out = tmp_path / "p.rtf"
+    assert documents.export(store, store.phrases(), out, "ar") == 3
+    raw = out.read_text(encoding="ascii")                 # pure ASCII: Arabic as \uN escapes
+    assert raw.startswith("{\\rtf1") and raw.rstrip().endswith("}")
+    assert raw.count("{") == raw.count("}") + raw.count("\\{") - raw.count("\\}")
+    text = rtf_text(out)
+    for line in ("رسائل", "تحية", "السلام عليكم", "ورحمة الله", "الاختصار: slm", "Peace be upon you",
+                 "Hello world", "use {x} and {#date}"):
+        assert line in text, line
+    # the Arabic paragraph is right to left, the English one left to right
+    paras = raw.split("\\pard")
+    arabic = next(p for p in paras if "\\u1575?\\u1604?\\u1587?" in p)   # "الس"
+    english = next(p for p in paras if "Peace be upon you" in p)
+    assert arabic.startswith("\\rtlpar\\qr") and english.startswith("\\ltrpar\\ql")
 
 
 def test_main_window_export_document(store, tmp_path):
@@ -103,4 +121,6 @@ def test_main_window_export_document(store, tmp_path):
     assert mw.export_document("docx", str(tmp_path / "a.docx"), show_message=False) == 3
     assert mw.export_document("pdf", str(tmp_path / "a.pdf"), show_message=False) == 3
     assert (tmp_path / "a.pdf").read_bytes().startswith(b"%PDF")
+    assert mw.export_document("rtf", str(tmp_path / "a.rtf"), show_message=False) == 3
+    assert (tmp_path / "a.rtf").read_text(encoding="ascii").startswith("{\\rtf1")
     mw.close()

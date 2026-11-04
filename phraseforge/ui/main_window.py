@@ -2578,21 +2578,21 @@ class MainWindow(QMainWindow):
 
     def export_document(self, kind: str | None = None, path: str | None = None, show_message: bool = True):
         """Selected phrase, selected folder or all phrases as a document. kind is the extension
-        without the dot (docx, pdf, html, mht); None asks with a format picker."""
+        without the dot (docx, rtf, pdf, html, mht); None asks with a format picker."""
         self.save_current()
         from phraseforge import documents
         from phraseforge.ui import i18n
         title = "Export as document"
         if path is None:
             flt = ";;".join(f"{label}" for label, _ in documents.EXPORT_FORMATS
-                            if _[1:] in ("docx", "pdf", "html", "mht"))
+                            if _[1:] in ("docx", "rtf", "pdf", "html", "mht"))
             path, sel = QFileDialog.getSaveFileName(self, title, "phrases.docx", flt)
             if not path:
                 return None
             from pathlib import Path as _P
             ext = _P(path).suffix.lower().lstrip(".")
-            if ext not in ("docx", "pdf", "html", "htm", "mht"):
-                ext = {("Word Document (*.docx)"): "docx", "PDF (*.pdf)": "pdf",
+            if ext not in ("docx", "rtf", "pdf", "html", "htm", "mht"):
+                ext = {("Word Document (*.docx)"): "docx", "Rich Text Format (*.rtf)": "rtf", "PDF (*.pdf)": "pdf",
                        "Web Page (*.html)": "html", "Single File Web Page (*.mht)": "mht"}.get(sel, "docx")
                 path += "." + ext
             kind = ext
