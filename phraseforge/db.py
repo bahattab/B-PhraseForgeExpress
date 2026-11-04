@@ -837,7 +837,7 @@ class Store:
 
     def set_setting(self, key: str, value: str) -> None:
         if policy.current().setting_locked(key):
-            log.info("setting %s is locked by the administrator's policy; not changed", key)
+            log.info("a setting locked by the administrator's policy was not changed")
             return
         value = _seal(str(value)) if key in SECRET_SETTINGS else str(value)
         with self.lock, self.conn:
