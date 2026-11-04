@@ -202,7 +202,7 @@ PE macro names [C-EXE, from the macro name table], compared with PF's 153 comman
 | E2 | Rich editor with spell check, tables, images, find/replace, character map, font dialog, DOCX/Markdown/HTML import/export | [C-EXE] TFrmRV*, TRichForm | 🟡 HTML QTextEdit, spell check (G-20, partial); DOCX/PDF/HTML/MHT **export** (`documents.py`, HTML/MHT 0.5.9+); no DOCX/Markdown import into the editor |
 | E3 | Popup menu, QuickKeys, QuickSearch (inline, case, subfolders, Quick Jump), repeat last output, dark mode, ~20 colours | [C-DATA] `Popup/*`, `Search/*` | ✅ `popup.py` (verify Quick Jump and repeat-last) |
 | E4 | Clipboard cache window with auto-collect, dedupe, plain-only, trim | [C-DATA] `ClipCache/*` | ✅ |
-| E5 | Autotext learning (word graph + corrections, `words.pal`), learns from Outlook, AutoCorrect | [C-DATA] words.pal is an encrypted ZIP; [C-EXE] `<connections><corrections>` | 🟡 sentence-repeat learner, AutoComplete word learner |
+| E5 | Autotext learning (word graph + corrections, `words.pal`), learns from Outlook, AutoCorrect | [C-DATA] words.pal is an encrypted ZIP; [C-EXE] `<connections><corrections>` | 🟡 sentence-repeat learner, AutoComplete word learner, learning from sent mail (Outlook Sent Items or .eml/.mbox, `mail_analysis.py`) |
 | E6 | First-start wizard, bubble help, tray hints | [C-EXE] | ✅ wizard, tray |
 | E7 | Settings dialog | [C-EXE] TSettingsForm | ✅ 26 pages |
 | E8 | Print / print preview | [C-EXE] | ✅ `main_dialogs.py` |

@@ -1001,6 +1001,7 @@ class MainWindow(QMainWindow):
         t = self.ribbon.add_tab("help", "Help")
         g = t.add_group("Statistics")
         g.add_large("Statistics", "statistics", self.show_stats)
+        g.add_large("Suggestions", "email", self.show_suggestions)
         g = t.add_group("Program")
         g.add_large("Check for\nupdates", "updates", self.check_updates)
         g.add_large("About\nPhraseForge", "about", self.about)

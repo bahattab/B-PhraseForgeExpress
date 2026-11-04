@@ -991,6 +991,19 @@ class Store:
             return [dict(r) for r in self.conn.execute(
                 "SELECT * FROM suggestions WHERE dismissed=0 AND count>=? ORDER BY count DESC", (min_count,))]
 
+    def merge_suggestions(self, counts: dict[str, int]) -> None:
+        """Add suggestions found elsewhere (mail analysis). A text already listed keeps the
+        higher count, so analyzing the same mails twice does not double it; dismissed stays dismissed."""
+        if not counts:
+            return
+        now = _now()
+        with self.lock, self.conn:
+            self.conn.executemany(
+                "INSERT INTO suggestions (text,count,last_seen) VALUES (?,?,?) "
+                "ON CONFLICT(text) DO UPDATE SET count=MAX(count, excluded.count), last_seen=excluded.last_seen",
+                [(t, int(n), now) for t, n in counts.items()])
+        self._changed("suggestion")
+
     def dismiss_suggestion(self, text: str) -> None:
         with self.lock, self.conn:
             self.conn.execute("UPDATE suggestions SET dismissed=1 WHERE text=?", (text,))
