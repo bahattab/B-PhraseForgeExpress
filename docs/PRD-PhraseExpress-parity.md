@@ -672,7 +672,11 @@ Three parallel reviews (trust gate; file parsers and sync; secrets, IPC and netw
 
 Held up: XML entity expansion and XXE (expat limits, no external entities), symlinks in folder import (not followed), export path sanitising, `_check_db` on pulled files, DPAPI sealing, Google sign-in (PKCE, state, loopback), single-instance IPC (argv only shows the window), the 0.6.1 pinned `{#http}` transport (decimal/octal/IPv6-mapped/NAT64 forms blocked).
 
-Open (not fixed in 0.6.2): synced `{#var}` values can change the arguments of an "Always allow" phrase that builds a privileged call from variables; Linux single-instance socket squatting by the same user; the update notice opens the API-supplied URL without a host check; with a proxy, `{#http}` relies on the name check only.
+Fixed in 0.6.3:
+- **R10 (Medium):** synced or imported `{#var}` values could change what an "Always allow" phrase runs. The fingerprint now includes the values of the global variables a phrase reads (`{#var}`/`{#get}`; a run-time name counts every variable), so a pull or import that changes one sends the phrase back for approval. `quarantine_writes` also quarantines existing phrases whose fingerprint an import changed. The user's own `{#set -scope global}` changes nothing.
+- **R11 (Low):** the update notice opened the URL from the GitHub API answer without a check. `updates.safe_release_url` accepts only `https://github.com/bahattab/B-PhraseForgeExpress/releases/…` (no credentials, no other port), and the notice falls back to the releases page.
+
+Still open: Linux single-instance socket squatting by the same user; with a proxy, `{#http}` relies on the name check only.
 
 ### 7.6 PE behaviour capture plan (to resolve `needs-PE-capture` and the unknowns)
 

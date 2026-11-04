@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -196,6 +197,22 @@ DEVICE_SETTING_PREFIXES = (
     "filesearch.actions", "filesearch.commands", "filesearch.roots", "sound.",
     *sorted(SECRET_SETTINGS))
 DEVICE_SETTING_SUFFIXES = ("_url", "_endpoint", "_path", "_file", ".file", ".exe", "_dir", "_directory")
+
+
+# {#var name} / {#get name}: a phrase's privileged call can be built from global variables, which
+# sync and import also bring. Their values are part of the phrase's fingerprint, so a pull that
+# changes one sends the phrase back for approval (security.py).
+_VAR_REF = re.compile(r"""\{#(?:var|get)\s+(?:"([^"]*)"|'([^']*)'|([^\s{}]+))""", re.I)
+_DYNAMIC_VAR = re.compile(r"\{#(?:var|get)\s*\{", re.I)
+
+
+def _read_vars(texts: list[str], global_vars: dict[str, str]) -> list:
+    """Sorted (name, value) of the global variables these phrase texts read. A name built at run
+    time ({#var {#...}}) could be any variable, so then all of them count."""
+    if any(_DYNAMIC_VAR.search(t) for t in texts):
+        return sorted(global_vars.items())
+    names = {next(g for g in m.groups() if g is not None) for t in texts for m in _VAR_REF.finditer(t)}
+    return sorted((n, global_vars.get(n, "")) for n in names)
 
 
 def is_device_setting(key: str) -> bool:
@@ -518,13 +535,21 @@ class Store:
     # ------------------------------------------------------------ untrusted phrases (security.py)
     @contextmanager
     def quarantine_writes(self, origin: str = "imported"):
-        """Phrases created or changed on this thread inside the block are quarantined."""
+        """Phrases created or changed on this thread inside the block are quarantined. So is any
+        existing phrase whose fingerprint the block changed without touching the phrase itself
+        (an imported variable it reads, its folder's output target)."""
         stack = self._qlocal.__dict__.setdefault("stack", [])
+        before = self.phrase_fingerprints() if not stack else None
         stack.append(origin)
         try:
             yield
         finally:
             stack.pop()
+            if before is not None:
+                after = self.phrase_fingerprints()
+                changed = [pid for pid, fp in before.items() if after.get(pid, fp) != fp]
+                for pid in changed:
+                    self.quarantine(pid, origin)
 
     def _quarantine_if_untrusted(self, phrase_id: int) -> None:
         """Caller holds the lock (inside the write transaction)."""
@@ -561,6 +586,8 @@ class Store:
         with self.lock:
             rows = self.conn.execute("SELECT id, content, content_format, folder_id, output_target, "
                                      "output_target_arg FROM phrases").fetchall()
+            global_vars = {r[0]: r[1] for r in self.conn.execute(
+                "SELECT name, value FROM vars WHERE scope='global'")}
             folders = {r[0]: (r[1], r[2] or "", r[3] or "") for r in self.conn.execute(
                 "SELECT id, parent_id, output_target, output_target_arg FROM folders")}
             versions: dict[int, list] = {}
@@ -575,8 +602,9 @@ class Store:
                 parent, target, arg = folders[fid]
                 chain.append((target, arg))
                 fid = parent
-            blob = json.dumps([r[1], r[2], versions.get(r[0], []), r[4] or "", r[5] or "", chain],
-                              ensure_ascii=False)
+            texts = [r[1] or ""] + [v[1] or "" for v in versions.get(r[0], [])]
+            blob = json.dumps([r[1], r[2], versions.get(r[0], []), r[4] or "", r[5] or "", chain,
+                               _read_vars(texts, global_vars)], ensure_ascii=False)
             out[r[0]] = hashlib.sha256(blob.encode("utf-8")).hexdigest()
         return out
 
