@@ -2,7 +2,6 @@ import pytest
 
 from phraseforge.db import Store
 from phraseforge.models import Folder, Phrase, Trigger, TriggerKind
-from phraseforge.ocr import Capture2TextOCR
 
 
 @pytest.fixture
@@ -51,9 +50,3 @@ def test_clipboard_history_dedup(store):
     store.add_clipboard("a")
     assert [e.text for e in store.clipboard_entries()] == ["a", "b"]
     assert store.clipboard_at(1) == "b"
-
-
-@pytest.mark.skipif(not Capture2TextOCR().available(), reason="Capture2Text not installed")
-def test_capture2text_languages():
-    langs = Capture2TextOCR().languages()
-    assert "English" in langs

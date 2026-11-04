@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QApplication
 
-from phraseforge.db import Store, hash_password
+from phraseforge.db import Store, hash_password, verify_password
 from phraseforge.host import FormField
 from phraseforge.models import Folder, OutputMode, Phrase, Trigger, TriggerKind
 
@@ -185,7 +185,7 @@ def test_folder_dialog_apply(app):
     d.inc.setText("winword.exe")
     d.pw.setText("secret")
     f = d.apply()
-    assert f.apps_include == "winword.exe" and f.password_hash == hash_password("secret")
+    assert f.apps_include == "winword.exe" and verify_password("secret", f.password_hash)
 
 
 def test_main_dialogs(app, store, tmp_path):
@@ -407,19 +407,123 @@ def test_arabic_translation():
         i18n.set_language("en")
 
 
-def test_tools_tab_runs_app_commands(app, store):
+def test_tools_tab_without_tray_runs_app_commands(app, store):
     from phraseforge.ui.main_window import MainWindow
     sent = []
     w = MainWindow(store, on_command=sent.append)
     assert "tools" in w.ribbon.tabs
-    assert set(w.tool_buttons) == {"onenote_send_clipboard", "onenote_clip", "quick_note",
-                                   "ocr", "open_sticky_notes", "file_search"}
-    for cmd, b in w.tool_buttons.items():
-        assert b.isEnabled()
-        b.click()
-    assert sent == list(w.tool_buttons)
+    w.run_tool("onenote_send_clipboard")
+    w.run_tool("settings")
+    w.run_tool("ocr_file")
+    assert sent == ["onenote_send_clipboard", "open_settings", "ocr_file"]
+    # tray-only items (sub-menus, toggles, Quit) need the tray
+    assert not w.tool_buttons["quit"].isEnabled() and not w.tool_buttons["pause"].isEnabled()
     w.close()
-    # without an app to run them (e.g. opened alone) the buttons are disabled
-    w2 = MainWindow(store)
-    assert not any(b.isEnabled() for b in w2.tool_buttons.values())
+    w2 = MainWindow(store)                       # opened alone: nothing to run commands
+    assert not w2.tool_buttons["onenote_clip"].isEnabled()
+    assert w2.tool_buttons["about"].isEnabled()  # the window's own dialog
     w2.close()
+
+
+def test_flat_list_and_fit_columns_in_both_layouts(app, store):
+    """Flat list used to do nothing in three columns; fit columns did nothing in two."""
+    from phraseforge.models import Folder, Phrase
+    from phraseforge.ui.main_window import MainWindow
+    from phraseforge.ui.tree_panel import ROLE_KIND
+    f = store.add_folder(Folder("Sub"))
+    store.add_phrase(Phrase("Inside a folder with a fairly long description", "x", folder_id=f.id))
+    store.add_phrase(Phrase("At the top", "y"))
+    w = MainWindow(store)
+    w.set_columns(3)
+    w.toggle_flat()
+    lst = w.phrase_list.list
+    rows = [(lst.topLevelItem(i).data(0, ROLE_KIND), lst.topLevelItem(i).text(0))
+            for i in range(lst.topLevelItemCount())]
+    assert all(k == "phrase" for k, _ in rows)
+    assert {"Inside a folder with a fairly long description", "At the top"} <= {t for _, t in rows}
+    lst.setColumnWidth(0, 40)
+    w.btn_fit.click()
+    assert lst.columnWidth(0) > 40
+    w.toggle_flat()
+    assert not w.panel.flat
+    w.set_columns(2)
+    w.tree.setColumnWidth(0, 30)
+    w.btn_fit.click()
+    assert w.tree.columnWidth(0) > 30
+    w.close()
+
+
+def test_back_in_three_columns_user_menu_and_support(app, store):
+    from phraseforge.models import Folder, Phrase
+    from phraseforge.ui.main_window import MainWindow
+    f = store.add_folder(Folder("A"))
+    store.add_phrase(Phrase("P1", "x", folder_id=f.id))
+    q = store.add_phrase(Phrase("P2", "y"))
+    w = MainWindow(store)
+    w._quiet_updates = True
+    w.set_columns(3)
+    w.select_folder(f.id)
+    w.select_phrase(q.id)
+    assert (w.sel_kind, w.sel_id) == ("phrase", q.id)
+    w.act_back.trigger()                 # used to leave the phrase open (tree item unchanged)
+    assert w.sel_kind == "root"
+    w.act_back.trigger()
+    assert (w.sel_kind, w.sel_id) == ("folder", f.id)
+    w.act_forward.trigger()
+    w.act_forward.trigger()
+    assert (w.sel_kind, w.sel_id) == ("phrase", q.id)
+    menu = w.user_button.menu()          # the account button had no action at all
+    texts = [a.text() for a in menu.actions()]
+    assert "Open data folder" in texts and "Get support..." in texts
+    w.get_support()
+    labels = {b.text() for b in w._support_box.buttons()}
+    assert {"User guide", "Open data folder", "Copy diagnostic info", "Report a problem"} <= labels
+    assert "PhraseForge" in w.diagnostic_info()
+    w.close()
+
+
+@pytest.mark.real_layout_default
+def test_three_columns_is_the_default_layout(app, store):
+    from phraseforge.ui.main_window import MainWindow
+    w = MainWindow(store)
+    assert w.three_columns and w.phrase_list.isVisible() is not None
+    assert w.btn_three.isChecked() and not w.btn_two.isChecked()
+    w.set_columns(2)                      # a choice the user makes is kept
+    w.close()
+    w = MainWindow(store)
+    assert not w.three_columns
+    w.close()
+
+
+def test_send_receive_updates_runs_cloud_sync(app, store):
+    """The Send/Receive buttons were disabled ("not available") although cloud sync exists."""
+    from phraseforge.app import PhraseForgeApp
+    from phraseforge.ui.main_window import MainWindow
+    cmds = []
+    w = MainWindow(store, on_command=cmds.append)
+    from PySide6.QtGui import QAction, QKeySequence
+    acts = [a for a in w.findChildren(QAction) if a.shortcut() == QKeySequence("Ctrl+F5")]
+    assert len(acts) == 1 and acts[0].isEnabled()          # one shortcut: no ambiguity
+    acts[0].trigger()
+    w.sync_now()
+    assert cmds == ["sync_now", "sync_now"]
+    w.close()
+
+    class Fake:
+        def __init__(self):
+            self.store, self.notes, self.settings_shown, self.ticks = store, [], 0, []
+            self.tray = type("T", (), {"notify": lambda _s, t, m: self.notes.append(m)})()
+
+        def show_settings(self):
+            self.settings_shown += 1
+
+        def _cloud_tick(self, force_sync=False, manual=False):
+            self.ticks.append((force_sync, manual))
+            return True
+    f = Fake()
+    store.set_setting("sync.provider", "off")
+    PhraseForgeApp.sync_now(f)
+    assert f.settings_shown == 1 and "Backup & Sync" in f.notes[-1] and f.ticks == []
+    store.set_setting("sync.provider", "gdrive")
+    PhraseForgeApp.sync_now(f)
+    assert f.ticks == [(True, True)]

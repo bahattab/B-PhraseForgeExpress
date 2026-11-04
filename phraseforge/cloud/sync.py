@@ -30,17 +30,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from phraseforge.db import Store
+from phraseforge.db import DEVICE_SETTING_PREFIXES, SECRET_SETTINGS, Store, is_device_setting  # noqa: F401
 
 SYNC_NAME = "phraseforge-sync.db"
 BACKUP_PREFIX = "backup-"
 
-# settings that belong to this PC only; kept when pulling, removed when pushing
-LOCAL_SETTING_PREFIXES = ("sync.", "gdrive.", "backup.cloud_", "ocr.cli_path", "app.start_with_windows",
-                          "app.first_run_done", "ui.item_colors",
-                          # API keys: encrypted for this Windows account, never uploaded
-                          "ai.openai_key", "ai.anthropic_key", "ai.openrouter_key",
-                          "ai.deepl_key")
+# settings that belong to this PC only; kept when pulling, removed when pushing (db.py)
+LOCAL_SETTING_PREFIXES = DEVICE_SETTING_PREFIXES
 
 
 @dataclass
@@ -159,7 +155,7 @@ def content_hash(store: Store) -> str:
 
 
 def _is_local_key(key: str) -> bool:
-    return key.startswith(LOCAL_SETTING_PREFIXES)
+    return is_device_setting(key)
 
 
 class CloudSync:
@@ -275,7 +271,9 @@ class CloudSync:
             keep_settings = {k: v for k, v in self.store.conn.execute("SELECT key, value FROM settings")
                              if _is_local_key(k)}
         keep_clip = [(e.text, e.created, e.source_app, int(e.pinned)) for e in self.store.clipboard_entries(10_000)]
-        self.store.restore_from(path)
+        # phrases the pull adds or changes must be approved on this PC before their
+        # privileged macros run (security.py)
+        self.store.restore_from(path, untrusted="synced")
         with self.store.lock, self.store.conn:
             for k, v in keep_settings.items():
                 self.store.conn.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (k, v))

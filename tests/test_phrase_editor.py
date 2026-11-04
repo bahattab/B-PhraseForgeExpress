@@ -188,3 +188,36 @@ def test_view_options_and_status(app, store):
     ed.set_view_options(word_wrap=False, show_special=True, show_macro_params=True, rulers=True)
     assert ed.content_edit.show_macro_params and not ed.ruler.isHidden()
     assert ed.content_edit.content() == "one two {#date}"
+
+
+def test_enhance_prompt_button(app, store):
+    from phraseforge.ui.content_tab import build_content_tab
+    from phraseforge.ui.phrase_editor import PhraseEditor
+    from phraseforge.ui.ribbon import Ribbon
+    p = store.add_phrase(Phrase("Ask", "summarize {#clipboard}"))
+    rb = Ribbon(); rb.add_tab("phrases", "Phrases")
+    ed = PhraseEditor(store)
+    tab = build_content_tab(rb, ed)
+    assert "AI" in tab.groups
+    ed.load(p.id)
+    ctl = tab.controller
+    sent = []
+
+    def fake(t):
+        sent.append(t)
+        return "Summarize {#clipboard} in three bullet points."
+    assert ctl.enhance_prompt(complete_fn=fake, quiet=True)
+    assert sent == ["summarize {#clipboard}"]                # the AI sees the macro itself
+    assert ed.content_edit.content() == "Summarize {#clipboard} in three bullet points."
+    ed.content_edit.undo()                              # one Ctrl+Z restores the original
+    assert ed.content_edit.content() == "summarize {#clipboard}"
+    assert not ctl.enhance_prompt(complete_fn=lambda t: 1 / 0, quiet=True)   # error: text unchanged
+    assert ed.content_edit.content() == "summarize {#clipboard}"
+
+
+def test_preset_dialog_has_enhance_button(app, store):
+    from phraseforge.ui.settings_dialog import SettingsDialog
+    d = SettingsDialog(store)
+    pd = d._preset_dialog("P", "fix grammar", run=False)
+    assert pd.enhance_btn is not None
+    d.close()

@@ -27,7 +27,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from phraseforge.db import Store
+from phraseforge.db import Store, untrusted_import
 from phraseforge.models import Folder, Phrase, Trigger, TriggerKind
 
 ENCRYPTED_SUFFIXES = (".pexdb", ".pexdbhub", ".pxp")
@@ -35,9 +35,12 @@ ENCRYPTED_SUFFIXES = (".pexdb", ".pexdbhub", ".pxp")
 ENCRYPTED_MESSAGE = (
     "This PhraseExpress file is encrypted and can only be opened by PhraseExpress.\n\n"
     "To bring your phrases into PhraseForge:\n"
-    "1. In PhraseExpress select the folder to move (or the top folder).\n"
-    "2. Use Export and choose a spreadsheet / CSV file.\n"
-    "3. In PhraseForge use Import > From PhraseExpress and pick that CSV file."
+    "1. In PhraseExpress select a phrase and use Export > text file "
+    "(PhraseExpress exports one phrase per file).\n"
+    "2. Save the .txt files into one folder (sub-folders become PhraseForge folders).\n"
+    "3. In PhraseForge use Import > From PhraseExpress (.txt files) and select all the files, "
+    "or Import > From PhraseExpress (folder of .txt files) and pick the folder.\n\n"
+    "Each file name becomes the phrase description."
 )
 
 # header name (lower case, no spaces/underscores) -> PhraseForge field
@@ -97,16 +100,22 @@ def check_phraseexpress_file(path: str | Path) -> None:
 
 # ------------------------------------------------------------------ CSV reading
 def _read_text(path: str | Path) -> str:
-    raw = Path(path).read_bytes()
-    for enc in ("utf-8-sig", "utf-16"):
-        try:
-            text = raw.decode(enc)
-            if enc == "utf-16" and not raw.startswith((b"\xff\xfe", b"\xfe\xff")):
-                continue
-            return text
-        except UnicodeDecodeError:
-            continue
-    return raw.decode("cp1252", errors="replace")
+    from phraseforge.io_formats import read_text_any
+    return read_text_any(path)
+
+
+def looks_like_table(text: str) -> bool:
+    """True when a .txt file is a CSV/TSV table (a known header, or every line split into columns);
+    False for a plain phrase text such as PhraseExpress writes one file per phrase."""
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return False
+    first = next(csv.reader([lines[0]], _dialect(text)), [])
+    if map_header(first) is not None:
+        return True
+    if len(lines) < 2:
+        return False
+    return all("\t" in ln for ln in lines) or all(ln.count(";") == lines[0].count(";") > 0 for ln in lines)
 
 
 def _dialect(text: str):
@@ -140,6 +149,7 @@ def read_rows(path: str | Path) -> list[dict[str, str]]:
     return [{f: (row[i] if i < len(row) else "") for i, f in cols.items()} for row in rows]
 
 
+@untrusted_import
 def import_csv(store: Store, path: str | Path, folder_name: str | None = None) -> ExchangeReport:
     """Import a CSV exported from PhraseExpress (or a similar spreadsheet)."""
     from phraseforge.io_formats import ensure_folder_path
@@ -164,6 +174,90 @@ def import_csv(store: Store, path: str | Path, folder_name: str | None = None) -
         fmt = fmt if fmt in ("text", "html", "rtf") else ("html" if re.search(r"</?(p|b|i|br|div|span)\b", content, re.I) else "text")
         store.add_phrase(Phrase(desc, content, folder_id=fid, triggers=triggers, content_format=fmt))
         rep.imported += 1
+    return rep
+
+
+# ------------------------------------------------------------------ XML reading
+# PhraseExpress' "Export > XML" writes folders and phrases either with attributes or with
+# child elements; this reads both. Tag and field names are matched loosely (HEADER_ALIASES).
+MAX_XML_DEPTH = 200          # a crafted file nested deeper would exhaust Python's recursion
+_PHRASE_TAGS = {"phrase", "autotext", "item", "entry"}
+_FOLDER_TAGS = {"folder", "group", "category", "phrasefolder"}
+
+
+def _field_from(el, field: str) -> str:
+    """Value of a field for a PhraseExpress element: matching attribute or child element."""
+    for k, v in el.attrib.items():
+        key = re.sub(r"[\s_\-]+", "", k.strip().lower())
+        if HEADER_ALIASES.get(key) == field and (v or "").strip():
+            return v
+    for child in el:
+        tag = re.sub(r"\{[^}]*\}", "", child.tag)       # strip XML namespace
+        key = re.sub(r"[\s_\-]+", "", tag.strip().lower())
+        if HEADER_ALIASES.get(key) == field and (child.text or "").strip():
+            return child.text
+    return ""
+
+
+def _is_phrase_el(el) -> bool:
+    tag = re.sub(r"\{[^}]*\}", "", el.tag).strip().lower()
+    if tag in _PHRASE_TAGS:
+        return True
+    # a <folder>-like element that carries content directly is also a phrase
+    return bool(_field_from(el, "content")) and not any(
+        re.sub(r"\{[^}]*\}", "", c.tag).strip().lower() in _PHRASE_TAGS | _FOLDER_TAGS for c in el)
+
+
+@untrusted_import
+def import_xml(store: Store, path: str | Path, folder_name: str | None = None) -> ExchangeReport:
+    """Import a PhraseExpress XML export (folders, descriptions, content, autotext, hotkey)."""
+    import xml.etree.ElementTree as ET
+    p = Path(path)
+    rep = ExchangeReport()
+    try:
+        root = ET.fromstring(_read_text(p))
+    except ET.ParseError as e:
+        raise ValueError(f"This XML file could not be read: {e}") from e
+    top = store.add_folder(Folder(folder_name or p.stem))
+    rep.folder_id = top.id
+
+    def phrase_el(el, fid) -> None:
+        content = _field_from(el, "content") or (el.text or "")
+        autotext = _field_from(el, "autotext")
+        if not content.strip() and not autotext.strip():
+            rep.skipped += 1
+            return
+        desc = _field_from(el, "description").strip() or (content.strip().splitlines() or ["Phrase"])[0][:60]
+        triggers = []
+        for at in filter(None, (x.strip() for x in re.split(r"[|;]", autotext))):
+            triggers.append(Trigger(TriggerKind.AUTOTEXT, at))
+        hk = _field_from(el, "hotkey").strip()
+        if hk:
+            triggers.append(Trigger(TriggerKind.HOTKEY, hk))
+        fmt = "html" if re.search(r"(?i)</?(p|b|i|br|div|span)\b", content) else "text"
+        store.add_phrase(Phrase(desc, content, folder_id=fid, triggers=triggers, content_format=fmt))
+        rep.imported += 1
+
+    def walk(el, fid, depth=0) -> None:
+        if depth > MAX_XML_DEPTH:
+            raise ValueError(f"The XML file is nested more than {MAX_XML_DEPTH} levels deep.")
+        for child in el:
+            tag = re.sub(r"\{[^}]*\}", "", child.tag).strip().lower()
+            if tag in _FOLDER_TAGS and not _is_phrase_el(child):
+                name = _field_from(child, "description").strip() or child.get("name", "").strip() or "Folder"
+                sub = store.add_folder(Folder(name, parent_id=fid))
+                walk(child, sub.id, depth + 1)
+            elif _is_phrase_el(child):
+                phrase_el(child, fid)
+            else:
+                walk(child, fid, depth + 1)      # unknown wrapper: descend
+
+    if _is_phrase_el(root):
+        phrase_el(root, top.id)
+    else:
+        walk(root, top.id)
+    if not rep.imported and not rep.skipped:
+        rep.notes.append("No phrases were found in this XML file.")
     return rep
 
 
@@ -302,12 +396,58 @@ def export_any(store: Store, path: str | Path, kind: str, folder_id: int | None 
     return fn(store, path, folder_id, language)
 
 
+PE_FOLDER = "From PhraseExpress"
+
+
+def _import_folder(store: Store) -> int:
+    for f in store.folders(None):
+        if f.name == PE_FOLDER:
+            return f.id
+    return store.add_folder(Folder(PE_FOLDER)).id
+
+
+@untrusted_import
+def import_text_files(store: Store, paths, folder_id: int | None = None) -> ExchangeReport:
+    """PhraseExpress text export: each .txt file is one phrase named after the file."""
+    from phraseforge.io_formats import read_text_any
+    rep = ExchangeReport()
+    rep.folder_id = folder_id if folder_id is not None else _import_folder(store)
+    for f in paths:
+        text = read_text_any(f)
+        if not text.strip():
+            rep.skipped += 1
+            continue
+        fmt = "html" if re.search(r"</?(p|b|i|br|div|span)\b", text, re.I) else "text"
+        store.add_phrase(Phrase(Path(f).stem, text, folder_id=rep.folder_id, content_format=fmt))
+        rep.imported += 1
+    return rep
+
+
+@untrusted_import
+def import_directory(store: Store, directory: str | Path) -> ExchangeReport:
+    """PhraseExpress "Export > Files including directory structure": sub-folders become folders,
+    each .txt file a phrase. The tree is put in a folder named after the directory."""
+    from phraseforge.io_formats import import_text_folder
+    root = Path(directory)
+    rep = ExchangeReport()
+    rep.folder_id = store.add_folder(Folder(root.name or PE_FOLDER)).id
+    rep.imported = import_text_folder(store, root, rep.folder_id)
+    return rep
+
+
+@untrusted_import
 def import_any(store: Store, path: str | Path) -> ExchangeReport:
     """PhraseExpress CSV/TXT import; encrypted PhraseExpress databases raise EncryptedPhraseFile."""
     p = Path(path)
     check_phraseexpress_file(p)
+    if p.is_dir():
+        return import_directory(store, p)
+    if p.suffix.lower() == ".txt" and not looks_like_table(_read_text(p)):
+        return import_text_files(store, [p])
     if p.suffix.lower() in (".csv", ".txt", ".tsv"):
         return import_csv(store, p)
+    if p.suffix.lower() == ".xml":
+        return import_xml(store, p)
     if looks_encrypted(p):
         raise EncryptedPhraseFile(ENCRYPTED_MESSAGE)
     raise ValueError(f"Unsupported PhraseExpress file: {p.name}. Export a CSV file from PhraseExpress.")

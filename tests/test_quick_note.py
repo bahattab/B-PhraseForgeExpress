@@ -37,3 +37,19 @@ def test_wiring():
     from phraseforge.ui.tray import Tray
     assert COMMAND_HOTKEY_SETTINGS["onenote.quick_note_hotkey"] == "quick_note"
     assert "onenote.quick_note_hotkey" in SCHEMA and hasattr(Tray, "quick_note")
+
+
+@pytest.mark.parametrize("lang", ["en", "ar"])
+def test_button_labels_are_not_clipped(app, lang):
+    from phraseforge.ui import i18n
+    from phraseforge.ui.quick_note import QuickNoteWindow
+    i18n.set_language(lang)
+    try:
+        w = QuickNoteWindow()
+        w.show_note()
+        app.processEvents()
+        for b in (w.phrase_button, w.onenote_button):
+            assert b.width() >= b.fontMetrics().horizontalAdvance(b.text()) + 16, (lang, b.text(), b.width())
+        assert w.hint.wordWrap()
+    finally:
+        i18n.set_language("en")

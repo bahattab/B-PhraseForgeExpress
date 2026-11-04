@@ -8,6 +8,8 @@
 """
 from __future__ import annotations
 
+import logging
+
 import getpass
 import json
 import os
@@ -15,11 +17,11 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QActionGroup, QColor, QDesktopServices, QFont, QKeySequence, QPainter, QPixmap, QShortcut
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QActionGroup, QColor, QCursor, QDesktopServices, QFont, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow,
-    QMenu, QMessageBox, QPlainTextEdit, QSplitter, QStackedWidget, QStatusBar, QToolBar, QToolButton,
+    QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSplitter, QStackedWidget, QStatusBar, QToolBar, QToolButton,
     QVBoxLayout, QWidget,
 )
 
@@ -42,6 +44,14 @@ __all__ = ["MainWindow", "FolderDialog", "preview_text", "PreviewHost", "macro_c
 
 
 # ======================================================================= preview host
+
+# Layout when the user has not chosen one: three columns (folders | phrases | editor).
+DEFAULT_LAYOUT = "three"
+# Context menu > Translate
+TRANSLATE_LANGUAGES = ("Arabic", "English", "French", "German", "Spanish", "Turkish", "Urdu", "Persian",
+                       "Hindi", "Indonesian", "Malay", "Russian", "Chinese", "Japanese", "Korean",
+                       "Italian", "Portuguese")
+
 class PreviewHost:
     """HostServices stand-in for previews: never blocks, returns placeholders."""
 
@@ -247,7 +257,7 @@ class ClipEntryView(QWidget):
 
 
 class StickyNoteView(QWidget):
-    """Read-only view of one Microsoft Sticky Notes note (or, for the folder node, a summary)."""
+    """One PhraseForge sticky note in the main window (or, for the folder node, a summary)."""
 
     def __init__(self, store: Store, window: "MainWindow", parent=None):
         super().__init__(parent)
@@ -261,50 +271,121 @@ class StickyNoteView(QWidget):
         self.info = QLabel()
         self.info.setStyleSheet("color:#666666")
         lay.addWidget(self.info)
-        self.text = QPlainTextEdit()
-        self.text.setReadOnly(True)
+        self.text = QPlainTextEdit()          # editable: changes are saved after a short pause
+        self.text.setPlaceholderText("Type your note…")
+        self._loading = False
+        self._save_timer = QTimer(self, singleShot=True, interval=700)
+        self._save_timer.timeout.connect(self.save)
+        self.text.textChanged.connect(self._edited)
         lay.addWidget(self.text, 1)
         row = QHBoxLayout()
+        self.delete_btn = QPushButton(icon("delete"), "Delete")
+        self.delete_btn.clicked.connect(self.delete_note)
+        self.open_note_btn = QPushButton(icon("sticky_notes"), "Open note")
+        self.open_note_btn.clicked.connect(self.open_note)
         self.copy_btn = QPushButton(icon("copy"), "Copy")
         self.copy_btn.clicked.connect(self.copy)
         self.create_btn = QPushButton(icon("new_phrase"), "Create phrase from this note")
         self.create_btn.clicked.connect(self.create_phrase)
+        self.new_btn = QPushButton(icon("sticky_notes"), "New sticky note")
+        self.new_btn.clicked.connect(lambda: self._command("new_sticky_note"))
         self.open_btn = QPushButton(icon("sticky_notes"), "Open Sticky Notes")
-        self.open_btn.clicked.connect(open_sticky_notes)
-        for b in (self.copy_btn, self.create_btn, self.open_btn):
+        self.open_btn.clicked.connect(lambda: self._command("open_sticky_notes"))
+        for b in (self.open_note_btn, self.copy_btn, self.create_btn, self.delete_btn):
             row.addWidget(b)
         row.addStretch(1)
         lay.addLayout(row)
+        row2 = QHBoxLayout()            # second row, so the pane can stay narrow without cutting labels
+        for b in (self.new_btn, self.open_btn):
+            row2.addWidget(b)
+        row2.addStretch(1)
+        lay.addLayout(row2)
+
+    def _command(self, cmd: str) -> None:
+        if getattr(self.window, "on_command", None) is not None:
+            self.window.on_command(cmd)
+
+    # ---- editing in the main window
+    def _edited(self) -> None:
+        if not self._loading and self.note is not None:
+            self._save_timer.start()
+
+    def is_dirty(self) -> bool:
+        return self._save_timer.isActive()
+
+    def save(self) -> bool:
+        """Store the edited text. The rich-text copy is cleared so the desktop note shows
+        the same text (formatting made on the desktop note is replaced by plain text)."""
+        self._save_timer.stop()
+        if self.note is None:
+            return False
+        text = self.text.toPlainText()
+        if text == self.note.text:
+            return False
+        self.store.update_sticky_note(self.note.id, text=text, html="")
+        self.note = self.store.sticky_note(self.note.id) or self.note
+        self.caption.setText(self.note.title)
+        return True
+
+    def delete_note(self) -> bool:
+        if self.note is None:
+            return False
+        if not getattr(self.window, "_quiet_updates", False):
+            ok = QMessageBox.question(self, "Delete note", f'Delete the sticky note "{self.note.title}"?',
+                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if ok != QMessageBox.Yes:
+                return False
+        self._save_timer.stop()
+        nid, self.note = self.note.id, None
+        if getattr(self.window, "on_command", None) is not None:
+            self.window.on_command(f"delete_sticky_note:{nid}")   # also closes its desktop window
+        else:
+            self.store.delete_sticky_note(nid)
+        self.window.panel.notes_by_id.pop(nid, None)
+        self.window.refresh_tree()
+        self.load(None)
+        return True
 
     def load(self, note_id=None) -> None:
         """note_id: a note id from the tree, or None for the "Sticky Notes" folder node."""
         from phraseforge.ui import tree_panel as tp
+        if self._save_timer.isActive():
+            self.save()                    # keep what was typed before switching notes
+        self._loading = True
+        try:
+            self._load(note_id, tp)
+        finally:
+            self._loading = False
+
+    def _load(self, note_id, tp) -> None:
         if note_id is None:
-            notes = tp.sticky_notes()
+            notes = tp.sticky_notes(self.store)
             self.note = None
             self.caption.setText("Sticky Notes")
-            self.info.setText(f"{len(notes)} note(s) in Microsoft Sticky Notes (read-only). "
-                              "Choose a note to view it, or import them with Import > From Sticky Notes.")
+            self.info.setText(f"{len(notes)} note(s). Choose a note to view it, or open the notes "
+                              "to write and edit them on your desktop.")
             self.text.setPlainText("")
             self.text.setVisible(False)
-            self.copy_btn.setVisible(False)
-            self.create_btn.setVisible(False)
+            for b in (self.open_note_btn, self.copy_btn, self.create_btn, self.delete_btn):
+                b.setVisible(False)
             return
-        n = self.window.panel.notes_by_id.get(note_id) or next(
-            (x for x in tp.sticky_notes() if x.id == note_id), None)
+        n = self.window.panel.notes_by_id.get(note_id) or self.store.sticky_note(note_id)
         self.note = n
         self.caption.setText(n.title if n else "Sticky note")
         when = n.updated.strftime("%Y-%m-%d %H:%M") if n and n.updated else ""
-        self.info.setText(f"Updated {when} (UTC) - read-only, from Microsoft Sticky Notes" if when
-                          else "Read-only, from Microsoft Sticky Notes")
+        self.info.setText(f"Updated {when}" if when else "")
         self.text.setPlainText(n.text if n else "")
         self.text.setVisible(True)
-        self.copy_btn.setVisible(True)
-        self.create_btn.setVisible(True)
+        for b in (self.open_note_btn, self.copy_btn, self.create_btn, self.delete_btn):
+            b.setVisible(True)
+
+    def open_note(self) -> None:
+        if self.note is not None:
+            self._command(f"open_sticky_notes:{self.note.id}")
 
     def copy(self) -> None:
         if self.note is not None:
-            QApplication.clipboard().setText(self.note.text)
+            QApplication.clipboard().setText(self.text.toPlainText())
 
     def create_phrase(self):
         """New phrase (root folder) with description = note title and content = note text."""
@@ -314,14 +395,6 @@ class StickyNoteView(QWidget):
         self.window.refresh_tree()
         self.window.select_phrase(p.id)
         return p
-
-
-def open_sticky_notes() -> None:
-    try:
-        from phraseforge import stickynotes
-        stickynotes.open_app()
-    except Exception as e:  # Sticky Notes missing / shell error
-        QMessageBox.warning(None, "Sticky Notes", str(e))
 
 
 def initials_avatar(name: str) -> QPixmap:
@@ -344,13 +417,15 @@ def initials_avatar(name: str) -> QPixmap:
 
 # ======================================================================= main window
 class MainWindow(QMainWindow):
+    usage_changed = Signal()          # a phrase was used (any thread) -> refresh Last Used
     SEARCH_SCOPES = (("all", "Search everywhere"), ("description", "Search in Description"),
                      ("content", "Search in Phrase content"), ("autotext", "Search in Autotext"))
 
     def __init__(self, store: Store, on_test_phrase: Callable[[int], None] | None = None,
-                 on_command: Callable[[str], None] | None = None):
+                 on_command: Callable[[str], None] | None = None, tray=None):
         super().__init__()
         self.store = store
+        self.tray = tray                    # the tray icon: the Tools tab runs its menu items
         self.on_test_phrase = on_test_phrase
         self.on_command = on_command        # app-level commands (OneNote, OCR, Search files)
         from phraseforge import __version__
@@ -373,7 +448,7 @@ class MainWindow(QMainWindow):
         self._nav: list[tuple[str, Any]] = []
         self._nav_pos = -1
         self._navigating = False
-        self.three_columns = self.store.setting("view.layout", "two") == "three"
+        self.three_columns = self.store.setting("view.layout", DEFAULT_LAYOUT) == "three"
 
         central = QWidget()
         cl = QVBoxLayout(central)
@@ -421,17 +496,20 @@ class MainWindow(QMainWindow):
         self._build_shortcuts()
 
         self.panel.selected.connect(self._on_selected)
-        self.panel.tree.dropped.connect(self.move_item)
+        self.panel.tree.dropped.connect(self.drop_item)
+        self.phrase_list.dropped.connect(self.drop_item)
         self.panel.tree.customContextMenuRequested.connect(self._tree_menu)
         self.panel.tree.itemChanged.connect(self._item_renamed)
         self.phrase_list.selected.connect(self._on_list_selected)
         self.phrase_list.open_folder.connect(self._open_folder_from_list)
+        self.phrase_list.open_note.connect(self._open_sticky_note)
         self.phrase_list.list.customContextMenuRequested.connect(self._list_menu)
 
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setSingleShot(True)
         self._refresh_timer.setInterval(150)
         self._refresh_timer.timeout.connect(self.refresh_tree)
+        self.usage_changed.connect(self._on_usage_changed)     # queued to the UI thread
         self._last_tree_settings = self._tree_settings()
         self.store.on_change(self._on_store_change)
 
@@ -446,19 +524,155 @@ class MainWindow(QMainWindow):
         return self.panel.unlocked
 
     def _build_quick_toolbar(self) -> QToolBar:
+        """The small bar under the ribbon. Its buttons are chosen by the user (quick_toolbar.py)."""
         tb = QToolBar()
         tb.setObjectName("QuickToolbar")
         tb.setIconSize(QSize(16, 16))
         tb.setMovable(False)
-        self.act_back = tb.addAction(icon("back"), "Back", self.nav_back)
-        self.act_forward = tb.addAction(icon("forward"), "Forward", self.nav_forward)
-        a = tb.addAction(icon("sync"), "Send/Receive updates (not available)")
-        a.setEnabled(False)
-        tb.addAction(icon("new_folder"), "New Folder (Ctrl+O)", lambda: self.new_folder())
-        tb.addAction(icon("new_phrase"), "New Phrase (Ctrl+N)", lambda: self.new_phrase())
-        tb.addAction(icon("column_toggle"), "Toggle two/three columns",
-                     lambda: self.set_columns(2 if self.three_columns else 3))
+        tb.setContextMenuPolicy(Qt.CustomContextMenu)
+        tb.customContextMenuRequested.connect(self._quickbar_context_menu)
+        self.quickbar = tb
+        self._quick_actions: dict = {}
+        # Back/Forward exist even when hidden: navigation enables and disables them.
+        self.act_back = self._quick_action("back")
+        self.act_forward = self._quick_action("forward")
+        self.quick_menu_btn = QToolButton(tb)
+        self.quick_menu_btn.setText("▾")
+        self.quick_menu_btn.setToolTip("Customize the toolbar")
+        self.quick_menu_btn.setPopupMode(QToolButton.InstantPopup)
+        self.quick_menu = QMenu(self.quick_menu_btn)
+        self.quick_menu.aboutToShow.connect(self._fill_quick_menu)
+        self.quick_menu_btn.setMenu(self.quick_menu)
+        self.rebuild_quickbar()
         return tb
+
+    # ---- quick toolbar: catalog, actions and customization
+    def quick_catalog(self) -> list[tuple[str, str, str]]:
+        """Every command the toolbar can show: the window's own, then the Tools tab's items."""
+        from phraseforge.ui import quick_toolbar as qt_
+        out = list(qt_.BUILTIN)
+        for _group, columns in self.TOOLS_TAB:
+            for column in columns:
+                out.extend(column)
+        return out
+
+    def _quick_action(self, key: str) -> QAction:
+        act = self._quick_actions.get(key)
+        if act is not None:
+            return act
+        entry = next((e for e in self.quick_catalog() if e[0] == key), None)
+        label, icon_name = (entry[1], entry[2]) if entry else (key, "")
+        act = QAction(icon(icon_name), tr(label), self)
+        act.setToolTip(tr(label))
+        handlers = {"back": self.nav_back, "forward": self.nav_forward, "sync": self.sync_now,
+                    "new_folder": lambda: self.new_folder(), "new_phrase": lambda: self.new_phrase(),
+                    "columns": lambda: self.set_columns(2 if self.three_columns else 3)}
+        if key in handlers:
+            act.triggered.connect(lambda _=False, f=handlers[key]: f())
+        else:
+            tray_act = getattr(self.tray, "items", {}).get(key) if self.tray is not None else None
+            if key in self.TOOL_MENUS:
+                menu = tray_act.menu() if tray_act is not None else None
+                if menu is not None:
+                    act.setMenu(menu)
+                    act.triggered.connect(lambda _=False, m=menu: m.exec(QCursor.pos()))
+                act.setEnabled(menu is not None)
+            else:
+                if key in self.TOOL_TOGGLES:
+                    act.setCheckable(True)
+                    if tray_act is not None:
+                        act.setChecked(tray_act.isChecked())
+                        tray_act.toggled.connect(act.setChecked)
+                act.triggered.connect(lambda _=False, k=key: self.run_tool(k))
+                act.setEnabled(self._tool_available(key))
+        self._quick_actions[key] = act
+        return act
+
+    def quick_keys(self) -> list[str]:
+        from phraseforge.ui import quick_toolbar as qt_
+        return qt_.load(self.store, {k for k, _, _ in self.quick_catalog()})
+
+    def set_quick_keys(self, keys: list[str]) -> None:
+        from phraseforge.ui import quick_toolbar as qt_
+        qt_.save(self.store, keys)
+        self.rebuild_quickbar()
+
+    def rebuild_quickbar(self) -> None:
+        tb = self.quickbar
+        tb.clear()                      # removes the actions from the bar; they stay alive
+        for key in self.quick_keys():
+            tb.addAction(self._quick_action(key))
+        tb.addWidget(self.quick_menu_btn)
+
+    def _fill_quick_menu(self) -> None:
+        """▾ menu: tick a command to show it, untick to hide it."""
+        m = self.quick_menu
+        m.clear()
+        shown = self.quick_keys()
+        for key, label, icon_name in self.quick_catalog():
+            a = m.addAction(icon(icon_name), tr(label))
+            a.setCheckable(True)
+            a.setChecked(key in shown)
+            a.toggled.connect(lambda on, k=key: self.show_on_quickbar(k, on))
+        m.addSeparator()
+        m.addAction(tr("Customize toolbar..."), self.customize_quickbar)
+        m.addAction(tr("Reset toolbar"), self.reset_quickbar)
+
+    def show_on_quickbar(self, key: str, on: bool = True) -> None:
+        keys = self.quick_keys()
+        if on and key not in keys:
+            keys.append(key)
+        elif not on and key in keys:
+            keys.remove(key)
+        self.set_quick_keys(keys)
+
+    def move_on_quickbar(self, key: str, direction: str) -> None:
+        """direction "left" / "right" as seen on screen (also in right-to-left layouts)."""
+        from phraseforge.ui import quick_toolbar as qt_
+        step = qt_.visual_step(direction, self.layoutDirection() == Qt.RightToLeft)
+        self.set_quick_keys(qt_.moved(self.quick_keys(), key, step))
+
+    def reset_quickbar(self) -> None:
+        from phraseforge.ui import quick_toolbar as qt_
+        self.set_quick_keys(list(qt_.DEFAULT))
+
+    def customize_quickbar(self) -> None:
+        from phraseforge.ui.quick_toolbar import QuickToolbarDialog
+        d = QuickToolbarDialog(self.quick_catalog(), self.quick_keys(), self,
+                               rtl=self.layoutDirection() == Qt.RightToLeft)
+        if d.exec() == QDialog.Accepted:
+            self.set_quick_keys(d.keys())
+
+    def _quick_key_of(self, action) -> str | None:
+        return next((k for k, a in self._quick_actions.items() if a is action), None)
+
+    def _quickbar_context_menu(self, pos) -> None:
+        key = self._quick_key_of(self.quickbar.actionAt(pos))
+        m = QMenu(self)
+        if key is not None:
+            keys = self.quick_keys()
+            i = keys.index(key) if key in keys else -1
+            rtl = self.layoutDirection() == Qt.RightToLeft
+            first, last = i == 0, i == len(keys) - 1
+            a = m.addAction(tr("Move left"), lambda: self.move_on_quickbar(key, "left"))
+            a.setEnabled(not (last if rtl else first))
+            a = m.addAction(tr("Move right"), lambda: self.move_on_quickbar(key, "right"))
+            a.setEnabled(not (first if rtl else last))
+            m.addAction(tr("Remove from toolbar"), lambda: self.show_on_quickbar(key, False))
+            m.addSeparator()
+        m.addAction(tr("Customize toolbar..."), self.customize_quickbar)
+        m.addAction(tr("Reset toolbar"), self.reset_quickbar)
+        m.exec(self.quickbar.mapToGlobal(pos))
+
+    def _tool_button_context_menu(self, key: str, button, pos) -> None:
+        """Right-click on a Tools tab button: add it to (or remove it from) the toolbar."""
+        m = QMenu(self)
+        if key in self.quick_keys():
+            m.addAction(tr("Remove from toolbar"), lambda: self.show_on_quickbar(key, False))
+        else:
+            m.addAction(tr("Add to toolbar"), lambda: self.show_on_quickbar(key, True))
+        m.addAction(tr("Customize toolbar..."), self.customize_quickbar)
+        m.exec(button.mapToGlobal(pos))
 
     def _build_search(self) -> None:
         self.search = QLineEdit()
@@ -520,6 +734,17 @@ class MainWindow(QMainWindow):
         b.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         b.setAutoRaise(True)
         b.setToolTip("Signed in as Windows user " + user)
+        b.setPopupMode(QToolButton.InstantPopup)
+        m = QMenu(b)
+        head = m.addAction(initials_avatar(user), tr("Windows user:") + " " + user)
+        head.setEnabled(False)
+        m.addSeparator()
+        m.addAction(icon("settings"), "Settings...", self.show_settings)
+        m.addAction(icon("open"), "Open data folder", self.open_data_folder)
+        m.addSeparator()
+        m.addAction(icon("help"), "User guide", self.open_help)
+        m.addAction(icon("support"), "Get support...", self.get_support)
+        b.setMenu(m)
         self.user_button = b
         self.ribbon.set_right_widget(b)
 
@@ -531,7 +756,7 @@ class MainWindow(QMainWindow):
         m.add("Save As...", "save_as", self.save_as)
         m.addSeparator()
         m.add("Restore from backup", "restore", self.restore_backup)
-        m.add("Send/Receive updates", "sync", None, "Ctrl+F5", enabled=False)
+        m.add("Send/Receive updates", "sync", self.sync_now, "Ctrl+F5")
         m.add("User Manager", "users", None, enabled=False)
         m.add("Settings", "settings", self.show_settings)
         mig = big_submenu(m, [("Save settings and phrases into migration file", "save_as", self.migration_save, True),
@@ -554,9 +779,21 @@ class MainWindow(QMainWindow):
         self.btn_new_folder.setToolTip("New Folder (Ctrl+O)")
         self.btn_new_phrase.setToolTip("New Phrase (Ctrl+N)")
         g = t.add_group("Sync")
-        b = g.add_large("Send/Receive\nupdates", "sync", None, menu=menu_with(self, [("Not available", "", None)]))
-        b.setEnabled(False)
-        b.setToolTip("Synchronization is not available in PhraseForge")
+        b = g.add_large("Send/Receive\nupdates", "sync", self.sync_now)
+        b.setToolTip("Synchronize your phrases with the cloud now (Ctrl+F5). "
+                     "Set up the cloud service in Settings > Backup & Sync.")
+        c = g.add_column()
+        self.btn_auto_sync = c.add_small("Auto sync", "sync")
+        self.btn_auto_sync.setCheckable(True)
+        self.btn_auto_sync.setToolTip("Synchronize automatically: at start, about a minute after you change "
+                                      "phrases, every few minutes and on exit, so you never have to "
+                                      "click Send/Receive.")
+        self.btn_auto_sync.toggled.connect(self._set_auto_sync)
+        self.sync_interval_menu = QMenu(self)
+        self.sync_interval_menu.aboutToShow.connect(self._fill_sync_interval_menu)
+        self.btn_sync_interval = c.add_small("Every 7 min", "", menu=self.sync_interval_menu, split=False)
+        self.btn_sync_interval.setToolTip("How often Auto sync runs")
+        self.refresh_auto_sync()
         g = t.add_group("Edit")
         self.color_menu = color_menu(self, self.set_color)
         self.btn_color = g.add_large("Color", "color", menu=self.color_menu, split=False)
@@ -586,14 +823,19 @@ class MainWindow(QMainWindow):
         imp = menu_with(self, [("File import (JSON, CSV, TXT)...", "import", self.import_file),
                                ("Files including directory structure...", "folder_tree", self.import_folder),
                                None,
-                               ("From PhraseExpress (CSV export)...", "import", self.import_phraseexpress),
+                               ("From PhraseExpress (.txt files)...", "import", self.import_phraseexpress),
+                               ("From PhraseExpress (folder of .txt files)...", "folder_tree",
+                                self.import_phraseexpress_folder),
                                ("TextExpander / macOS (.csv / .textexpander / .plist)...", "textexpander", self.import_textexpander),
-                               ("From OneNote...", "on_notebook", self.import_onenote)])
+                               None,
+                               ("From OneNote (running)...", "on_notebook", self.import_onenote),
+                               ("From a OneNote file (.one)...", "on_notebook", self.import_onenote_file)])
         exp = menu_with(self, [("Export to file (JSON, CSV)...", "export", self.export_file),
                                ("Text files (one file per phrase)...", "text_file", self.export_text_folder),
+                               ("Document (.docx, .pdf, .html, .mht)...", "export", self.export_document),
                                None,
-                               ("Word document (.docx)...", "export", lambda: self.export_document("docx")),
-                               ("PDF document (.pdf)...", "print", lambda: self.export_document("pdf")),
+                               ("To a OneNote section (.one)...", "on_notebook", self.export_onenote_section),
+                               ("OneNote to a file (.docx/.pdf/.xps/.mht)...", "on_notebook", self.export_onenote_file),
                                None,
                                ("For PhraseExpress (CSV)...", "export", lambda: self.export_for("phraseexpress")),
                                ("For TextExpander (CSV)...", "textexpander", lambda: self.export_for("textexpander")),
@@ -608,7 +850,7 @@ class MainWindow(QMainWindow):
         self.btn_two = g.add_large("Two\ncolumns", "two_columns", lambda: self.set_columns(2))
         self.btn_three = g.add_large("Three\ncolumns", "three_columns", lambda: self.set_columns(3))
         self.btn_flat = g.add_large("Flat\nlist", "flat_list", self.toggle_flat)
-        self.btn_fit = g.add_large("Resize column\nto fit contents", "fit_columns", self.phrase_list.fit_columns)
+        self.btn_fit = g.add_large("Resize column\nto fit contents", "fit_columns", self.fit_columns)
         for b in (self.btn_two, self.btn_three, self.btn_flat):
             b.setCheckable(True)
         self.btn_two.setToolTip("Two columns (Ctrl+2)")
@@ -635,30 +877,125 @@ class MainWindow(QMainWindow):
         g.add_widget(box)
         g.caption.setText("")
 
-    # (label, icon, command) per group. Grouped like OneNote's Insert tab and the
-    # ONENOTEM / onenotecapture tray tools; layout not yet checked against screenshots.
+    # The Tools tab holds the tray menu's items, grouped like the tray's sections:
+    # (group, columns of (key, label, icon)). A key is a Tray.items key; COMMANDS
+    # says how to run it when the window has no tray (opened alone, tests).
     TOOLS_TAB = (
-        ("OneNote", (("Send clipboard\nto OneNote", "on_send", "onenote_send_clipboard"),
-                     ("Screen\nclipping", "on_clip", "onenote_clip"),
-                     ("New quick\nnote", "sticky_notes", "quick_note"))),
-        ("Capture", (("Screen\nOCR", "m_ocr", "ocr"),
-                     ("Sticky\nNotes", "sticky_notes", "open_sticky_notes"))),
-        ("Find", (("Search\nfiles", "file_search", "file_search"),)),
+        ("PhraseForge", ((("open_main", "Open PhraseForge", "phrase"),
+                          ("new_phrase_from_clipboard", "New phrase from clipboard", "new_phrase"),
+                          ("edit_last_phrase", "Edit last used phrase", "pencil")),)),
+        ("Tools", ((("popup", "Phrase menu", "search"),
+                    ("clipboard_history", "Clipboard history", "clipboard_cache"),
+                    ("ocr", "OCR to clipboard", "m_ocr")),
+                   (("ocr_language", "OCR language", "languages"),
+                    ("file_search", "Search files", "file_search"),
+                    ("prompt_tower", "Prompt Tower", "m_ai")),
+                   (("prompt_optimizer", "Prompt Optimizer", "m_ai"),
+                    ("ocr_file", "OCR PDF / image", "m_ocr")))),
+        ("OneNote and notes", ((("onenote_send_clipboard", "Send clipboard to OneNote", "on_send"),
+                                ("onenote_clip", "Screen clip to OneNote", "on_clip"),
+                                ("quick_note", "New quick note", "sticky_notes")),
+                               (("new_sticky_note", "New sticky note", "sticky_notes"),
+                                ("open_sticky_notes", "Sticky notes", "sticky_notes")))),
+        ("Program", ((("statistics", "Statistics", "statistics"),
+                      ("settings", "Settings", "settings"),
+                      ("about", "About PhraseForge", "about")),)),
+        ("Options", ((("language", "Language selection", "languages"),
+                      ("app_enabled", "Enabled in program", "app_toggle"),
+                      ("pause", "Pause", "pause")),
+                     (("quit", "Quit", "exit"),))),
     )
+    # app command for each key (used without a tray); "" = handled by the window itself
+    TOOL_COMMANDS = {
+        "open_main": "open_main", "new_phrase_from_clipboard": "new_phrase_from_clipboard",
+        "edit_last_phrase": "edit_last_phrase", "popup": "popup", "clipboard_history": "clipboard_history",
+        "ocr": "ocr", "file_search": "file_search", "prompt_tower": "prompt_tower",
+        "prompt_optimizer": "prompt_optimizer", "ocr_file": "ocr_file",
+        "onenote_send_clipboard": "onenote_send_clipboard", "onenote_clip": "onenote_clip",
+        "quick_note": "quick_note", "new_sticky_note": "new_sticky_note", "open_sticky_notes": "open_sticky_notes",
+        "settings": "open_settings", "statistics": "", "about": "",
+    }
+    TOOL_MENUS = ("ocr_language", "language")          # open the tray's sub-menu
+    TOOL_TOGGLES = ("app_enabled", "pause")            # checkable, mirror the tray item
 
     def _build_tools_tab(self) -> None:
         t = self.ribbon.add_tab("tools", "Tools")
         self.tool_buttons: dict[str, QToolButton] = {}
-        for group, items in self.TOOLS_TAB:
+        tray_items = getattr(self.tray, "items", {}) if self.tray is not None else {}
+        for group, columns in self.TOOLS_TAB:
             g = t.add_group(group)
-            for label, icon_name, cmd in items:
-                b = g.add_large(label, icon_name, lambda c=cmd: self.run_tool(c))
-                b.setEnabled(self.on_command is not None)
-                self.tool_buttons[cmd] = b
+            for column in columns:
+                col = g.add_column()
+                for key, label, icon_name in column:
+                    act = tray_items.get(key)
+                    if key in self.TOOL_MENUS:
+                        menu = act.menu() if act is not None else None
+                        b = col.add_small(label, icon_name, menu=menu, split=False)
+                        b.setEnabled(menu is not None)
+                    else:
+                        b = col.add_small(label, icon_name, lambda k=key: self.run_tool(k))
+                        if key in self.TOOL_TOGGLES:
+                            b.setCheckable(True)
+                            if act is not None:
+                                b.setChecked(act.isChecked())
+                                act.toggled.connect(b.setChecked)
+                        b.setEnabled(self._tool_available(key))
+                    b.setContextMenuPolicy(Qt.CustomContextMenu)
+                    b.customContextMenuRequested.connect(
+                        lambda pos, k=key, btn=b: self._tool_button_context_menu(k, btn, pos))
+                    self.tool_buttons[key] = b
+        self.ribbon.tab_changed.connect(lambda k: k == "tools" and self.refresh_tools())
+        self.refresh_tools()
 
-    def run_tool(self, cmd: str) -> None:
-        if self.on_command is not None:
+    def _tool_available(self, key: str) -> bool:
+        if self.tray is not None and key in getattr(self.tray, "items", {}):
+            return True
+        cmd = self.TOOL_COMMANDS.get(key)
+        if cmd == "":
+            return True                                     # Statistics / About: the window's own
+        return bool(cmd) and self.on_command is not None
+
+    def run_tool(self, key: str) -> None:
+        """Run a Tools tab item exactly like the same item in the tray menu."""
+        act = getattr(self.tray, "items", {}).get(key) if self.tray is not None else None
+        if act is not None:
+            if key in self.TOOL_TOGGLES and not act.isEnabled():
+                return
+            act.trigger()
+            if key in self.TOOL_TOGGLES:       # keep the button in step even if nothing changed
+                self.tool_buttons[key].setChecked(act.isChecked())
+            return
+        cmd = self.TOOL_COMMANDS.get(key)
+        if cmd == "" and key == "statistics":
+            self.show_stats()
+        elif cmd == "" and key == "about":
+            self.about()
+        elif cmd and self.on_command is not None:
             self.on_command(cmd)
+
+    def refresh_tools(self) -> None:
+        """Update the items that change: "Enabled in <program>", OCR languages, Statistics."""
+        self.refresh_auto_sync()
+        tray = self.tray
+        if tray is None or not hasattr(self, "tool_buttons"):
+            return
+        try:
+            tray.refresh()
+        except Exception:
+            return
+        items = tray.items
+        b = self.tool_buttons.get("app_enabled")
+        act = items.get("app_enabled")
+        if b is not None and act is not None:
+            label = act.text() if act.isVisible() and act.text() else tr("Enabled in program")
+            b.setText(label)
+            b.setEnabled(act.isVisible())
+            b.setChecked(act.isChecked())
+        for key in ("ocr_language", "statistics", "onenote_send_clipboard", "onenote_clip"):
+            if key in items and key in self.tool_buttons:
+                self.tool_buttons[key].setEnabled(items[key].isVisible())
+        if "pause" in items and "pause" in self.tool_buttons:
+            self.tool_buttons["pause"].setChecked(items["pause"].isChecked())
 
     def _build_help_tab(self) -> None:
         t = self.ribbon.add_tab("help", "Help")
@@ -722,6 +1059,9 @@ class MainWindow(QMainWindow):
             elif kind in ("last_used", "clipboard_cache"):
                 ed = pe.SpecialFolderEditor(self.store, kind)
         except Exception:
+            # keep the window usable, but leave a trace: the simple fallback editor has
+            # no view options (rulers, word wrap...), so a silent failure looks like broken buttons
+            logging.getLogger(__name__).exception("creating the %s editor", kind)
             ed = None
         if ed is None:
             if kind == "phrase":
@@ -730,6 +1070,8 @@ class MainWindow(QMainWindow):
                 ed = FallbackFolderEditor(self.store)
             elif kind == "clip":
                 ed = ClipEntryView(self.store)
+            elif kind == "note":
+                ed = StickyNoteView(self.store, self)
             else:
                 ed = QWidget()
         for sig, slot in (("content_focus_changed", self._content_focus), ("saved", self._editor_saved),
@@ -802,6 +1144,13 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def _show_editor(self, kind: str, id_) -> None:
+        if kind in ("note", "sticky_notes"):
+            # one page for both: a note's text, or a summary for the folder node
+            ed = self._editor("note")
+            ed.load(id_ if kind == "note" else None)
+            self.editor_stack.setCurrentWidget(ed)
+            self._content_focus(False)
+            return
         if kind in ("phrase", "folder", "clip") and id_ is not None or kind in ("last_used", "clipboard_cache"):
             ed = self._editor(kind)
             load = getattr(ed, "load", None)
@@ -819,6 +1168,8 @@ class MainWindow(QMainWindow):
             self._content_focus(False)
 
     # ================================================================= selection
+    # Tree nodes whose content the middle column lists in the three-column layout.
+    LIST_KINDS = ("folder", "root", "last_used", "clipboard_cache", "sticky_notes")
     TREE_SETTINGS = ("features.last_used_folder", "clipboard_history.enabled", "last_used.max",
                      "features.usage_statistics")
 
@@ -826,7 +1177,11 @@ class MainWindow(QMainWindow):
         return tuple(self.store.setting(k, "") for k in self.TREE_SETTINGS)
 
     def _on_store_change(self, kind: str, _id) -> None:
-        if kind in ("folder", "phrase", "clipboard"):
+        if kind == "usage":
+            # recorded on the expansion thread: a signal brings it to the UI thread
+            self.usage_changed.emit()
+            return
+        if kind in ("folder", "phrase", "clipboard", "sticky"):
             self._refresh_timer.start()
         elif kind == "setting":
             # only settings that change the tree's special folders trigger a rebuild
@@ -835,14 +1190,29 @@ class MainWindow(QMainWindow):
                 self._last_tree_settings = cur
                 self._refresh_timer.start()
 
+    def _on_usage_changed(self) -> None:
+        """A phrase was used: Last Used (and use counts) changed. Rebuild unless the user
+        is editing a phrase, so a refresh never takes the selection away while typing."""
+        if self.store.setting("features.last_used_folder", "1") == "1":
+            self._refresh_timer.start()
+
     def refresh_tree(self) -> None:
         if getattr(self.store, "closed", False):   # a queued refresh after the store was closed
             return
         self.panel.refresh()
         if self.three_columns:
             k, i = self.panel.current()
-            if k in ("folder", "root", "last_used", "clipboard_cache"):
+            if k in self.LIST_KINDS:
                 self.phrase_list.show_folder(k, i)
+                if self.sel_kind == "note":         # keep the note being edited selected
+                    lst = self.phrase_list.list
+                    for r in range(lst.topLevelItemCount()):
+                        it = lst.topLevelItem(r)
+                        if it.data(0, ROLE_KIND) == "note" and it.data(0, ROLE_ID) == self.sel_id:
+                            lst.blockSignals(True)
+                            lst.setCurrentItem(it)
+                            lst.blockSignals(False)
+                            break
         self._update_status()
 
     def _all_items(self):
@@ -859,7 +1229,7 @@ class MainWindow(QMainWindow):
                     self.editor_stack.setCurrentWidget(self.blank)
                     return
         self._set_selection(kind, id_)
-        if self.three_columns and kind in ("folder", "root", "last_used", "clipboard_cache"):
+        if self.three_columns and kind in self.LIST_KINDS:
             self.phrase_list.show_folder(kind, id_)
         self._show_editor(kind, id_)
         self._push_nav(kind, id_)
@@ -874,6 +1244,63 @@ class MainWindow(QMainWindow):
         self._push_nav(kind, id_)
         self._update_status()
         self._update_actions()
+
+    def _set_auto_sync(self, on: bool) -> None:
+        want = "1" if on else "0"
+        if self.store.setting("sync.auto", "1") != want:
+            self.store.set_setting("sync.auto", want)
+        self.refresh_auto_sync()
+
+    SYNC_INTERVALS = (1, 5, 7, 10, 15, 30, 60)
+
+    def sync_interval(self) -> int:
+        try:
+            return max(1, min(1440, int(self.store.setting("sync.interval_min", "7") or 7)))
+        except ValueError:
+            return 7
+
+    def set_sync_interval(self, minutes: int) -> None:
+        self.store.set_setting("sync.interval_min", str(max(1, min(1440, int(minutes)))))
+        self.refresh_auto_sync()
+
+    def _fill_sync_interval_menu(self) -> None:
+        m = self.sync_interval_menu
+        m.clear()
+        cur = self.sync_interval()
+        for n in self.SYNC_INTERVALS:
+            a = m.addAction(tr("Every {n} minutes").replace("{n}", str(n)) if n > 1 else tr("Every minute"))
+            a.setCheckable(True)
+            a.setChecked(n == cur)
+            a.triggered.connect(lambda _=False, n=n: self.set_sync_interval(n))
+        m.addSeparator()
+        m.addAction(tr("Other..."), self._ask_sync_interval)
+
+    def _ask_sync_interval(self) -> None:
+        n, ok = QInputDialog.getInt(self, tr("Auto sync"), tr("Synchronize every (minutes):"),
+                                    self.sync_interval(), 1, 1440)
+        if ok:
+            self.set_sync_interval(n)
+
+    def refresh_auto_sync(self) -> None:
+        """Show the Auto sync buttons as the settings are (they can change in Settings)."""
+        b = getattr(self, "btn_auto_sync", None)
+        if b is not None:
+            on = self.store.setting("sync.auto", "1") == "1"
+            b.blockSignals(True)
+            b.setChecked(on)
+            b.blockSignals(False)
+            self.btn_sync_interval.setText(tr("Every {n} min").replace("{n}", str(self.sync_interval())))
+            self.btn_sync_interval.setEnabled(on)
+
+    def sync_now(self) -> None:
+        """Send/Receive updates: synchronize with the cloud (Settings > Backup & Sync)."""
+        self.save_current()
+        if self.on_command is not None:
+            self.on_command("sync_now")
+
+    def _open_sticky_note(self, note_id) -> None:
+        if self.on_command is not None and note_id is not None:
+            self.on_command(f"open_sticky_notes:{note_id}")
 
     def _open_folder_from_list(self, folder_id) -> None:
         if folder_id is None:
@@ -911,13 +1338,10 @@ class MainWindow(QMainWindow):
         return None
 
     def unlock_folder(self, f: Folder) -> bool:
-        pw, ok = QInputDialog.getText(self, "Password", f'Password for "{f.name}":', QLineEdit.Password)
-        if ok and hash_password(pw) == f.password_hash:
-            self.unlocked.add(f.id)
+        from phraseforge.ui.dialogs import ask_folder_password
+        if ask_folder_password(self.store, f, self):     # unlocks for the menu and expansion too
             QTimer.singleShot(0, self.refresh_tree)
             return True
-        if ok:
-            QMessageBox.warning(self, "Password", "Wrong password.")
         return False
 
     # ================================================================= status / actions
@@ -929,7 +1353,7 @@ class MainWindow(QMainWindow):
         crumbs: list[tuple[str, str]] = []
         if kind in ("phrase", "folder"):
             fid = id_ if kind == "folder" else (self.current.folder_id if self.current else None)
-            crumbs.append(("root:", "Phrases"))
+            crumbs.append(("root:", tr("Phrases")))
             crumbs += [(f"folder:{f.id}", f.name) for f in self.folder_path(fid)]
         if crumbs:
             html = " » ".join(f'<a href="{h}" style="color:#0066cc">{t.replace("<", "&lt;")}</a>' for h, t in crumbs)
@@ -991,6 +1415,10 @@ class MainWindow(QMainWindow):
                 kind, id_ = self._nav[pos]
                 if kind == "phrase":
                     self.select_phrase(id_)
+                elif self.panel.current() == (kind, id_):
+                    # already the tree's current item (three columns: a phrase was open in the
+                    # middle list), so no selection signal would fire: show the folder directly
+                    self._on_selected(kind, id_)
                 else:
                     self.panel.select(kind, id_)
             finally:
@@ -1008,8 +1436,8 @@ class MainWindow(QMainWindow):
         self.save_current()
         self.three_columns = n == 3
         self.panel.folders_only = self.three_columns
-        self.panel.header.setText('Files and Folders ("Default")' if self.three_columns
-                                  else 'Folders and phrases ("Default")')
+        self.panel.header.setText(tr('Files and Folders ("Default")') if self.three_columns
+                                  else tr('Folders and phrases ("Default")'))
         self.phrase_list.setVisible(self.three_columns)
         if save:
             self.store.set_setting("view.layout", "three" if self.three_columns else "two")
@@ -1020,7 +1448,19 @@ class MainWindow(QMainWindow):
     def toggle_flat(self) -> None:
         self.panel.flat = not self.panel.flat
         self.refresh_tree()
+        if self.three_columns:
+            # the folders leave the tree: show the whole list under "Phrases"
+            self.panel.select("root", None)
+            self.phrase_list.show_folder("root", None)
         self._update_actions()
+
+    def fit_columns(self) -> None:
+        """Resize the visible list's columns to their contents (middle list or tree)."""
+        if self.three_columns:
+            self.phrase_list.fit_columns()
+        else:
+            for c in range(self.tree.columnCount()):
+                self.tree.resizeColumnToContents(c)
 
     def set_view_option(self, key: str, on: bool) -> None:
         self.store.set_setting(f"view.{key}", "1" if on else "0")
@@ -1040,7 +1480,7 @@ class MainWindow(QMainWindow):
                 fn(word_wrap=self.view_option("word_wrap"), show_special=self.view_option("show_special_chars"),
                    show_macro_params=self.view_option("show_macro_params"), rulers=self.view_option("show_rulers"))
             except Exception:
-                pass
+                logging.getLogger(__name__).exception("applying view options")
 
     def _editor_status(self, st: dict) -> None:
         if self.sel_kind != "phrase":
@@ -1091,6 +1531,78 @@ class MainWindow(QMainWindow):
             if ce is not None:
                 ce.setFocus()
         QTimer.singleShot(0, go)
+
+    @staticmethod
+    def _plain_content(p: Phrase) -> str:
+        if p.content_format == "html":
+            from PySide6.QtGui import QTextDocument
+            doc = QTextDocument()
+            doc.setHtml(p.content)
+            return doc.toPlainText()
+        return p.content
+
+    def _busy(self, fn):
+        """Run fn on a background thread while the window stays responsive; return its result
+        (or raise its error)."""
+        import threading
+        box: dict = {}
+
+        def run():
+            try:
+                box["value"] = fn()
+            except Exception as e:      # noqa: BLE001 - re-raised below
+                box["error"] = e
+        t = threading.Thread(target=run, daemon=True)
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            t.start()
+            while t.is_alive():
+                QApplication.processEvents()
+                t.join(0.05)
+        finally:
+            QApplication.restoreOverrideCursor()
+        if "error" in box:
+            raise box["error"]
+        return box.get("value")
+
+    def translate_phrase(self, phrase_id: int, language: str, translate=None) -> Phrase | None:
+        """Context menu > Translate: a copy of the phrase translated into `language`, next to
+        the original (macros are kept; formatting of rich-text phrases is not)."""
+        p = self.store.get_phrase(phrase_id)
+        if not p:
+            return None
+        text = self._plain_content(p)
+        if translate is None:
+            from phraseforge import ai
+            settings = self.store.settings()
+
+            def translate(t, lang):
+                return ai.translate_text(settings, t, lang)
+        try:
+            out = self._busy(lambda: translate(text, language))
+        except Exception as e:      # noqa: BLE001 - shown to the user
+            if not getattr(self, "_quiet_updates", False):
+                QMessageBox.warning(self, "Translate", f"The phrase could not be translated.\n\n{e}")
+            return None
+        new = Phrase(f"{p.description} ({language})", out, folder_id=p.folder_id, tags=list(p.tags))
+        new = self.store.add_phrase(new)
+        self.refresh_tree()
+        self.select_phrase(new.id)
+        return new
+
+    def pin_to_desktop(self, phrase_id: int):
+        """Context menu > Pin to desktop: show the phrase as a sticky note on the desktop."""
+        p = self.store.get_phrase(phrase_id)
+        if not p:
+            return None
+        text = self._plain_content(p)
+        first = next((l.strip() for l in text.splitlines() if l.strip()), "")
+        if p.description and first != p.description.strip():
+            text = f"{p.description}\n{text}"
+        note = self.store.add_sticky_note(text=text)
+        if self.on_command is not None:
+            self.on_command(f"open_sticky_notes:{note.id}")
+        return note
 
     def duplicate_phrase(self, phrase_id: int) -> Phrase | None:
         p = self.store.get_phrase(phrase_id)
@@ -1222,6 +1734,28 @@ class MainWindow(QMainWindow):
                 self.store.update_phrase(dlg.apply(), record_history=False)
                 self._show_editor("phrase", p.id)
                 self.refresh_tree()
+
+    def drop_item(self, kind: str, id_, folder_id: int | None) -> None:
+        """Drag and drop: a phrase or folder moves into folder_id; a clipboard entry or a
+        sticky note becomes a new phrase there."""
+        if kind in ("phrase", "folder"):
+            self.move_item(kind, id_, folder_id)
+            return
+        text, desc = "", ""
+        if kind == "clip":
+            e = next((c for c in self.store.clipboard_entries(500) if c.id == id_), None)
+            text = e.text if e else ""
+        elif kind == "note":
+            n = self.panel.notes_by_id.get(id_)
+            text = n.text if n else ""
+            desc = getattr(n, "title", "") if n else ""
+        if not text.strip():
+            return
+        from phraseforge.models import Phrase
+        desc = (desc or text.strip().splitlines()[0])[:60]
+        p = self.store.add_phrase(Phrase(desc, text, folder_id=folder_id))
+        self.refresh_tree()
+        self.statusBar().showMessage(tr("Phrase created: {name}").replace("{name}", p.description), 4000)
 
     def move_item(self, kind: str, id_: int, new_parent: int | None) -> None:
         self.save_current()
@@ -1437,6 +1971,24 @@ class MainWindow(QMainWindow):
             m.addAction(icon("delete"), "Empty clipboard cache",
                         lambda: (self.store.clear_clipboard(keep_pinned=False), self.refresh_tree()))
             return m
+        if kind == "note":
+            view = self._editor("note")
+            if getattr(view.note, "id", None) != id_:
+                view.load(id_)
+            m.addAction(icon("sticky_notes"), "Open note", view.open_note)
+            m.addAction(icon("copy"), "Copy", view.copy)
+            m.addAction(icon("new_phrase"), "Create phrase from this note", view.create_phrase)
+            m.addSeparator()
+            m.addAction(icon("delete"), "Delete", view.delete_note)
+            m.addSeparator()
+            m.addAction(icon("sticky_notes"), "New sticky note", lambda: view._command("new_sticky_note"))
+            return m
+        if kind == "sticky_notes":
+            m.addAction(icon("sticky_notes"), "New sticky note",
+                        lambda: self.on_command and self.on_command("new_sticky_note"))
+            m.addAction(icon("sticky_notes"), "Open Sticky Notes",
+                        lambda: self.on_command and self.on_command("open_sticky_notes"))
+            return m
         item = kind in ("phrase", "folder")
         if kind == "phrase":
             m.addAction(icon("open_tab"), "Open in tab", lambda: self.open_in_window(id_))
@@ -1456,8 +2008,10 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         a = m.addAction("Delete", lambda: self.delete_item(kind, id_))
         a.setEnabled(item)
-        a = m.addAction("Translate [Demo]")
-        a.setEnabled(False)
+        tr_menu = m.addMenu(icon("languages"), "Translate")
+        tr_menu.setEnabled(kind == "phrase")
+        for lang in TRANSLATE_LANGUAGES:
+            tr_menu.addAction(lang, lambda l=lang: self.translate_phrase(id_, l))
         if kind in ("folder", "root"):
             fid = id_ if kind == "folder" else None
             bulk = m.addMenu("Bulk edit")
@@ -1477,8 +2031,8 @@ class MainWindow(QMainWindow):
             a.setChecked(bool(f and f.show_in_popup))
         else:
             m.addSeparator()
-        a = m.addAction("Pin to desktop [Demo]")
-        a.setEnabled(False)
+        a = m.addAction(icon("sticky_notes"), "Pin to desktop", lambda: self.pin_to_desktop(id_))
+        a.setEnabled(kind == "phrase")
         m.addSeparator()
         a = m.addAction("Properties", self.properties_selected)
         a.setShortcut("Alt+Return")
@@ -1595,7 +2149,7 @@ class MainWindow(QMainWindow):
             if QMessageBox.question(self, "Open", "Replace all current phrases with this phrase file?") \
                     != QMessageBox.Yes:
                 return
-            self.store.restore_from(path)
+            self.store.restore_from(path, untrusted="imported")
             self.refresh_tree()
         else:
             self._import_path(path)
@@ -1623,7 +2177,9 @@ class MainWindow(QMainWindow):
             return
         try:
             d = self.store.export_dict()
-            d["settings"] = self.store.settings()
+            from phraseforge.db import SECRET_SETTINGS
+            # plain JSON: API keys and the proxy password are not written (re-enter them there)
+            d["settings"] = {k: v for k, v in self.store.settings().items() if k not in SECRET_SETTINGS}
             with open(path, "w", encoding="utf-8") as fh:
                 json.dump(d, fh, ensure_ascii=False, indent=2)
             QMessageBox.information(self, "Migration Assistant", f"Saved to {path}")
@@ -1639,8 +2195,10 @@ class MainWindow(QMainWindow):
                 d = json.load(fh)
             from phraseforge import io_formats
             io_formats.import_dict(self.store, d)
+            from phraseforge.db import is_device_setting
             for k, v in (d.get("settings") or {}).items():
-                self.store.set_setting(k, v)
+                if not is_device_setting(str(k)):    # this PC's paths, programs, network, sync stay
+                    self.store.set_setting(k, v)
             self.refresh_tree()
             QMessageBox.information(self, "Migration Assistant", "Settings and phrases restored.")
         except Exception as e:
@@ -1706,17 +2264,32 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Import", str(e))
 
     def import_phraseexpress(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Import from PhraseExpress", "",
-                                              "PhraseExpress export (*.csv *.txt *.tsv);;"
-                                              "PhraseExpress phrase files (*.pexdb *.pexdbhub *.pxp);;All files (*)")
-        if path:
-            self.import_phraseexpress_path(path)
+        paths, _ = QFileDialog.getOpenFileNames(self, "Import from PhraseExpress", "",  # noqa: E501 - filter below
+                                                "PhraseExpress export (*.txt *.csv *.tsv *.xml);;"
+                                                "PhraseExpress phrase files (*.pexdb *.pexdbhub *.pxp);;All files (*)")
+        if paths:
+            self.import_phraseexpress_path(paths if len(paths) > 1 else paths[0])
 
-    def import_phraseexpress_path(self, path: str, show_message: bool = True):
-        """Import a PhraseExpress CSV export; returns the report (None on error)."""
+    def import_phraseexpress_folder(self) -> None:
+        d = QFileDialog.getExistingDirectory(self, "Import a folder exported from PhraseExpress")
+        if d:
+            self.import_phraseexpress_path(d)
+
+    def import_phraseexpress_path(self, path, show_message: bool = True):
+        """Import a PhraseExpress export: a .txt/.csv/.xml file, a list of .txt files, or a folder
+        written by Export > Files including directory structure. Returns the report (None on error)."""
         try:
-            from phraseforge.importers.phraseexpress import import_any
-            rep = import_any(self.store, path)
+            from phraseforge.importers.phraseexpress import import_any, import_text_files
+            if isinstance(path, (list, tuple)):
+                txt = [q for q in path if str(q).lower().endswith(".txt")]
+                rep = import_text_files(self.store, txt)
+                for q in path:
+                    if q not in txt:
+                        more = import_any(self.store, q)
+                        rep.imported += more.imported
+                        rep.skipped += more.skipped
+            else:
+                rep = import_any(self.store, path)
         except Exception as e:
             if show_message:
                 QMessageBox.warning(self, "Import from PhraseExpress", str(e))
@@ -1795,6 +2368,97 @@ class MainWindow(QMainWindow):
             refs = dlg.checked_refs()
             if refs:
                 self.import_onenote_refs(refs, factory)
+
+    def import_onenote_file(self, path: str | None = None, client_factory=None, show_message: bool = True):
+        """Import > From a OneNote file (.one): open the section file and import its pages."""
+        from phraseforge.ui.onenote_picker import default_client_factory
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(self, "Import a OneNote section file", "",
+                                                  "OneNote section (*.one);;All files (*)")
+            if not path:
+                return
+        factory = client_factory or default_client_factory(self.store.setting("onenote.exe", ""))
+        try:
+            section_id = factory().open_file(path)
+        except Exception as e:
+            if show_message:
+                QMessageBox.warning(self, "Import from OneNote", str(e))
+            return None
+        return self.import_onenote_refs([section_id], factory, show_message=show_message)
+
+    def export_onenote_section(self, path: str | None = None, client_factory=None, show_message: bool = True):
+        """Export > To a OneNote section: write the selected folder's phrases to a .one file."""
+        self.save_current()
+        from phraseforge.importers.onenote import export_to_onenote
+        from phraseforge.ui.onenote_picker import default_client_factory
+        folder_id = self.selected_folder_id()
+        if path is None:
+            path, _ = QFileDialog.getSaveFileName(self, "Export phrases to a OneNote section",
+                                                  "phrases.one", "OneNote section (*.one)")
+            if not path:
+                return None
+            if not path.lower().endswith(".one"):
+                path += ".one"
+        factory = client_factory or default_client_factory(self.store.setting("onenote.exe", ""))
+        try:
+            rep = export_to_onenote(self.store, factory(), path, folder_id,
+                                    self.store.setting("phrase.active_language", ""))
+        except Exception as e:
+            if show_message:
+                QMessageBox.warning(self, "Export to OneNote", str(e))
+            return None
+        if show_message:
+            msg = f"Wrote {rep.imported} page(s) to OneNote."
+            if rep.errors:
+                msg += f"\n{len(rep.errors)} page(s) failed."
+            QMessageBox.information(self, "Export to OneNote", msg)
+        return rep
+
+    def export_onenote_file(self, ref: str | None = None, path: str | None = None,
+                            fmt: str | None = None, client_factory=None, show_message: bool = True):
+        """Export > OneNote to a file: pick a page/section/notebook and a format (docx/pdf/xps/mht/one)."""
+        from phraseforge import onenote as on
+        from phraseforge.ui.onenote_picker import OneNotePicker, default_client_factory
+        factory = client_factory or default_client_factory(self.store.setting("onenote.exe", ""))
+        if ref is None:
+            dlg = OneNotePicker(self, mode="export", client_factory=factory)
+            if not dlg.exec():
+                return None
+            ref = dlg.selected_ref()
+            if not ref:
+                return None
+        if path is None:
+            flt = ";;".join(label for label, _ in on.PUBLISH_FORMATS)
+            path, sel = QFileDialog.getSaveFileName(self, "Export OneNote to a file", "onenote-export.pdf", flt)
+            if not path:
+                return None
+            from pathlib import Path as _P
+            fmt = _P(path).suffix.lower().lstrip(".") or dict(
+                (lbl, key) for lbl, key in on.PUBLISH_FORMATS).get(sel, "pdf")
+            if not _P(path).suffix:
+                path += "." + fmt
+        fmt = fmt or Path(path).suffix.lower().lstrip(".")
+        try:
+            client = factory()
+            node = None
+            for n in client.notebooks():
+                from phraseforge.onenote import find
+                node = find([n], ref)
+                if node:
+                    break
+            client.publish(node.id if node else ref, path, fmt)
+        except Exception as e:
+            if show_message:
+                QMessageBox.warning(self, "Export OneNote", str(e))
+            return None
+        if show_message:
+            box = QMessageBox(QMessageBox.Information, "Export OneNote",
+                              f"Exported to {Path(path).name}.", QMessageBox.Close, self)
+            btn = box.addButton("Open", QMessageBox.AcceptRole)
+            box.exec()
+            if box.clickedButton() is btn:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        return path
 
     def import_onenote_refs(self, refs: list[str], client_factory, show_message: bool = True):
         """Run the import with a progress dialog. Runs on the UI thread (store listeners update
@@ -1882,19 +2546,29 @@ class MainWindow(QMainWindow):
             return self.store.phrases(self.sel_id)
         return self.store.phrases()
 
-    def export_document(self, kind: str, path: str | None = None, show_message: bool = True):
-        """Selected phrase, selected folder or all phrases as .docx / .pdf (Arabic right to left)."""
+    def export_document(self, kind: str | None = None, path: str | None = None, show_message: bool = True):
+        """Selected phrase, selected folder or all phrases as a document. kind is the extension
+        without the dot (docx, pdf, html, mht); None asks with a format picker."""
         self.save_current()
         from phraseforge import documents
         from phraseforge.ui import i18n
-        title = "Export as Word document" if kind == "docx" else "Export as PDF"
+        title = "Export as document"
         if path is None:
-            flt = "Word document (*.docx)" if kind == "docx" else "PDF (*.pdf)"
-            path, _ = QFileDialog.getSaveFileName(self, title, f"phrases.{kind}", flt)
+            flt = ";;".join(f"{label}" for label, _ in documents.EXPORT_FORMATS
+                            if _[1:] in ("docx", "pdf", "html", "mht"))
+            path, sel = QFileDialog.getSaveFileName(self, title, "phrases.docx", flt)
             if not path:
                 return None
-            if not path.lower().endswith("." + kind):
-                path += "." + kind
+            from pathlib import Path as _P
+            ext = _P(path).suffix.lower().lstrip(".")
+            if ext not in ("docx", "pdf", "html", "htm", "mht"):
+                ext = {("Word Document (*.docx)"): "docx", "PDF (*.pdf)": "pdf",
+                       "Web Page (*.html)": "html", "Single File Web Page (*.mht)": "mht"}.get(sel, "docx")
+                path += "." + ext
+            kind = ext
+        elif kind is None:
+            from pathlib import Path as _P
+            kind = _P(path).suffix.lower().lstrip(".")
         try:
             n = documents.export(self.store, self.phrases_for_print(), path, i18n.language(),
                                  self.store.setting("phrase.active_language", ""))
@@ -1974,18 +2648,51 @@ class MainWindow(QMainWindow):
         if not getattr(self, "_quiet_updates", False):
             box = QMessageBox(QMessageBox.Information, "Check for updates", msg, QMessageBox.Close, self)
             if rel is not None and not err and updates.is_newer(rel["version"], __version__):
+                dl = box.addButton("Download", QMessageBox.AcceptRole) if rel.get("setup_url") else None
                 btn = box.addButton("Open download page", QMessageBox.AcceptRole)
                 box.exec()
-                if box.clickedButton() is btn:
+                if dl is not None and box.clickedButton() is dl:
+                    QDesktopServices.openUrl(QUrl(rel["setup_url"]))
+                elif box.clickedButton() is btn:
                     QDesktopServices.openUrl(QUrl(rel["url"]))
             else:
                 box.exec()
         return msg
 
+    ISSUES_URL = "https://github.com/bahattab/B-PhraseForgeExpress/issues"
+
+    def diagnostic_info(self) -> str:
+        import platform
+        from phraseforge import __version__, paths
+        return (f"PhraseForge {__version__}\n{platform.platform()}\nPython {platform.python_version()}\n"
+                f"Data folder: {paths.data_dir()}")
+
+    def open_data_folder(self) -> None:
+        from phraseforge import paths
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths.data_dir())))
+
     def get_support(self) -> None:
-        QMessageBox.information(self, "Get support",
-                                "PhraseForge is a personal project. See README.md in the program folder "
-                                "for help, or check the log file in %APPDATA%\\PhraseForge.")
+        """Help, the log files (phraseforge.log) and a link to report a problem."""
+        from phraseforge import paths
+        box = QMessageBox(QMessageBox.Information, "Get support",
+                          tr("Read the user guide, or report a problem on GitHub.") + "\n\n"
+                          + tr("When you report a problem, attach phraseforge.log from the data folder "
+                               "and paste the diagnostic information.") + f"\n{paths.data_dir()}",
+                          QMessageBox.Close, self)
+        guide = box.addButton("User guide", QMessageBox.ActionRole)
+        folder = box.addButton("Open data folder", QMessageBox.ActionRole)
+        copy = box.addButton("Copy diagnostic info", QMessageBox.ActionRole)
+        report = box.addButton("Report a problem", QMessageBox.ActionRole)
+        actions = {guide: self.open_help, folder: self.open_data_folder,
+                   copy: lambda: QApplication.clipboard().setText(self.diagnostic_info()),
+                   report: lambda: QDesktopServices.openUrl(QUrl(self.ISSUES_URL))}
+        if getattr(self, "_quiet_updates", False):     # tests: don't block
+            self._support_box = box
+            return
+        box.exec()
+        fn = actions.get(box.clickedButton())
+        if fn:
+            fn()
 
     def open_help(self) -> None:
         from phraseforge.ui import i18n
@@ -2011,6 +2718,12 @@ class MainWindow(QMainWindow):
                 t.setItem(i, j, QTableWidgetItem(str(v)))
         lay.addWidget(t)
         dlg.exec()
+
+    def changeEvent(self, e):  # noqa: N802
+        super().changeEvent(e)
+        # coming back from another program: "Enabled in <program>" names that program
+        if e.type() == QEvent.ActivationChange and self.isActiveWindow():
+            self.refresh_tools()
 
     def closeEvent(self, e):  # noqa: N802
         if not self.save_current():

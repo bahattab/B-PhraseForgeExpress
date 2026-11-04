@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QToolButton, QVBoxLayout, QWidget,
 )
 
+from phraseforge.ui import pe_style
 from phraseforge.db import Store
 from phraseforge.ui.icons import app_icon
 
@@ -118,7 +119,7 @@ class TypingTestDialog(QDialog):
         row.addStretch(1)
         self.ok = QPushButton("OK")
         self.ok.setEnabled(False)
-        self.ok.setDefault(True)
+        pe_style.primary(self.ok).setDefault(True)
         self.ok.clicked.connect(self.accept)
         cancel = QPushButton("Cancel")
         cancel.clicked.connect(self.reject)
@@ -250,7 +251,7 @@ class StatsWindow(QDialog):
         buttons = QHBoxLayout()
         buttons.addStretch(1)
         ok = QPushButton("OK")
-        ok.setDefault(True)
+        pe_style.primary(ok).setDefault(True)
         ok.clicked.connect(self.accept)
         help_ = QPushButton("Help")
         help_.clicked.connect(self._help)

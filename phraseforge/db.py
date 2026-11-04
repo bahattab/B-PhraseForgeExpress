@@ -7,10 +7,14 @@ check_same_thread=False plus an RLock so the hook thread can read safely.
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
+import hmac
 import json
+import os
 import sqlite3
 import threading
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
@@ -75,6 +79,13 @@ CREATE TABLE IF NOT EXISTS phrase_versions (
   phrase_id INTEGER REFERENCES phrases(id) ON DELETE CASCADE, lang TEXT NOT NULL,
   content TEXT DEFAULT '', content_format TEXT DEFAULT 'text', modified TEXT,
   PRIMARY KEY (phrase_id, lang));
+CREATE TABLE IF NOT EXISTS phrase_quarantine (
+  phrase_id INTEGER PRIMARY KEY REFERENCES phrases(id) ON DELETE CASCADE,
+  origin TEXT DEFAULT 'imported', added TEXT);
+CREATE TABLE IF NOT EXISTS sticky_notes (
+  id INTEGER PRIMARY KEY, text TEXT DEFAULT '', html TEXT DEFAULT '', color TEXT DEFAULT 'yellow',
+  x INTEGER, y INTEGER, w INTEGER DEFAULT 300, h INTEGER DEFAULT 300,
+  visible INTEGER DEFAULT 1, on_top INTEGER DEFAULT 0, created TEXT, updated TEXT);
 """
 
 DEFAULT_SETTINGS = {
@@ -83,12 +94,12 @@ DEFAULT_SETTINGS = {
     "popup.hotkey": "ctrl+alt+space",
     "ocr.hotkey": "ctrl+alt+o",
     "clipboard_history.hotkey": "ctrl+alt+v",
-    "filesearch.hotkey": "ctrl+alt+f",     # Search files (Listary-style launcher)
+    "filesearch.hotkey": "ctrl+alt+f",
+    "promptboost.hotkey": "ctrl+alt+b",    # Boost prompt: improve the selected prompt in any program     # Search files (Listary-style launcher)
     "filesearch.enabled": "1",
     "filesearch.roots": "",               # one folder per line; empty = Start menu, Desktop, Documents, Downloads
     "filesearch.refresh_minutes": "30",
-    "ocr.cli_path": r"C:\Program Files\00 - Capture2Text v4.6.3 - Arabic\Capture2Text_CLI.exe",
-    "ocr.language": "English",
+    "ocr.language": "Auto",
     "output.paste_threshold": "40",       # AUTO mode pastes text longer than this
     "output.restore_clipboard": "1",
     "clipboard_history.max": "200",
@@ -99,11 +110,15 @@ DEFAULT_SETTINGS = {
     "learning.enabled": "1",
     "learning.min_length": "12",
     "learning.min_count": "3",
-    "ai.provider": "openai",              # openai | anthropic | ollama | openrouter
+    "ai.provider": "openai",              # openai | anthropic | gemini | openrouter | opencode | kilocode | ollama | gpt4all
     "ai.model": "",
     "ai.openai_key": "",
     "ai.anthropic_key": "",
     "ai.openrouter_key": "",
+    "ai.gemini_key": "",
+    "ai.opencode_key": "",
+    "ai.kilocode_key": "",
+    "ai.mistral_key": "",                 # Mistral OCR (PDF/image to Markdown, optional screen OCR engine)
     "ai.ollama_url": "http://localhost:11434",
     "ai.gpt4all_url": "http://localhost:4891/v1",
     "ai.deepl_key": "",
@@ -118,14 +133,73 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def _parse_dt(v):
+    try:
+        return datetime.fromisoformat(v) if v else None
+    except ValueError:
+        return None
+
+
+# Folder passwords: salted scrypt (stdlib). Stored as "scrypt$n$r$p$salt$hash" (base64).
+# Older unsalted SHA-256 hashes (64 hex chars) still verify and are replaced with
+# scrypt on the next successful unlock (see needs_rehash).
+_SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2 ** 15, 8, 1
+
+
+def _scrypt(pw: str, salt: bytes, n: int, r: int, p: int) -> bytes:
+    return hashlib.scrypt(pw.encode("utf-8"), salt=salt, n=n, r=r, p=p, maxmem=128 * 1024 * 1024, dklen=32)
+
+
 def hash_password(pw: str) -> str:
-    return hashlib.sha256(("phraseforge:" + pw).encode()).hexdigest() if pw else ""
+    if not pw:
+        return ""
+    salt = os.urandom(16)
+    h = _scrypt(pw, salt, _SCRYPT_N, _SCRYPT_R, _SCRYPT_P)
+    b64 = lambda b: base64.b64encode(b).decode("ascii")  # noqa: E731
+    return f"scrypt${_SCRYPT_N}${_SCRYPT_R}${_SCRYPT_P}${b64(salt)}${b64(h)}"
+
+
+def verify_password(pw: str, stored: str) -> bool:
+    if not stored:
+        return True
+    if stored.startswith("scrypt$"):
+        try:
+            _, n, r, p, salt, h = stored.split("$")
+            got = _scrypt(pw, base64.b64decode(salt), int(n), int(r), int(p))
+        except (ValueError, TypeError):
+            return False
+        return hmac.compare_digest(got, base64.b64decode(h))
+    legacy = hashlib.sha256(("phraseforge:" + pw).encode()).hexdigest()
+    return hmac.compare_digest(legacy, stored)
+
+
+def needs_rehash(stored: str) -> bool:
+    return bool(stored) and not stored.startswith(f"scrypt${_SCRYPT_N}${_SCRYPT_R}${_SCRYPT_P}$")
 
 
 # API keys are encrypted with Windows DPAPI before they are written, so a copied
 # database file does not reveal them (other platforms: stored base64-encoded only).
-SECRET_SETTINGS = frozenset({"ai.openai_key", "ai.anthropic_key", "ai.openrouter_key", "ai.deepl_key"})
+SECRET_SETTINGS = frozenset({"ai.openai_key", "ai.anthropic_key", "ai.openrouter_key", "ai.deepl_key",
+                             "ai.gemini_key", "ai.opencode_key", "ai.kilocode_key", "ai.mistral_key",
+                             "net.proxy_password"})
 _SEALED = "dpapi:"
+
+# Settings that belong to this PC: never uploaded by sync, and kept when data comes from
+# elsewhere (sync pull, a phrase file opened with File > Open). Besides PC state they include
+# everything that decides where data and keys go or what program runs: a synced or opened
+# copy must not send this PC's API keys to another server, set a proxy, lift the {#http}
+# guard, move backups or logs, or swap the programs behind the file-search actions.
+DEVICE_SETTING_PREFIXES = (
+    "sync.", "gdrive.", "backup.cloud_", "backup.directory", "ocr.cli_path", "ocr.log_file",
+    "app.start_with_windows", "app.first_run_done", "ui.item_colors", "ui.trigger_extras",
+    "updates.last_check", "updates.notified_version", "net.", "onenote.exe",
+    "filesearch.actions", "filesearch.commands", "filesearch.roots", "sound.",
+    *sorted(SECRET_SETTINGS))
+DEVICE_SETTING_SUFFIXES = ("_url", "_endpoint", "_path", "_file", ".file", ".exe", "_dir", "_directory")
+
+
+def is_device_setting(key: str) -> bool:
+    return key.startswith(DEVICE_SETTING_PREFIXES) or key.endswith(DEVICE_SETTING_SUFFIXES)
 
 
 def _seal(value: str) -> str:
@@ -145,10 +219,24 @@ def _unseal(value: str) -> str:
         return ""                         # sealed by another Windows user or PC
 
 
+def untrusted_import(fn):
+    """Decorator for importer entry points fn(store, ...): every phrase they create or
+    change is quarantined as "imported" (see security.py)."""
+    @functools.wraps(fn)
+    def wrapper(store, *args, **kwargs):
+        cm = getattr(store, "quarantine_writes", None)
+        if cm is None:
+            return fn(store, *args, **kwargs)
+        with cm("imported"):
+            return fn(store, *args, **kwargs)
+    return wrapper
+
+
 class Store:
     def __init__(self, path: str | Path = ":memory:"):
         self.path = str(path)
         self.lock = threading.RLock()
+        self._qlocal = threading.local()     # quarantine_writes() context, per thread
         self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
@@ -160,14 +248,29 @@ class Store:
             self.conn.execute("INSERT OR IGNORE INTO meta VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
             for k, v in DEFAULT_SETTINGS.items():
                 self.conn.execute("INSERT OR IGNORE INTO settings VALUES (?, ?)", (k, v))
-            for k in SECRET_SETTINGS:         # encrypt keys saved by older versions
-                r = self.conn.execute("SELECT value FROM settings WHERE key=?", (k,)).fetchone()
-                if r and r[0] and not r[0].startswith(_SEALED):
-                    self.conn.execute("UPDATE settings SET value=? WHERE key=?", (_seal(r[0]), k))
+        self._seal_plain_secrets()           # keys saved by older versions
         self._listeners: list = []
         self._migrate_extras()
+        self._migrate_ocr_auto()
 
     # ------------------------------------------------------------ migrations
+    def _seal_plain_secrets(self) -> None:
+        """Encrypt secrets stored in plain text (older versions, or an old backup that was
+        restored), then overwrite the freed pages so the old values are gone from the file."""
+        with self.lock:
+            rows = [(k, v) for k, v in self.conn.execute("SELECT key, value FROM settings")
+                    if k in SECRET_SETTINGS and v and not v.startswith(_SEALED)]
+            if not rows:
+                return
+            self.conn.execute("PRAGMA secure_delete = ON")
+            with self.conn:
+                for k, v in rows:
+                    self.conn.execute("UPDATE settings SET value=? WHERE key=?", (_seal(v), k))
+            if self.path != ":memory:":
+                self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                self.conn.execute("VACUUM")
+                self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
     def _columns(self, table: str) -> set[str]:
         return {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
 
@@ -207,6 +310,15 @@ class Store:
         if c.execute("SELECT 1 FROM sqlite_master WHERE name='meta'").fetchone():
             c.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
         c.commit()
+
+    def _migrate_ocr_auto(self) -> None:
+        """0.5.1: the OCR language detects itself. A stored "English" was the old default,
+        so switch it to "Auto" once; a language chosen after that is kept."""
+        if self.setting("ocr.auto_migrated", "") == "1":
+            return
+        if self.setting("ocr.language", "") in ("English", "en", "en-US"):
+            self.set_setting("ocr.language", "Auto")
+        self.set_setting("ocr.auto_migrated", "1")
 
     def _migrate_extras(self) -> None:
         """Move the old JSON setting ui.trigger_extras into real columns (once)."""
@@ -251,7 +363,8 @@ class Store:
     # ------------------------------------------------------------ change events
     def on_change(self, callback) -> None:
         """callback(kind: str, id: int|None) after any write. kind in
-        folder|phrase|setting|var|clipboard|suggestion."""
+        folder|phrase|setting|var|clipboard|suggestion|sticky|usage. May be called on any
+        thread (usage comes from the expansion thread)."""
         self._listeners.append(callback)
 
     def _changed(self, kind: str, id_: int | None = None) -> None:
@@ -377,6 +490,7 @@ class Store:
             p.id = cur.lastrowid
             self._write_triggers(p)
             self._write_tags(p)
+            self._quarantine_if_untrusted(p.id)
         self._changed("phrase", p.id)
         return p
 
@@ -398,7 +512,73 @@ class Store:
                  p.output_target or "current", p.output_target_arg or "", p.id))
             self._write_triggers(p)
             self._write_tags(p)
+            self._quarantine_if_untrusted(p.id)
         self._changed("phrase", p.id)
+
+    # ------------------------------------------------------------ untrusted phrases (security.py)
+    @contextmanager
+    def quarantine_writes(self, origin: str = "imported"):
+        """Phrases created or changed on this thread inside the block are quarantined."""
+        stack = self._qlocal.__dict__.setdefault("stack", [])
+        stack.append(origin)
+        try:
+            yield
+        finally:
+            stack.pop()
+
+    def _quarantine_if_untrusted(self, phrase_id: int) -> None:
+        """Caller holds the lock (inside the write transaction)."""
+        stack = getattr(self._qlocal, "stack", None)
+        if stack and phrase_id is not None:
+            self.conn.execute("INSERT OR REPLACE INTO phrase_quarantine VALUES (?,?,?)",
+                              (phrase_id, stack[-1], _now()))
+
+    def quarantine(self, phrase_id: int, origin: str = "imported") -> None:
+        with self.lock, self.conn:
+            self.conn.execute("INSERT OR REPLACE INTO phrase_quarantine VALUES (?,?,?)", (phrase_id, origin, _now()))
+
+    def release_quarantine(self, phrase_id: int) -> None:
+        """The user approved this phrase (or edited it themselves)."""
+        with self.lock, self.conn:
+            self.conn.execute("DELETE FROM phrase_quarantine WHERE phrase_id=?", (phrase_id,))
+
+    def quarantine_origin(self, phrase_id: int | None) -> str | None:
+        """"imported" / "synced" if the phrase is not approved on this PC, else None."""
+        if phrase_id is None:
+            return None
+        with self.lock:
+            r = self.conn.execute("SELECT origin FROM phrase_quarantine WHERE phrase_id=?", (phrase_id,)).fetchone()
+        return r[0] if r else None
+
+    def quarantined(self) -> dict[int, str]:
+        with self.lock:
+            return {r[0]: r[1] for r in self.conn.execute("SELECT phrase_id, origin FROM phrase_quarantine")}
+
+    def phrase_fingerprints(self) -> dict[int, str]:
+        """phrase id -> hash of everything that runs: the content of every language version and
+        where the output goes (the phrase's and its folders' output target, which can start a
+        program). A sync that changes any of it quarantines the phrase again."""
+        with self.lock:
+            rows = self.conn.execute("SELECT id, content, content_format, folder_id, output_target, "
+                                     "output_target_arg FROM phrases").fetchall()
+            folders = {r[0]: (r[1], r[2] or "", r[3] or "") for r in self.conn.execute(
+                "SELECT id, parent_id, output_target, output_target_arg FROM folders")}
+            versions: dict[int, list] = {}
+            for r in self.conn.execute(
+                    "SELECT phrase_id, lang, content, content_format FROM phrase_versions ORDER BY phrase_id, lang"):
+                versions.setdefault(r[0], []).append((r[1], r[2], r[3]))
+        out = {}
+        for r in rows:
+            chain, fid, seen = [], r[3], set()
+            while fid in folders and fid not in seen:
+                seen.add(fid)
+                parent, target, arg = folders[fid]
+                chain.append((target, arg))
+                fid = parent
+            blob = json.dumps([r[1], r[2], versions.get(r[0], []), r[4] or "", r[5] or "", chain],
+                              ensure_ascii=False)
+            out[r[0]] = hashlib.sha256(blob.encode("utf-8")).hexdigest()
+        return out
 
     def delete_phrase(self, phrase_id: int) -> None:
         with self.lock, self.conn:
@@ -560,6 +740,7 @@ class Store:
             self.conn.execute("UPDATE phrases SET use_count=use_count+1, last_used=? WHERE id=?", (now, phrase_id))
             self.conn.execute("INSERT INTO usage_log (phrase_id,used,app,chars,trigger) VALUES (?,?,?,?,?)",
                               (phrase_id, now, app, chars, trigger))
+        self._changed("usage", phrase_id)       # e.g. the main window's Last Used folder
 
     def stats(self) -> dict:
         with self.lock:
@@ -644,6 +825,7 @@ class Store:
         with self.lock, self.conn:
             self.conn.execute("INSERT OR REPLACE INTO phrase_versions VALUES (?,?,?,?,?)",
                               (phrase_id, lang, content, content_format or "text", _now()))
+            self._quarantine_if_untrusted(phrase_id)
         self._changed("phrase", phrase_id)
 
     def delete_phrase_version(self, phrase_id: int, lang: str) -> None:
@@ -702,6 +884,61 @@ class Store:
             self.conn.execute("UPDATE clipboard SET pinned=? WHERE id=?", (int(pinned), entry_id))
         self._changed("clipboard")
 
+    # ---------------------------------------------------------- sticky notes
+    _NOTE_COLS = ("id", "text", "html", "color", "x", "y", "w", "h", "visible", "on_top", "created", "updated")
+    _NOTE_EDITABLE = ("text", "html", "color", "x", "y", "w", "h", "visible", "on_top")
+
+    def _note(self, r):
+        from phraseforge.stickynotes import StickyNote
+        d = dict(zip(self._NOTE_COLS, r))
+        return StickyNote(id=d["id"], text=d["text"] or "", theme=d["color"] or "yellow", html=d["html"] or "",
+                          x=d["x"], y=d["y"], w=d["w"] or 300, h=d["h"] or 300, visible=bool(d["visible"]),
+                          on_top=bool(d["on_top"]),
+                          created=_parse_dt(d["created"]), updated=_parse_dt(d["updated"]))
+
+    def sticky_notes(self) -> list:
+        """PhraseForge's own sticky notes, most recently changed first."""
+        with self.lock:
+            rows = self.conn.execute(
+                f"SELECT {', '.join(self._NOTE_COLS)} FROM sticky_notes ORDER BY updated DESC, id DESC").fetchall()
+        return [self._note(r) for r in rows]
+
+    def sticky_note(self, note_id: int):
+        with self.lock:
+            r = self.conn.execute(f"SELECT {', '.join(self._NOTE_COLS)} FROM sticky_notes WHERE id=?",
+                                  (note_id,)).fetchone()
+        return self._note(r) if r else None
+
+    def add_sticky_note(self, text: str = "", html: str = "", color: str = "yellow", **fields):
+        now = _now()
+        vals = {k: v for k, v in fields.items() if k in self._NOTE_EDITABLE}
+        vals.update(text=text, html=html, color=color)
+        cols = list(vals) + ["created", "updated"]
+        with self.lock, self.conn:
+            cur = self.conn.execute(
+                f"INSERT INTO sticky_notes ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                [int(v) if isinstance(v, bool) else v for v in vals.values()] + [now, now])
+            nid = cur.lastrowid
+        self._changed("sticky", nid)
+        return self.sticky_note(nid)
+
+    def update_sticky_note(self, note_id: int, touch: bool = True, **fields) -> None:
+        """touch=False keeps the 'updated' time (window moved/resized/shown, not edited)."""
+        vals = {k: (int(v) if isinstance(v, bool) else v) for k, v in fields.items() if k in self._NOTE_EDITABLE}
+        if not vals:
+            return
+        if touch:
+            vals["updated"] = _now()
+        with self.lock, self.conn:
+            self.conn.execute(f"UPDATE sticky_notes SET {', '.join(k + '=?' for k in vals)} WHERE id=?",
+                              [*vals.values(), note_id])
+        self._changed("sticky", note_id)
+
+    def delete_sticky_note(self, note_id: int) -> None:
+        with self.lock, self.conn:
+            self.conn.execute("DELETE FROM sticky_notes WHERE id=?", (note_id,))
+        self._changed("sticky", note_id)
+
     def delete_clipboard(self, entry_id: int) -> None:
         with self.lock, self.conn:
             self.conn.execute("DELETE FROM clipboard WHERE id=?", (entry_id,))
@@ -751,8 +988,18 @@ class Store:
             "excluded_apps": sorted(self.excluded_apps()),
         }
 
-    def restore_from(self, path: str | Path) -> None:
-        """Replace all data with a backup file, in place on the open connection."""
+    def restore_from(self, path: str | Path, untrusted: str | None = None) -> None:
+        """Replace all data with a backup file, in place on the open connection.
+
+        untrusted="synced"/"imported": the file came from elsewhere (cloud pull, a phrase file
+        the user opened). This PC's quarantine list is kept, the file's own list is ignored,
+        and every phrase the file adds or changes is quarantined (security.py). Without it
+        (restoring this PC's own backup) the backup's list is used as it is."""
+        before = self.phrase_fingerprints() if untrusted else {}
+        keep_q = self.quarantined() if untrusted else {}
+        with self.lock:                   # raw values: API keys stay encrypted
+            keep_device = ({k: v for k, v in self.conn.execute("SELECT key, value FROM settings")
+                            if is_device_setting(k)} if untrusted else {})
         with self.lock:
             src = sqlite3.connect(str(path))
             src.backup(self.conn)
@@ -760,8 +1007,25 @@ class Store:
             self.conn.execute("PRAGMA foreign_keys = ON")
             self._migrate_schema()        # a backup/sync copy may come from an older version
             self.conn.executescript(SCHEMA)
+        # Move a legacy output-target setting into the columns BEFORE the comparison below,
+        # so a synced copy cannot add a "Specific program" target after the check.
         self._migrate_extras()
-        for kind in ("folder", "phrase", "setting", "var", "clipboard"):
+        if untrusted:
+            with self.lock, self.conn:    # this PC's device settings win, whatever the file holds
+                for (k,) in self.conn.execute("SELECT key FROM settings").fetchall():
+                    if is_device_setting(k):
+                        self.conn.execute("DELETE FROM settings WHERE key=?", (k,))
+                for k, v in keep_device.items():
+                    self.conn.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (k, v))
+            after = self.phrase_fingerprints()
+            with self.lock, self.conn:
+                self.conn.execute("DELETE FROM phrase_quarantine")
+                for pid, fp in after.items():
+                    origin = keep_q.get(pid) or (untrusted if before.get(pid) != fp else None)
+                    if origin:
+                        self.conn.execute("INSERT INTO phrase_quarantine VALUES (?,?,?)", (pid, origin, _now()))
+        self._seal_plain_secrets()        # an old backup may hold plain-text keys
+        for kind in ("folder", "phrase", "setting", "var", "clipboard", "sticky"):
             self._changed(kind)
 
     def backup_to(self, path: str | Path) -> None:

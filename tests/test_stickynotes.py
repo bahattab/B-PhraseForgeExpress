@@ -64,14 +64,14 @@ def test_import_notes(tmp_path):
     assert "sticky-notes" in ph["Paths"].tags
 
 
-def test_stickynote_macro(tmp_path, monkeypatch):
+def test_stickynote_macro():
     from phraseforge.host import ExpansionContext
     from phraseforge.macros import MacroEngine
     from tests.fakehost import FakeHost
-    p = sample(tmp_path)
-    monkeypatch.setattr(sn, "db_path", lambda: p)
-    sn._cache.update(key=None, notes=[])
-    eng = MacroEngine(FakeHost())
+    store = Store(":memory:")
+    store.add_sticky_note("Shopping list\nmilk, eggs")
+    store.add_sticky_note("Paths\nC:\\docs")
+    eng = MacroEngine(FakeHost(), store)
     assert eng.expand_to_text('{#stickynote "eggs"}', ExpansionContext()) == "Shopping list\nmilk, eggs"
     out = eng.expand_to_text('{#stickynote -all -sep "|"}', ExpansionContext())
-    assert out.split("|")[0].startswith("Paths")
+    assert set(out.split("|")) == {"Shopping list\nmilk, eggs", "Paths\nC:\\docs"}

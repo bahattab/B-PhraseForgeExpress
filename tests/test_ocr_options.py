@@ -53,6 +53,12 @@ class _Host:
     def set_clipboard(self, t):
         self.clip = t
 
+    def copy_checked(self, t):
+        if getattr(self, "clipboard_blocked", False):
+            return False
+        self.set_clipboard(t)
+        return True
+
 
 class _Tray:
     def __init__(self):
@@ -115,13 +121,44 @@ def test_tray_language_menu(app_like):
     t.ocr_language.connect(got.append)
     t._before_show()
     acts = t.ocr_lang_menu.actions()
-    assert [x.text() for x in acts] == ["Russian", "Arabic", "English"]
-    assert acts[0].isChecked() and not acts[1].isChecked()
-    acts[1].trigger()
-    assert got == ["Arabic"]
+    assert [x.text() for x in acts] == ["Auto", "Russian", "Arabic", "English"]
+    assert acts[1].isChecked() and not acts[0].isChecked() and not acts[2].isChecked()
+    acts[2].trigger()
+    acts[0].trigger()
+    assert got == ["Arabic", "Auto"]
 
 
 def test_ocr_hotkeys_map_to_commands():
     from phraseforge.triggers.manager import COMMAND_HOTKEY_SETTINGS as M
     assert M["ocr.recapture_hotkey"] == "ocr:recapture"
     assert [M[f"ocr.quick{i}_hotkey"] for i in (1, 2, 3)] == ["ocr:quick1", "ocr:quick2", "ocr:quick3"]
+
+
+def test_ocr_reports_when_the_clipboard_copy_fails(app_like, tmp_path):
+    a = app_like
+    log = tmp_path / "ocr.txt"
+    a.store.set_setting("ocr.log_file", str(log))
+    a.host.clipboard_blocked = True
+    a._ocr_to_clipboard("")
+    assert log.read_text(encoding="utf-8").startswith("hello")      # the log file still gets it
+    assert a.host.clip is None
+    assert "could not be copied" in a.tray.notes[-1][1]
+
+
+def test_copy_checked_reads_back_and_retries(monkeypatch):
+    from phraseforge import app as app_mod
+    host = app_mod.QtHost.__new__(app_mod.QtHost)
+    board = {"text": ""}
+    writes = []
+
+    def set_clip(t):
+        writes.append(t)
+        board["text"] = t if len(writes) > 1 else "something else"   # first copy is lost
+    host.set_clipboard = set_clip
+    host.get_clipboard = lambda: board["text"]
+    host._ui = lambda fn: fn()
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    assert host.copy_checked("line 1\nline 2") is True and len(writes) == 2
+    board["text"], writes[:] = "", []
+    host.set_clipboard = lambda t: writes.append(t)                  # never sticks
+    assert host.copy_checked("x") is False and len(writes) == 3

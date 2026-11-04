@@ -6,8 +6,9 @@ Segoe UI 9pt, blue selection, active ribbon tab bold with a blue underline.
 """
 from __future__ import annotations
 
+from PySide6.QtCore import QEvent, QObject
 from PySide6.QtGui import QColor, QFont, QPalette
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialogButtonBox
 
 ACCENT = "#2b579a"      # Office blue (ribbon underline, selection border)
 SELECT_BG = "#cce4f7"   # selected tree row / hovered menu item
@@ -15,6 +16,10 @@ PANEL = "#f3f3f3"       # ribbon, panels
 BORDER = "#c8c8c8"
 TEXT = "#262626"
 CAPTION = "#666666"
+FIELD_BORDER = "#8a8a8a"   # 3.45:1 on white: input borders must reach 3:1 (WCAG 1.4.11)
+PLACEHOLDER = "#6e6e6e"    # 5.1:1 on white (Fusion's default grey was 4.0:1)
+PRIMARY_HOVER = "#24497f"
+PRIMARY_PRESSED = "#1e3f73"
 
 QSS = f"""
 * {{ font-family: "Segoe UI"; font-size: 9pt; color: {TEXT}; }}
@@ -63,7 +68,7 @@ QHeaderView::section {{ background: {PANEL}; border: none; border-bottom: 1px so
 /* ---------------- editor fields ---------------- */
 #FieldCaption {{ font-weight: 600; padding-top: 6px; }}
 QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QDoubleSpinBox, QDateEdit, QTimeEdit, QComboBox {{
-  background: white; border: 1px solid #b9b9b9; border-radius: 0; padding: 2px 3px;
+  background: white; border: 1px solid {FIELD_BORDER}; border-radius: 0; padding: 2px 3px;
   selection-background-color: #3399ff; selection-color: white; }}
 QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QComboBox:focus, QSpinBox:focus {{
   border-color: {ACCENT}; }}
@@ -79,12 +84,28 @@ QAbstractSpinBox::down-button {{ subcontrol-position: bottom right; }}
 QAbstractSpinBox::up-button:hover, QAbstractSpinBox::down-button:hover {{ background: #e5f1fb; }}
 
 /* ---------------- buttons ---------------- */
-QPushButton {{ background: #e1e1e1; border: 1px solid #adadad; padding: 3px 14px; min-width: 64px; }}
+QPushButton {{ background: #e1e1e1; border: 1px solid #adadad; padding: 3px 14px; }}
+/* min-width only on OK/Cancel-type buttons: as a general rule it fixes every button's minimum
+   width, so a tight layout squeezed long labels ("Save as phrase") until they were cut off. */
+QDialogButtonBox QPushButton {{ min-width: 64px; }}
 QPushButton:hover {{ background: #e5f1fb; border-color: #0078d7; }}
 QPushButton:pressed {{ background: #cce4f7; border-color: #005499; }}
 QPushButton:default {{ border: 1px solid #0078d7; }}
 QPushButton:disabled {{ color: #a0a0a0; background: #f0f0f0; border-color: #d0d0d0; }}
 QPushButton:checked {{ background: #cce4f7; border-color: #0078d7; }}
+/* the main action of a window (OK, Send...): filled accent, white text (7.16:1) */
+QPushButton[primary="true"] {{ background: {ACCENT}; color: white; border: 1px solid {PRIMARY_PRESSED}; }}
+QPushButton[primary="true"]:hover {{ background: {PRIMARY_HOVER}; border-color: {PRIMARY_PRESSED}; }}
+QPushButton[primary="true"]:pressed {{ background: {PRIMARY_PRESSED}; }}
+QPushButton[primary="true"]:disabled {{ color: #a0a0a0; background: #f0f0f0; border-color: #d0d0d0; }}
+/* text buttons that open a menu: same face as QPushButton, room for the arrow on both sides
+   (padding is not mirrored in right-to-left layouts) */
+QToolButton#MenuButton {{ background: #e1e1e1; border: 1px solid #adadad; border-radius: 0;
+  padding: 3px 18px 3px 18px; }}
+QToolButton#MenuButton:hover {{ background: #e5f1fb; border-color: #0078d7; }}
+QToolButton#MenuButton:pressed, QToolButton#MenuButton:open {{ background: #cce4f7; border-color: #005499; }}
+QToolButton#MenuButton::menu-indicator {{ subcontrol-origin: padding; subcontrol-position: right center;
+  right: 5px; }}
 #ModifierButton {{ min-width: 36px; padding: 3px 8px; }}
 
 /* ---------------- groups / menus ---------------- */
@@ -139,17 +160,66 @@ def apply(app: QApplication) -> None:
     # Western digits in number/date fields even on an Arabic Windows locale;
     # text itself (Arabic phrases, RTL) is unaffected.
     QLocale.setDefault(QLocale(QLocale.English, QLocale.UnitedStates))
-    app.setStyle("Fusion")
+    # Each setter below re-polishes every open window, so only call it when the value
+    # really changes (applying the theme again, e.g. after Settings, is then cheap).
+    if app.style().name().lower() != "fusion":
+        app.setStyle("Fusion")
     pal = app.palette()
     pal.setColor(QPalette.Window, QColor(PANEL))
     pal.setColor(QPalette.Base, QColor("white"))
     pal.setColor(QPalette.Highlight, QColor("#0078d7"))
     pal.setColor(QPalette.HighlightedText, QColor("white"))
     pal.setColor(QPalette.Link, QColor("#0066cc"))
-    app.setPalette(pal)
+    pal.setColor(QPalette.PlaceholderText, QColor(PLACEHOLDER))
+    if pal != app.palette():
+        app.setPalette(pal)
     f = QFont("Segoe UI", 9)
-    app.setFont(f)
-    app.setStyleSheet(QSS + _arrow_images())
+    if f != app.font():
+        app.setFont(f)
+    qss = QSS + _arrow_images()
+    if qss != app.styleSheet():
+        app.setStyleSheet(qss)
+    if not getattr(app, "_pf_primary_filter", None):
+        app._pf_primary_filter = _PrimaryButtons(app)
+        app.installEventFilter(app._pf_primary_filter)
+
+
+def primary(button):
+    """Show a push button as the main action of its window (filled accent colour)."""
+    if button.property("primary") is not True:
+        button.setProperty("primary", True)
+        button.style().unpolish(button)
+        button.style().polish(button)
+    return button
+
+
+def menu_button(button):
+    """Give a text QToolButton that opens a menu the look of a normal push button."""
+    button.setObjectName("MenuButton")
+    return button
+
+
+_ACCEPT_ROLES = None
+
+
+def mark_dialog_buttons(box) -> None:
+    """Mark the OK/Yes/Save button of a QDialogButtonBox as the primary action."""
+    global _ACCEPT_ROLES
+    from PySide6.QtWidgets import QDialogButtonBox
+    if _ACCEPT_ROLES is None:
+        _ACCEPT_ROLES = (QDialogButtonBox.AcceptRole, QDialogButtonBox.YesRole)
+    accept = [b for b in box.buttons() if box.buttonRole(b) in _ACCEPT_ROLES]
+    if len(accept) == 1:          # several accept buttons: no single main action
+        primary(accept[0])
+
+
+class _PrimaryButtons(QObject):
+    """Marks the OK button of every QDialogButtonBox when its window is shown."""
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Show and isinstance(obj, QDialogButtonBox):
+            mark_dialog_buttons(obj)
+        return False
 
 
 def caption(text: str):

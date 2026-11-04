@@ -659,11 +659,24 @@ def _insert(rt, args, opts):
     content, fmt = found
     if fmt == "html":
         content = html_to_text(content)
+    # the inserted phrase keeps its own protection (security.py): a locked folder stays
+    # locked, and an unapproved phrase cannot run privileged macros through {#insert}
+    allow_before = rt.ctx.allow_privileged
+    target = None
+    if rt.store is not None and hasattr(rt.store, "quarantine_origin"):
+        target = rt.store.find_phrase(key) or (rt.store.get_phrase(int(key)) if key.isdigit() else None)
+    if target is not None:
+        from phraseforge.security import LOCKS
+        if LOCKS.is_locked(rt.store, target.folder_id):
+            raise MacroError(f"phrase '{key}' is in a locked folder")
+        if rt.store.quarantine_origin(target.id):
+            rt.ctx.allow_privileged = False
     rt.insert_stack.append(key.lower())
     try:
         return rt.engine.eval_nodes(parse(content), rt)
     finally:
         rt.insert_stack.pop()
+        rt.ctx.allow_privileged = allow_before
 
 
 # ====================================================================== text functions
@@ -985,9 +998,25 @@ def _ai(rt, args, opts):
        "Translate text using the translation engine from Settings > Language Translation "
        "(ignored words and glossaries are applied).", '{#translate {#clipboard} -to Arabic}')
 def _translate(rt, args, opts):
-    from phraseforge.ai import deepl_translate, translation_system
     keys = ("translation.ignored_words", "translation.glossaries", "translation.glossary_langs")
     provider = opts.get("provider", "") or rt.setting("translation.provider", "")
+
+    def free():
+        from phraseforge.ai import translate_text      # free service, no key needed
+        return translate_text({"translation.provider": "free"}, " ".join(args),
+                              opts.get("to", "English"), opts.get("from", "")).strip()
+    if provider == "free":
+        return free()
+    try:
+        return _translate_with(rt, args, opts, provider, keys)
+    except Exception as e:      # noqa: BLE001
+        if "key is not set" in str(e):                 # no key for that engine: use the free one
+            return free()
+        raise
+
+
+def _translate_with(rt, args, opts, provider, keys):
+    from phraseforge.ai import deepl_translate, translation_system
     if provider == "deepl":
         settings = {k: rt.setting(k, "") for k in keys + ("ai.deepl_key",)}
         return deepl_translate(settings, " ".join(args), opts.get("to", "English"), opts.get("from", "")).strip()
@@ -1001,7 +1030,7 @@ def _translate(rt, args, opts):
        "Select a screen region and insert its text (Capture2Text). Languages: Arabic, English, Russian.",
        "{#ocr -lang English}")
 def _ocr(rt, args, opts):
-    lang = opts.get("lang") or rt.setting("ocr.language", "English")
+    lang = opts.get("lang") or rt.setting("ocr.language", "Auto")
     if _flag(opts, "linebreaks"):
         keep = True
     elif _flag(opts, "nolinebreaks"):
@@ -1013,7 +1042,7 @@ def _ocr(rt, args, opts):
 
 @macro("ocrfile", "OCR", '{#ocrfile "C:\\image.png" -lang English}', "OCR an image file.")
 def _ocrfile(rt, args, opts):
-    lang = opts.get("lang") or rt.setting("ocr.language", "English")
+    lang = opts.get("lang") or rt.setting("ocr.language", "Auto")
     return rt.host.ocr_image(os.path.expandvars(_arg(args, 0)), language=lang)
 
 

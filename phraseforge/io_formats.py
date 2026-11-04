@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 
 from phraseforge import paths
-from phraseforge.db import Store, json_dumps
+from phraseforge.db import Store, json_dumps, untrusted_import
 from phraseforge.models import AutotextMode, Folder, OutputMode, Phrase, Trigger, TriggerKind
 
 _FOLDER_FIELDS = ("name", "parent_id", "sort", "enabled", "apps_include", "apps_exclude", "password_hash",
@@ -33,6 +33,7 @@ def export_json(store: Store, path: str | Path) -> int:
     return len(d["phrases"])
 
 
+@untrusted_import
 def import_dict(store: Store, d: dict, into_folder_id: int | None = None) -> dict[str, int]:
     """Import an export_dict() snapshot. Folder ids are remapped; new folders are created under
     into_folder_id (top level when None). Returns counts."""
@@ -78,6 +79,7 @@ def import_dict(store: Store, d: dict, into_folder_id: int | None = None) -> dic
     return {"folders": len(id_map) - 1, "phrases": n}
 
 
+@untrusted_import
 def import_json(store: Store, path: str | Path, into_folder_id: int | None = None) -> dict[str, int]:
     return import_dict(store, json.loads(Path(path).read_text(encoding="utf-8")), into_folder_id)
 
@@ -111,6 +113,7 @@ def export_csv(store: Store, path: str | Path) -> int:
     return len(phrases)
 
 
+@untrusted_import
 def import_csv(store: Store, path: str | Path, into_folder_id: int | None = None) -> int:
     n = 0
     with open(path, newline="", encoding="utf-8-sig") as fh:
@@ -158,13 +161,43 @@ def export_text_folder(store: Store, directory: str | Path) -> int:
     return n
 
 
+def read_text_any(path: str | Path) -> str:
+    """Text of a file written by any Windows program: UTF-8 (with or without BOM), UTF-16 with BOM,
+    else the PC's ANSI code page (Arabic Windows: cp1256). Line ends become "\\n"."""
+    text = _decode_any(Path(path).read_bytes())
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _decode_any(raw: bytes) -> str:
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16", errors="replace")
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        pass
+    import locale
+    enc = locale.getpreferredencoding(False) or "cp1252"
+    try:
+        return raw.decode(enc)
+    except (UnicodeDecodeError, LookupError):
+        return raw.decode("cp1252", errors="replace")
+
+
+def import_text_file(store: Store, path: str | Path, into_folder_id: int | None = None) -> int:
+    """One .txt file = one phrase; its name is the description."""
+    p = Path(path)
+    store.add_phrase(Phrase(p.stem, read_text_any(p), folder_id=into_folder_id))
+    return 1
+
+
+@untrusted_import
 def import_text_folder(store: Store, directory: str | Path, into_folder_id: int | None = None) -> int:
     root = Path(directory)
     n = 0
     for f in sorted(root.rglob("*.txt")):
         rel = f.relative_to(root).parent
         fid = ensure_folder_path(store, str(rel) if str(rel) != "." else "", into_folder_id)
-        store.add_phrase(Phrase(f.stem, f.read_text(encoding="utf-8", errors="replace"), folder_id=fid))
+        store.add_phrase(Phrase(f.stem, read_text_any(f), folder_id=fid))
         n += 1
     return n
 
@@ -240,6 +273,7 @@ def auto_backup(store: Store, force: bool = False, min_hours: float = 24) -> Pat
 
 
 # ---------------------------------------------------------------- dispatch by file type
+@untrusted_import
 def import_file(store: Store, path: str | Path, into_folder_id: int | None = None):
     """Import .json, .csv, a .textexpander group file, or a folder of .txt files."""
     p = Path(path)
@@ -257,7 +291,7 @@ def import_file(store: Store, path: str | Path, into_folder_id: int | None = Non
         from phraseforge.importers.textexpander import import_textexpander_file
         return import_textexpander_file(store, p).imported
     if ext == ".txt":
-        return import_text_folder(store, p.parent, into_folder_id)
+        return import_text_file(store, p, into_folder_id)
     raise ValueError(f"Unsupported file type: {ext or p.name}")
 
 

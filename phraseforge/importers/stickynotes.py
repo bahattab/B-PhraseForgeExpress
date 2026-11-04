@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from phraseforge.db import Store
+from phraseforge.db import Store, untrusted_import
 from phraseforge.models import Folder, Phrase
 from phraseforge.stickynotes import StickyNote
 
@@ -14,6 +14,7 @@ class StickyImportReport:
     folder_id: int | None = None
 
 
+@untrusted_import
 def import_notes(store: Store, notes: list[StickyNote], folder_name: str = "Sticky Notes",
                  into_folder_id: int | None = None) -> StickyImportReport:
     rep = StickyImportReport()

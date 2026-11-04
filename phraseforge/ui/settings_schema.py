@@ -35,6 +35,7 @@ SCHEMA: dict[str, str] = {
     "autocorrect.capitalize_sentences": "1",
     "autocorrect.two_initial_capitals": "0",
     "app.start_with_windows": DEFAULT_SETTINGS["app.start_with_windows"],
+    "updates.auto_check": "1",
     "app.diagnostic_mode": "0",
     "clipboard_history.max": DEFAULT_SETTINGS["clipboard_history.max"],
     "clipboard_history.enabled": "1",
@@ -76,7 +77,7 @@ SCHEMA: dict[str, str] = {
     "sync.gdrive_folder": "PhraseForge",
     "sync.folder_path": "",
     "sync.auto": "1",
-    "sync.interval_min": "15",
+    "sync.interval_min": "7",
     "backup.cloud_auto": "1",
     "backup.cloud_interval_hours": "24",
     "backup.cloud_keep": "10",
@@ -89,6 +90,11 @@ SCHEMA: dict[str, str] = {
     "ai.openai_key": "",
     "ai.anthropic_key": "",
     "ai.openrouter_key": "",
+    "ai.gemini_key": "",
+    "ai.opencode_key": "",
+    "ai.kilocode_key": "",
+    "ai.mistral_key": "",
+    "ocr.engine": "windows",            # windows (built in, offline) | mistral (cloud)
     "ai.ollama_url": DEFAULT_SETTINGS["ai.ollama_url"],
     "ai.gpt4all_url": DEFAULT_SETTINGS["ai.gpt4all_url"],
     "ai.deepl_key": "",
@@ -96,7 +102,7 @@ SCHEMA: dict[str, str] = {
     "ai.instructions.about": "",
     "ai.instructions.respond": "",
     # Translation
-    "translation.provider": "openai",
+    "translation.provider": "free",
     "translation.ignored_words": "",
     "translation.glossaries": "{}",
     "translation.glossary_langs": "{}",
@@ -105,8 +111,8 @@ SCHEMA: dict[str, str] = {
     "net.proxy_port": "80",
     "net.proxy_user": "",
     "net.proxy_password": "",
+    "net.allow_private_hosts": "0",        # {#http} to localhost / LAN addresses
     # Screen OCR (Capture2Text)
-    "ocr.cli_path": DEFAULT_SETTINGS["ocr.cli_path"],
     "ocr.language": DEFAULT_SETTINGS["ocr.language"],
     "ocr.keep_line_breaks": "1",
     "ocr.hotkey": DEFAULT_SETTINGS["ocr.hotkey"],
@@ -118,6 +124,12 @@ SCHEMA: dict[str, str] = {
     "ocr.quick1_hotkey": "",
     "ocr.quick2_hotkey": "",
     "ocr.quick3_hotkey": "",
+    "ocr.textline_hotkey": "",
+    "ocr.forward_hotkey": "",
+    "ocr.bubble_hotkey": "",
+    "ocr.scale": "0",                    # 0 = automatic, 1-4 = enlarge the capture
+    "ocr.whitelist": "",
+    "ocr.blacklist": "",
     "ocr.replace_rules": "",
     "ocr.log_file": "",
     "ocr.log_format": "${capture}${linebreak}",
@@ -130,6 +142,7 @@ SCHEMA: dict[str, str] = {
     # Search files (Listary-style launcher)
     "filesearch.enabled": "1",
     "filesearch.hotkey": "ctrl+alt+f",
+    "promptboost.hotkey": "ctrl+alt+b",
     "filesearch.roots": "",
     "filesearch.refresh_minutes": "30",
     "filesearch.include_hidden": "0",
@@ -142,7 +155,6 @@ SCHEMA: dict[str, str] = {
     "filesearch.actions": 'Edit with Notepad = notepad.exe | "{path}"',
     "filesearch.commands": FILESEARCH_COMMANDS,  # "keyword = Title | program | parameter with {query}"
     "filesearch.favorites": "",              # folders listed while the search box is empty
-    "onenote.clip_tool": "phraseforge",    # phraseforge | onenote (onenotecapture.exe)
     "onenote.clip_action": "image",        # image | ocr | both
     "onenote.include_ocr": "0",            # include text OneNote recognised in images
     # Phrase menu
@@ -269,6 +281,14 @@ def ensure_defaults(store) -> int:
     Returns how many defaults were added."""
     have = store.settings()
     migrate_legacy(store, have)
+    # 0.5.8: Auto sync runs every 7 minutes. Move the old default of 15 once (a value the
+    # user picked stays, and so does 15 if they choose it again later).
+    if "sync.interval_v2" not in have:
+        if have.get("sync.interval_min") == "15":
+            store.set_setting("sync.interval_min", "7")
+            have["sync.interval_min"] = "7"
+        store.set_setting("sync.interval_v2", "1")
+        have["sync.interval_v2"] = "1"
     added = 0
     for k, v in SCHEMA.items():
         if k not in have:

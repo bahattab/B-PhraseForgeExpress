@@ -66,6 +66,8 @@ ICONS: dict[str, tuple[str, str]] = {
     "settings": ("mdi6.tune-variant", GREY),
     "migration": ("mdi6.package-variant", GREY),
     "exit": ("mdi6.power", RED),
+    "pause": ("mdi6.pause-circle-outline", GREY),
+    "app_toggle": ("mdi6.application-edit-outline", GREEN),
     "database": ("mdi6.database-outline", ORANGE),
     # content tab
     "bold": ("mdi6.format-bold", GREY), "italic": ("mdi6.format-italic", GREY),
@@ -86,6 +88,7 @@ ICONS: dict[str, tuple[str, str]] = {
     "m_automation": ("mdi6.cog-play-outline", PURPLE), "m_programming": ("mdi6.code-braces", ORANGE),
     "m_textops": ("mdi6.format-text", ORANGE), "m_clipboard": ("mdi6.clipboard-outline", ORANGE),
     "m_recorder": ("mdi6.record-circle", RED), "m_ocr": ("mdi6.text-recognition", TEAL),
+    "m_ai": ("mdi6.creation", PURPLE),
     # OneNote picker (generic note icons, not Microsoft artwork)
     "on_notebook": ("mdi6.notebook-outline", PURPLE), "on_group": ("mdi6.folder-multiple-outline", PURPLE),
     "on_section": ("mdi6.bookmark-outline", PURPLE), "on_page": ("mdi6.file-document-outline", GREY),
@@ -109,6 +112,23 @@ ICONS: dict[str, tuple[str, str]] = {
 }
 
 
+# One calm palette: blue for commands, grey for neutral tools, yellow for folders and highlight,
+# red only where it warns (delete, exit, recording, text colour), orange only for warnings.
+KEEP_RED = {"delete", "exit", "m_recorder", "font_color"}
+KEEP_ORANGE = {"warning"}
+
+
+def tone(name: str, color: str) -> str:
+    """The colour actually used for an icon (see the palette note above)."""
+    if color in (BLUE, GREY, YELLOW):
+        return color
+    if color == RED and name in KEEP_RED:
+        return RED
+    if color == ORANGE and name in KEEP_ORANGE:
+        return ORANGE
+    return BLUE
+
+
 @lru_cache(maxsize=None)
 def icon(name: str, color: str | None = None) -> QIcon:
     """Return the icon for a semantic name (empty icon if unknown)."""
@@ -117,6 +137,6 @@ def icon(name: str, color: str | None = None) -> QIcon:
         return QIcon()
     try:
         import qtawesome as qta
-        return qta.icon(spec[0], color=color or spec[1])
+        return qta.icon(spec[0], color=color or tone(name, spec[1]))
     except Exception:  # qtawesome missing or font not found
         return QIcon()

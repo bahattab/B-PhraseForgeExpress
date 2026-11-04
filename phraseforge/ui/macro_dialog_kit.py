@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit, QPushButton, QRadioButton, QSpinBox, QToolButton, QVBoxLayout, QWidget,
 )
 
+from phraseforge.ui import pe_style
 from phraseforge.ui.iconset import icon
 
 # ---------------------------------------------------------------- context (set by the app)
@@ -514,7 +515,7 @@ class MacroDialog(QDialog):
             foot.addWidget(self.process_btn)
         foot.addStretch(1)
         self.ok_btn = QPushButton("OK")
-        self.ok_btn.setDefault(True)
+        pe_style.primary(self.ok_btn).setDefault(True)
         self.ok_btn.clicked.connect(self._accept)
         cancel = QPushButton("Cancel")
         cancel.clicked.connect(self.reject)

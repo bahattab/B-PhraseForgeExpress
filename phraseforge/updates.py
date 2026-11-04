@@ -1,4 +1,5 @@
-"""Check GitHub Releases for a newer PhraseForge (only when the user asks)."""
+"""Check GitHub Releases for a newer PhraseForge (Help > Check for updates, and once a day
+automatically unless turned off in Settings)."""
 from __future__ import annotations
 
 import json
@@ -31,5 +32,18 @@ def latest_release(timeout: float = 6.0, opener=urllib.request.urlopen) -> dict 
             return None
         raise OSError(f"GitHub answered {e.code}") from e
     tag = str(data.get("tag_name", ""))
+    setup = next((a.get("browser_download_url") for a in data.get("assets") or []
+                  if str(a.get("name", "")).lower().endswith(".exe") and "setup" in str(a.get("name", "")).lower()),
+                 "")
     return {"version": tag.lstrip("vV"), "url": data.get("html_url") or RELEASES_PAGE,
-            "name": data.get("name") or tag}
+            "name": data.get("name") or tag, "setup_url": setup or ""}
+
+
+def check_due(last_iso: str, now=None, hours: float = 24) -> bool:
+    """True when the last automatic check is older than `hours` (or never happened)."""
+    from datetime import datetime, timedelta
+    now = now or datetime.now()
+    try:
+        return not last_iso or now - datetime.fromisoformat(last_iso) >= timedelta(hours=hours)
+    except ValueError:
+        return True

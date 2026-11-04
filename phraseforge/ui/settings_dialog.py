@@ -21,9 +21,11 @@ from PySide6.QtWidgets import (
     QStackedWidget, QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QColorDialog,
 )
 
+from phraseforge.ui import pe_style
 from phraseforge import paths
 from phraseforge.db import Store
 from phraseforge.ui.hotkey_picker import KEYS, HotkeyPicker
+from phraseforge.ui.i18n import tr
 from phraseforge.ui.iconset import icon
 from phraseforge.ui.settings_schema import (
     SCHEMA, decode_delimiters, encode_delimiters, ensure_defaults,
@@ -35,8 +37,12 @@ PROVIDERS = [("OpenAI", "openai", "https://platform.openai.com/api-keys"),
              ("Anthropic (Claude)", "anthropic", "https://console.anthropic.com/settings/keys"),
              ("GPT4All", "gpt4all", "https://www.nomic.ai/gpt4all"),
              ("Ollama", "ollama", "https://ollama.com/download"),
-             ("OpenRouter", "openrouter", "https://openrouter.ai/keys")]
-TRANSLATION_PROVIDERS = [("Deepl", "deepl", "https://www.deepl.com/your-account/keys")] + PROVIDERS
+             ("Google Gemini", "gemini", "https://aistudio.google.com/apikey"),
+             ("OpenRouter", "openrouter", "https://openrouter.ai/keys"),
+             ("OpenCode Zen", "opencode", "https://opencode.ai/zen"),
+             ("Kilo Code", "kilocode", "https://app.kilo.ai")]
+TRANSLATION_PROVIDERS = [("Free (MyMemory, no key)", "free", "https://mymemory.translated.net/"),
+                         ("Deepl", "deepl", "https://www.deepl.com/your-account/keys")] + PROVIDERS
 LOCAL_ENGINES = {"ollama": "Ollama server URL:", "gpt4all": "GPT4All server URL (Settings > Enable local API server):"}
 # PhraseExpress 18 "Phrase menu contents" (order of the columns in a phrase row)
 MENU_CONTENTS = [("Description - QuickKey", "description_quickkey"),
@@ -97,6 +103,10 @@ def _b(v) -> bool:
 
 
 # ---------------------------------------------------------------- small widgets
+
+OCR_AUTO_HINT = ("Auto: PhraseForge reads the capture with each installed OCR language and keeps "
+                 "the one that fits, for example Arabic or English.")
+
 class DataCombo(QComboBox):
     """Combo of (text, value) items. setCurrentText also accepts the stored value."""
 
@@ -345,6 +355,92 @@ def _spin(lo: int, hi: int) -> QSpinBox:
     return s
 
 
+GDRIVE_SETUP_TEXT = (
+    "Google asks every app that uses Drive for its own free \"OAuth client\". One-time setup:\n\n"
+    "1. Open console.cloud.google.com and create a project (any name).\n"
+    "2. APIs & Services > Library: enable \"Google Drive API\".\n"
+    "3. Google Auth Platform (OAuth consent screen): User type External, app name \"PhraseForge\". "
+    "Then either add your Google address under Audience > Test users, or click \"Publish app\" "
+    "(in testing mode Google signs you out after 7 days).\n"
+    "4. Clients (Credentials) > Create client > Application type \"Desktop app\".\n"
+    "5. Copy the Client ID and Client secret into PhraseForge (or download the JSON file and choose it).\n"
+    "6. Click \"Sign in with Google\" and approve in the browser.\n\n"
+    "PhraseForge only asks for access to files it creates itself (drive.file).")
+
+
+class GoogleClientDialog(QDialog):
+    """Set up the Google OAuth client: paste Client ID + secret, or choose the JSON file."""
+
+    CONSOLE_URL = "https://console.cloud.google.com/apis/credentials"
+    DRIVE_API_URL = "https://console.cloud.google.com/apis/library/drive.googleapis.com"
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Google sign-in setup")
+        self.setMinimumWidth(560)
+        lay = QVBoxLayout(self)
+        steps = QLabel(GDRIVE_SETUP_TEXT)
+        steps.setWordWrap(True)
+        lay.addWidget(steps)
+        b1 = QPushButton("Enable Google Drive API")
+        b1.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(self.DRIVE_API_URL)))
+        b2 = QPushButton("Open Google Cloud Console")
+        b2.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(self.CONSOLE_URL)))
+        lay.addWidget(_row(b1, b2))
+        form = QFormLayout()
+        self.client_id = QLineEdit()
+        self.client_id.setPlaceholderText("1234567890-abc.apps.googleusercontent.com")
+        self.client_secret = QLineEdit()
+        self.client_secret.setEchoMode(QLineEdit.Password)
+        self.client_secret.setPlaceholderText("GOCSPX-...")
+        form.addRow("Client ID:", self.client_id)
+        form.addRow("Client secret:", self.client_secret)
+        lay.addLayout(form)
+        self.file_btn = QPushButton("Choose the downloaded JSON file instead...")
+        self.file_btn.clicked.connect(self._choose_file)
+        self.remove_btn = QPushButton("Remove my client")
+        self.remove_btn.clicked.connect(self._remove)
+        from phraseforge.cloud.gdrive import client_source
+        self.remove_btn.setVisible(client_source() == "own")
+        lay.addWidget(_row(self.file_btn, self.remove_btn))
+        self.error = QLabel()
+        self.error.setWordWrap(True)
+        self.error.setStyleSheet("color:#b00020")
+        lay.addWidget(self.error)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+    def _choose_file(self, path: str | None = None) -> bool:
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(self, "Google OAuth client file", "", "JSON (*.json)")
+            if not path:
+                return False
+        from phraseforge.cloud.gdrive import install_client_file
+        try:
+            install_client_file(path)
+        except Exception as e:
+            self.error.setText(str(e))
+            return False
+        super().accept()
+        return True
+
+    def _remove(self) -> None:
+        from phraseforge.cloud.gdrive import remove_own_client
+        remove_own_client()
+        self.remove_btn.setVisible(False)
+
+    def accept(self) -> None:  # noqa: D401 - Qt override
+        from phraseforge.cloud.gdrive import install_client_values
+        try:
+            install_client_values(self.client_id.text(), self.client_secret.text())
+        except Exception as e:
+            self.error.setText(str(e))
+            return
+        super().accept()
+
+
 def _run_with_wait(parent, text, fn):
     from phraseforge.ui.cloud_ui import run_with_wait
     return run_with_wait(parent, text, fn)
@@ -555,7 +651,7 @@ class SettingsDialog(QDialog):
         opts.setMinimumWidth(144)
         self.options_button = opts
         ok = QPushButton("OK")
-        ok.setDefault(True)
+        pe_style.primary(ok).setDefault(True)
         ok.clicked.connect(self.accept)
         cancel = QPushButton("Cancel")
         cancel.clicked.connect(self.reject)
@@ -588,7 +684,10 @@ class SettingsDialog(QDialog):
 
     def export_to(self, path: str) -> None:
         self.save()
-        data = {k: v for k, v in self.store.settings().items()}
+        from phraseforge.db import SECRET_SETTINGS
+        # API keys and the proxy password are left out: the file is plain JSON and may be
+        # mailed or synced. They are re-entered on the other PC.
+        data = {k: v for k, v in self.store.settings().items() if k not in SECRET_SETTINGS}
         with open(path, "w", encoding="utf-8") as fh:
             json.dump({"format": "phraseforge-settings", "settings": data,
                        "excluded_apps": sorted(self.store.excluded_apps())}, fh, ensure_ascii=False, indent=2)
@@ -600,14 +699,28 @@ class SettingsDialog(QDialog):
                 self.import_from(path)
             except Exception as e:
                 QMessageBox.warning(self, "Import settings", str(e))
+                return
+            if self.import_skipped:
+                QMessageBox.information(self, "Import settings", tr(
+                    "Imported. {n} setting(s) that only belong to this PC were kept as they are "
+                    "(network and proxy, server addresses, program and file paths, sync and backup "
+                    "folders). Set them here if you need to.").format(n=len(self.import_skipped)))
 
     def import_from(self, path: str) -> None:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
         if data.get("format") != "phraseforge-settings":
             raise ValueError("Not a PhraseForge settings file")
+        from phraseforge.db import is_device_setting
+        skipped = []
         for k, v in (data.get("settings") or {}).items():
+            if is_device_setting(str(k)):
+                # where data and keys go, programs, paths and sync stay as set on this PC: a
+                # settings file from elsewhere must not redirect them (set them here by hand)
+                skipped.append(str(k))
+                continue
             self.store.set_setting(str(k), str(v))
+        self.import_skipped = skipped
         if "excluded_apps" in data:
             self.store.set_excluded_apps(data["excluded_apps"])
         self._ai_keys = {}
@@ -640,7 +753,6 @@ class SettingsDialog(QDialog):
         stats = self.bind("features.usage_statistics", QCheckBox("Usage statistics"))
         gl.addWidget(_row(stats, _icon_button("info", "Count phrase usage to show the time you saved.")))
         gl.addWidget(self.bind("features.detect_unwanted_replacements", QCheckBox("Detect unwanted text replacements")))
-        gl.addSpacing(6)
         gl.addWidget(self.bind("features.disable_capslock", QCheckBox("Disable CAPSLOCK key to prevent unintended activation")))
         gl.addWidget(self.bind("tray.left_click_popup", QCheckBox("Left click on the tray icon opens the phrase menu (Ctrl+click pauses, Alt+click opens settings)")))
         gl.addWidget(self.bind("autocorrect.capitalize_sentences", QCheckBox("Capitalize first letter of sentences")))
@@ -650,6 +762,8 @@ class SettingsDialog(QDialog):
         self.start_with_windows = self.bind("app.start_with_windows", QCheckBox(f"Start {APP} with Windows"))
         gl.addWidget(self.start_with_windows)
         gl.addWidget(self.bind("app.diagnostic_mode", QCheckBox("Diagnostic mode")))
+        gl.addWidget(self.bind("updates.auto_check",
+                               QCheckBox(f"Check GitHub for new versions of {APP} automatically (once a day)")))
         lay.addWidget(g)
         lay.addStretch(1)
         # values edited in the gear dialogs
@@ -889,6 +1003,8 @@ class SettingsDialog(QDialog):
         lay.addWidget(_row(self.ai_key, self.ai_test, self.ai_status_icon))
         self.ai_status = QLabel()
         lay.addWidget(self.ai_status)
+        lay.addWidget(QLabel("Boost prompt hotkey (select a prompt in any program, then press it):"))
+        lay.addWidget(self.bind("promptboost.hotkey", Hotkey()))
         lay.addWidget(QLabel("Model (leave empty for the provider's default):"))
         self.ai_model = self.bind("ai.model", QLineEdit())
         self.ai_model.setFixedWidth(330)
@@ -1008,14 +1124,21 @@ class SettingsDialog(QDialog):
         d.prompt_edit = QPlainTextEdit(prompt)
         d.prompt_edit.setFixedHeight(60)
         gear = _icon_button("settings", "Model options", lambda: d.model_box.setVisible(not d.model_box.isVisible()))
-        v.addWidget(_row(d.prompt_edit, gear, stretch=False))
+
+        def _enhance():
+            from phraseforge.ui.ai_ui import enhance
+            out = enhance(self.store, d.prompt_edit.toPlainText(), parent=d)
+            if out:
+                d.prompt_edit.setPlainText(out)
+        d.enhance_btn = _icon_button("m_ai", "Enhance prompt (rewrite it with the AI engine)", _enhance)
+        v.addWidget(_row(d.prompt_edit, gear, d.enhance_btn, stretch=False))
         d.model_box = QWidget()
         mb = QVBoxLayout(d.model_box)
         mb.setContentsMargins(0, 0, 0, 0)
         mb.addWidget(QLabel("Model:"))
         d.model_combo = QComboBox()
         d.model_combo.setEditable(True)
-        d.model_combo.addItems(["Auto"] + sorted(set(DEFAULT_MODELS.values())))
+        d.model_combo.addItems(["Auto"] + sorted({m for m in DEFAULT_MODELS.values() if m}))
         d.model_combo.setCurrentText(model or "Auto")
         reset = QPushButton("Reset to defaults")
         reset.clicked.connect(lambda: d.model_combo.setCurrentText("Auto"))
@@ -1023,7 +1146,7 @@ class SettingsDialog(QDialog):
         d.model_box.setVisible(bool(model))
         v.addWidget(d.model_box)
         ok, cancel = QPushButton("OK"), QPushButton("Cancel")
-        ok.setDefault(True)
+        pe_style.primary(ok).setDefault(True)
         ok.clicked.connect(d.accept)
         cancel.clicked.connect(d.reject)
         v.addWidget(_row(QWidget(), ok, cancel))
@@ -1284,28 +1407,58 @@ class SettingsDialog(QDialog):
         gl_note = _wrap_label("Used for AI, translation, HTTP macros and Google Drive sync. "
                               "Leave Server empty to connect directly.")
         lay.addWidget(gl_note)
+        lay.addWidget(self.bind("net.allow_private_hosts", QCheckBox(
+            "Allow HTTP macros to reach this PC and the local network (localhost, 192.168.x.x, ...)")))
         lay.addStretch(1)
         return w
 
-    # ---- Screen OCR (Capture2Text)
+    # ---- Screen OCR (built in: Windows OCR engine, no external program)
     def _page_ocr(self) -> QWidget:
         w, lay = self._page()
-        g, gl = _group("Capture2Text")
-        gl.addWidget(_wrap_label("Screen OCR runs Capture2Text (a separate program) through Capture2Text_CLI.exe."))
-        gl.addWidget(QLabel("Capture2Text_CLI.exe location:"))
-        self.ocr_path = self.bind("ocr.cli_path", QLineEdit())
-        gl.addWidget(_row(self.ocr_path, _icon_button("folder", "Browse", self._browse_ocr), stretch=False))
+        g, gl = _group("Text recognition")
+        gl.addWidget(_wrap_label("PhraseForge reads text from the screen with the OCR engine built into "
+                                 "Windows. No other program is needed. To read Arabic, add the Arabic "
+                                 "language in Windows Settings > Time & language > Language & region."))
         gl.addWidget(QLabel("OCR language:"))
         self.ocr_language = DataCombo([])
         self.ocr_language.setEditable(True)
         self.ocr_language.setFixedWidth(198)
-        self._ocr_queried = False   # ask Capture2Text for languages only when the page is opened
+        self.ocr_language.setToolTip(tr(OCR_AUTO_HINT))
+        self._ocr_queried = False   # ask Windows for its OCR languages only when the page is opened
         self.bind_custom("ocr.language", lambda: self.ocr_language.currentText().strip(),
                          lambda v: self._fill_ocr_languages(v, query=self._ocr_queried))
         test = QPushButton("Test OCR")
         test.clicked.connect(self._test_ocr)
         gl.addWidget(_row(self.ocr_language, test))
+        self.ocr_installed = _wrap_label("")
+        gl.addWidget(self.ocr_installed)
+        gl.addWidget(_wrap_label(OCR_AUTO_HINT))
+        self.ocr_scale = self.bind("ocr.scale", DataCombo(
+            [("Automatic", "0"), ("1x", "1"), ("2x", "2"), ("3x", "3"), ("4x", "4")]))
+        gl.addWidget(_row("Enlarge the capture before reading:", self.ocr_scale))
+        gl.addWidget(QLabel("Keep only these characters (empty = all):"))
+        self.ocr_whitelist = self.bind("ocr.whitelist", QLineEdit())
+        self.ocr_whitelist.setPlaceholderText("0123456789")
+        gl.addWidget(self.ocr_whitelist)
+        gl.addWidget(QLabel("Remove these characters:"))
+        self.ocr_blacklist = self.bind("ocr.blacklist", QLineEdit())
+        gl.addWidget(self.ocr_blacklist)
         gl.addWidget(self.bind("ocr.keep_line_breaks", QCheckBox("Keep line breaks")))
+        lay.addWidget(g)
+        g, gl = _group("Mistral OCR (cloud)")
+        gl.addWidget(_wrap_label("Mistral AI's OCR reads PDF files and images into Markdown, with tables and "
+                                 "images (Tools > OCR PDF / image). It can also read screen captures. "
+                                 "The file or capture is uploaded to Mistral's servers, so use it only for "
+                                 "content you may share."))
+        self.ocr_engine = self.bind("ocr.engine", DataCombo(
+            [("Windows OCR (built in, offline)", "windows"), ("Mistral OCR (cloud)", "mistral")]))
+        gl.addWidget(_row("Engine for screen captures:", self.ocr_engine))
+        gl.addWidget(QLabel("Mistral API key:"))
+        self.mistral_key = self.bind("ai.mistral_key", QLineEdit())
+        self.mistral_key.setEchoMode(QLineEdit.Password)
+        visit = QPushButton("Get a key")
+        visit.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://console.mistral.ai/api-keys")))
+        gl.addWidget(_row(self.mistral_key, visit))
         lay.addWidget(g)
         g, gl = _group("Output")
         gl.addWidget(self.bind("ocr.save_to_clipboard", QCheckBox("Save to clipboard")))
@@ -1323,6 +1476,12 @@ class SettingsDialog(QDialog):
         gl.addWidget(self.ocr_hotkey)
         gl.addWidget(QLabel("Re-capture the last area:"))
         gl.addWidget(self.bind("ocr.recapture_hotkey", Hotkey()))
+        gl.addWidget(QLabel("Read the text line under the mouse pointer:"))
+        gl.addWidget(self.bind("ocr.textline_hotkey", Hotkey()))
+        gl.addWidget(QLabel("Read from the mouse pointer to the end of the line:"))
+        gl.addWidget(self.bind("ocr.forward_hotkey", Hotkey()))
+        gl.addWidget(QLabel("Read the text block (bubble) around the mouse pointer:"))
+        gl.addWidget(self.bind("ocr.bubble_hotkey", Hotkey()))
         gl.addWidget(QLabel("Quick-access languages (up to 3, comma separated):"))
         self.ocr_quick = self.bind("ocr.quick_languages", QLineEdit())
         gl.addWidget(self.ocr_quick)
@@ -1340,7 +1499,6 @@ class SettingsDialog(QDialog):
         gl.addWidget(self.ocr_replace)
         lay.addWidget(g)
         lay.addStretch(1)
-        self.ocr_path.editingFinished.connect(lambda: self._fill_ocr_languages(self.ocr_language.currentText()))
         return w
 
     def _browse_ocr_log(self) -> None:
@@ -1348,46 +1506,47 @@ class SettingsDialog(QDialog):
         if path:
             self.ocr_log_file.setText(path)
 
-    def _browse_ocr(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Capture2Text_CLI.exe", self.ocr_path.text(), "Programs (*.exe)")
-        if path:
-            self.ocr_path.setText(path)
-            self._fill_ocr_languages(self.ocr_language.currentText())
-
     def _fill_ocr_languages(self, current: str, query: bool = True) -> None:
         langs: list[str] = []
         if query:
             self._ocr_queried = True
             try:
-                from phraseforge.ocr import Capture2TextOCR
-                ocr = Capture2TextOCR(self.ocr_path.text())
+                from phraseforge.ocr import WindowsOCR
+                ocr = WindowsOCR()
                 if ocr.available():
                     langs = ocr.languages()
             except Exception:
                 langs = []
+            self.ocr_installed.setText(
+                tr("Installed in Windows: ") + ", ".join(langs) if langs else
+                tr("Windows reported no OCR languages."))
         self.ocr_language.clear()
-        self.ocr_language.addItems(langs or ["English", "Arabic", "Russian"])
-        self.ocr_language.setEditText(current or "English")
-        i = self.ocr_language.findText(current or "English")
+        self.ocr_language.addItems(["Auto"] + (langs or ["English", "Arabic"]))
+        self.ocr_language.setEditText(current or "Auto")
+        i = self.ocr_language.findText(current or "Auto")
         if i >= 0:
             self.ocr_language.setCurrentIndex(i)
 
     def _test_ocr(self) -> None:
         try:
-            from phraseforge.ocr import Capture2TextOCR
+            from phraseforge.app import _grab_screen_png
+            from phraseforge.ocr import WindowsOCR
             from phraseforge.ui.region_select import select_region
             self.hide()
             rect = select_region()
+            png = _grab_screen_png(rect) if rect else None
             self.show()
-            if not rect:
+            if not png:
                 return
-            text = Capture2TextOCR(self.ocr_path.text()).ocr_rect(
-                *rect, language=self.ocr_language.currentText(),
+            v = self.values()
+            text = WindowsOCR(scale=int(v.get("ocr.scale", "0") or 0), whitelist=v.get("ocr.whitelist", ""),
+                              blacklist=v.get("ocr.blacklist", "")).ocr_png(
+                png, language=self.ocr_language.currentText(),
                 keep_line_breaks=_b(self.values().get("ocr.keep_line_breaks", "1")))
-            QMessageBox.information(self, "Screen OCR", text or "(no text recognised)")
+            QMessageBox.information(self, tr("Screen OCR"), text or tr("(no text recognised)"))
         except Exception as e:  # show any OCR problem to the user
             self.show()
-            QMessageBox.warning(self, "Screen OCR", str(e))
+            QMessageBox.warning(self, tr("Screen OCR"), tr(str(e)))
 
     # ---- OneNote (desktop app through its official COM API)
     def _page_onenote(self) -> QWidget:
@@ -1421,12 +1580,9 @@ class SettingsDialog(QDialog):
         g, gl = _group("Screen clipping")
         gl.addWidget(QLabel("Hotkey: clip a screen area"))
         gl.addWidget(self.bind("onenote.clip_hotkey", Hotkey()))
-        self.onenote_clip_tool = self.bind("onenote.clip_tool", DataCombo(
-            [("PhraseForge area selection", "phraseforge"), ("OneNote's own clipping tool", "onenote")]))
         self.onenote_clip_action = self.bind("onenote.clip_action", DataCombo(
-            [("Add the picture to OneNote", "image"), ("Copy the recognised text (Capture2Text OCR)", "ocr"),
+            [("Add the picture to OneNote", "image"), ("Copy the recognised text (built-in OCR)", "ocr"),
              ("Both", "both")]))
-        gl.addWidget(_row("Tool:", self.onenote_clip_tool))
         gl.addWidget(_row("Then:", self.onenote_clip_action))
         lay.addWidget(g)
         lay.addStretch(1)
@@ -1565,8 +1721,8 @@ class SettingsDialog(QDialog):
         self.gdrive_status = QLabel()
         self.gdrive_status.setWordWrap(True)
         gb.addWidget(self.gdrive_status)
-        self.gdrive_client_btn = QPushButton("OAuth client file...")
-        self.gdrive_client_btn.setToolTip('The "Desktop app" OAuth client JSON from Google Cloud Console')
+        self.gdrive_client_btn = QPushButton("OAuth client...")
+        self.gdrive_client_btn.setToolTip('Your "Desktop app" OAuth client from Google Cloud Console')
         self.gdrive_client_btn.clicked.connect(self._choose_gdrive_client)
         self.gdrive_signin_btn = QPushButton("Sign in with Google")
         self.gdrive_signin_btn.clicked.connect(self._gdrive_sign_in_out)
@@ -1580,13 +1736,19 @@ class SettingsDialog(QDialog):
         self.folder_box, fb = _group("Folder")
         self.sync_folder = self.bind("sync.folder_path", QLineEdit())
         self.sync_folder.setPlaceholderText(r"e.g. G:\My Drive\PhraseForge")
-        fb.addWidget(_row(self.sync_folder, _icon_button("folder", "Browse", self._browse_sync_folder), stretch=False))
+        find_btn = QPushButton("Find Google Drive")
+        find_btn.setToolTip("Use the folder that Google Drive for desktop syncs (no Google sign-in needed)")
+        find_btn.clicked.connect(self._find_gdrive_folder)
+        fb.addWidget(_row(self.sync_folder, _icon_button("folder", "Browse", self._browse_sync_folder), find_btn,
+                          stretch=False))
+        # Typing a folder chooses this option, like signing in chooses Google Drive.
+        self.sync_folder.textEdited.connect(lambda t: t.strip() and self.cloud_radios["folder"].setChecked(True))
         lay.addWidget(self.folder_box)
 
         g, ob = _group("Options")
         self.sync_auto = self.bind("sync.auto", QCheckBox("Synchronize automatically every"))
         self.sync_interval = self.bind("sync.interval_min", _spin(1, 1440))
-        ob.addWidget(_row(self.sync_auto, self.sync_interval, "minutes, at start and on exit"))
+        ob.addWidget(_row(self.sync_auto, self.sync_interval, "minutes, at start, on exit and a minute after changes"))
         self.cloud_backup_auto = self.bind("backup.cloud_auto", QCheckBox("Back up to the cloud every"))
         self.cloud_backup_hours = self.bind("backup.cloud_interval_hours", _spin(1, 720))
         ob.addWidget(_row(self.cloud_backup_auto, self.cloud_backup_hours, "hours"))
@@ -1617,71 +1779,97 @@ class SettingsDialog(QDialog):
 
     def _update_cloud_ui(self, *_):
         prov = next((v for v, rb in self.cloud_radios.items() if rb.isChecked()), "off")
-        self.gdrive_box.setEnabled(prov == "gdrive")
-        self.folder_box.setEnabled(prov == "folder")
+        # The Google Drive box stays usable whatever is selected: signing in selects Google Drive.
+        self.gdrive_box.setEnabled(True)
+        # The folder box stays usable too: choosing a folder selects this option.
+        self.folder_box.setEnabled(True)
+        self.gdrive_signin_btn.setEnabled(True)
         try:
             d = self._drive()
-            if not d.has_client():
-                self.gdrive_status.setText("Step 1: choose your Google OAuth client file (see How to set up).")
-                self.gdrive_signin_btn.setEnabled(False)
-                self.gdrive_signin_btn.setText("Sign in with Google")
-            elif d.signed_in():
+            if d.signed_in():
                 self.gdrive_status.setText("Signed in to Google Drive. PhraseForge can only see the files it created.")
-                self.gdrive_signin_btn.setEnabled(True)
                 self.gdrive_signin_btn.setText("Sign out")
+            elif not d.has_client():
+                self.gdrive_status.setText("Click \"Sign in with Google\". The first time, PhraseForge helps you "
+                                           "create the free Google sign-in client it needs (about 5 minutes).")
+                self.gdrive_signin_btn.setText("Sign in with Google")
             else:
-                self.gdrive_status.setText("Not signed in. Click \"Sign in with Google\": your browser opens Google's login page.")
-                self.gdrive_signin_btn.setEnabled(True)
+                self.gdrive_status.setText("Not signed in. Click \"Sign in with Google\": your browser opens "
+                                           "Google's login page.")
                 self.gdrive_signin_btn.setText("Sign in with Google")
         except Exception as e:  # library missing etc.
             self.gdrive_status.setText(f"Google Drive is not available: {e}")
-            self.gdrive_signin_btn.setEnabled(False)
+            self.gdrive_signin_btn.setText("Sign in with Google")
         last = self.store.setting("sync.last_time", "")
         self.cloud_last.setText(f"Last synchronized: {last.replace('T', ' ')}" if last else "Not synchronized yet.")
 
-    def _choose_gdrive_client(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Google OAuth client file", "", "JSON (*.json)")
-        if not path:
-            return
-        try:
-            from phraseforge.cloud.gdrive import install_client_file
-            install_client_file(path)
-        except Exception as e:
-            QMessageBox.warning(self, "Google Drive", str(e))
+    def _choose_gdrive_client(self) -> bool:
+        """Set up the Google OAuth client (pasted ID + secret or a JSON file). True when one is set."""
+        d = GoogleClientDialog(self)
+        ok = d.exec() == QDialog.Accepted
         self._update_cloud_ui()
+        return ok
 
-    def _gdrive_sign_in_out(self) -> None:
-        d = self._drive()
-        if d.signed_in():
-            if QMessageBox.question(self, "Google Drive", "Sign out and remove PhraseForge's access to Google Drive?") \
+    def _gdrive_sign_in_out(self, quiet: bool = False) -> bool:
+        try:
+            d = self._drive()
+            signed_in = d.signed_in()
+        except Exception as e:
+            if not quiet:
+                QMessageBox.warning(self, "Google Drive", f"Google Drive is not available: {e}")
+            return False
+        if signed_in:
+            if quiet or QMessageBox.question(
+                    self, "Google Drive", "Sign out and remove PhraseForge's access to Google Drive?") \
                     == QMessageBox.Yes:
                 d.sign_out()
             self._update_cloud_ui()
-            return
+            return True
+        if not d.has_client() and (quiet or not self._choose_gdrive_client()):
+            return False
         ok, err = _run_with_wait(self, "Waiting for Google sign-in in your browser...", d.sign_in)
         if not ok:
-            QMessageBox.warning(self, "Google Drive", f"Sign-in did not complete.\n\n{err}")
+            if not quiet:
+                QMessageBox.warning(self, "Google Drive", f"Sign-in did not complete.\n\n{err}\n\n"
+                                    "If Google showed \"access blocked\" or \"app not verified\", check step 3 "
+                                    "of \"How to set up\" (test user or publishing status).")
         else:
-            email = d.email()
-            QMessageBox.information(self, "Google Drive", f"Signed in{(' as ' + email) if email else ''}.")
             self.cloud_radios["gdrive"].setChecked(True)
+            if not quiet:
+                email = d.email()
+                QMessageBox.information(self, "Google Drive", f"Signed in{(' as ' + email) if email else ''}.")
         self._update_cloud_ui()
+        return bool(ok)
 
     def _gdrive_help(self) -> None:
-        QMessageBox.information(self, "Set up Google sign-in", (
-            "Google asks every app that uses Drive for its own free \"OAuth client\". One-time setup:\n\n"
-            "1. Open console.cloud.google.com and create a project (any name).\n"
-            "2. APIs & Services > Library: enable \"Google Drive API\".\n"
-            "3. OAuth consent screen: User type External, add your own Google address as a test user.\n"
-            "4. Credentials > Create credentials > OAuth client ID > Application type \"Desktop app\".\n"
-            "5. Download the JSON file, then click \"OAuth client file...\" here and choose it.\n"
-            "6. Click \"Sign in with Google\".\n\n"
-            "PhraseForge only asks for access to files it creates itself (drive.file)."))
+        QMessageBox.information(self, "Set up Google sign-in", GDRIVE_SETUP_TEXT)
 
     def _browse_sync_folder(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "Sync folder", self.sync_folder.text())
         if d:
             self.sync_folder.setText(d)
+            self.cloud_radios["folder"].setChecked(True)
+
+    def _find_gdrive_folder(self) -> None:
+        """Fill in <My Drive>\\PhraseForge from Google Drive for desktop, if it is installed."""
+        from phraseforge.cloud.drive_folder import find_google_drive_folders, sync_folder_in
+        found = find_google_drive_folders()
+        if not found:
+            QMessageBox.information(
+                self, "Google Drive",
+                "Google Drive for desktop was not found on this PC.\n\n"
+                "Install it from google.com/drive/download and sign in there, then click "
+                "\"Find Google Drive\" again. Or click \"Sign in with Google\" above instead.")
+            return
+        choice = found[0]
+        if len(found) > 1:
+            items = [str(p) for p in found]
+            text, ok = QInputDialog.getItem(self, "Google Drive", "Google Drive folder to use:", items, 0, False)
+            if not ok:
+                return
+            choice = found[items.index(text)]
+        self.sync_folder.setText(str(sync_folder_in(choice)))
+        self.cloud_radios["folder"].setChecked(True)
 
     def _cloud_action(self, what: str) -> None:
         """Synchronize / back up / restore right away using the settings shown on this page."""

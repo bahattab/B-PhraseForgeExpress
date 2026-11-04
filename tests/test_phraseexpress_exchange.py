@@ -24,7 +24,7 @@ def test_encrypted_database_is_detected(tmp_path, store):
     assert pe.looks_encrypted(f)
     with pytest.raises(pe.EncryptedPhraseFile) as e:
         pe.import_any(store, f)
-    assert "CSV" in str(e.value)
+    assert "Export > text file" in str(e.value)
     with pytest.raises(pe.EncryptedPhraseFile):
         io_formats.import_file(store, f)
     plain = tmp_path / "plain.bin"

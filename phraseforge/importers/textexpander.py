@@ -16,7 +16,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from phraseforge.db import Store
+from phraseforge.db import Store, untrusted_import
 from phraseforge.models import AutotextMode, Folder, Phrase, Trigger, TriggerKind
 
 # TextExpander date/time tokens -> PhraseForge {#date -format} tokens
@@ -186,6 +186,7 @@ def _add(store: Store, folder_id: int, abbr: str, body: str, label: str, html: b
     report.imported += 1
 
 
+@untrusted_import
 def import_csv(store: Store, path: str | Path, folder_name: str | None = None) -> ImportReport:
     """TextExpander CSV export: abbreviation, content[, label]. No header row."""
     path = Path(path)
@@ -206,6 +207,7 @@ def import_csv(store: Store, path: str | Path, folder_name: str | None = None) -
     return report
 
 
+@untrusted_import
 def import_textexpander_file(store: Store, path: str | Path) -> ImportReport:
     """A .textexpander group file (XML or binary plist)."""
     path = Path(path)
@@ -227,6 +229,7 @@ def import_textexpander_file(store: Store, path: str | Path) -> ImportReport:
     return report
 
 
+@untrusted_import
 def import_macos_plist(store: Store, path: str | Path, data=None) -> ImportReport:
     """macOS Text Replacements export ("Text Substitutions.plist"): a list of
     {"shortcut": ..., "phrase": ...} dictionaries. TextExpander's web import lists this format."""
@@ -255,6 +258,7 @@ def import_macos_plist(store: Store, path: str | Path, data=None) -> ImportRepor
     return report
 
 
+@untrusted_import
 def import_any(store: Store, path: str | Path) -> ImportReport:
     p = Path(path)
     if p.suffix.lower() == ".csv":

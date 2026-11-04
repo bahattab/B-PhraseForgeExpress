@@ -14,6 +14,7 @@ import os
 import queue
 import sys
 import threading
+import time
 import traceback
 from typing import Any, Callable
 
@@ -26,13 +27,35 @@ from phraseforge.host import (
     Cancelled, ExpansionContext, ExpansionRequest, FormField, TextAction,
 )
 from phraseforge.models import OutputMode
-from phraseforge.ocr import Capture2TextOCR, OCRError
+from phraseforge.ocr import OCRError, WindowsOCR
 
 log = logging.getLogger("phraseforge")
+AFTER_CHANGE_SYNC_MS = 60_000      # Auto sync: wait this long after the last phrase change
 user32 = ctypes.windll.user32 if sys.platform == "win32" else None
 
 
 # ------------------------------------------------------------------ focus helpers
+def _bring_to_front(w) -> None:
+    """Raise one of our windows above other programs. A window opened from the tray
+    menu otherwise often appears behind the active program, because Windows only lets
+    the foreground program take the focus."""
+    w.show()
+    w.raise_()
+    w.activateWindow()
+    if user32:
+        try:
+            _restore_focus(int(w.winId()), force=True, settle_ms=0)
+        except Exception:
+            log.debug("bring to front failed", exc_info=True)
+
+
+def _exec_in_front(dlg):
+    """dlg.exec(), with the dialog brought in front of other programs once it is shown."""
+    from PySide6.QtCore import QTimer
+    QTimer.singleShot(0, lambda: _bring_to_front(dlg))
+    return dlg.exec()
+
+
 def _foreground_hwnd() -> int:
     return user32.GetForegroundWindow() if user32 else 0
 
@@ -110,19 +133,55 @@ def _clipboard_png() -> bytes | None:
     return _png_bytes(QApplication.clipboard().image())
 
 
+def _screen_physical(screen) -> tuple[int, int, int, int]:
+    """(x, y, width, height) of a screen in physical pixels. Qt keeps each screen's
+    origin unscaled and scales only sizes and offsets inside it (as in
+    ui.region_select.logical_to_physical, which produces the capture rectangles)."""
+    g, dpr = screen.geometry(), screen.devicePixelRatio()
+    return g.x(), g.y(), int(round(g.width() * dpr)), int(round(g.height() * dpr))
+
+
 def _grab_screen_png(rect) -> bytes | None:
     """Screenshot of a region given in physical pixels (from ui.region_select), main thread."""
     if not rect:
         return None
     x1, y1, x2, y2 = rect
     from PySide6.QtGui import QGuiApplication
+    QGuiApplication.processEvents()   # finish hiding the selection overlay first
     for screen in QGuiApplication.screens():
-        g, dpr = screen.geometry(), screen.devicePixelRatio()
-        px, py = int(g.x() * dpr), int(g.y() * dpr)            # screen origin in physical pixels
-        pw, ph = int(g.width() * dpr), int(g.height() * dpr)
+        px, py, pw, ph = _screen_physical(screen)
         if px <= x1 < px + pw and py <= y1 < py + ph:
             shot = screen.grabWindow(0)                         # whole screen, physical resolution
             return _png_bytes(shot.copy(x1 - px, y1 - py, x2 - x1, y2 - y1).toImage())
+    return None
+
+
+def _cursor_physical() -> tuple[int, int]:
+    """Mouse position in physical pixels (the coordinates _grab_screen_png uses)."""
+    if os.name == "nt":
+        from phraseforge.platform import windows
+        return windows.mouse_position()
+    from PySide6.QtGui import QCursor, QGuiApplication
+    pos = QCursor.pos()
+    screen = QGuiApplication.screenAt(pos) or QGuiApplication.primaryScreen()
+    g, dpr = screen.geometry(), screen.devicePixelRatio()
+    return int(g.x() + (pos.x() - g.x()) * dpr), int(g.y() + (pos.y() - g.y()) * dpr)
+
+
+def _area_around(x: int, y: int, mode: str):
+    """Screen area (physical pixels) to read around the pointer: a wide band for a text
+    line, a box for a bubble; clipped to the screen under the pointer."""
+    from PySide6.QtGui import QGuiApplication
+    for screen in QGuiApplication.screens():
+        dpr = screen.devicePixelRatio()
+        sx, sy, sw, sh = _screen_physical(screen)
+        if sx <= x < sx + sw and sy <= y < sy + sh:
+            if mode == "bubble":
+                half_w, half_h = int(450 * dpr), int(300 * dpr)
+            else:
+                half_w, half_h = int(900 * dpr), int(60 * dpr)
+            return (max(sx, x - half_w), max(sy, y - half_h),
+                    min(sx + sw, x + half_w), min(sy + sh, y + half_h))
     return None
 
 
@@ -202,8 +261,26 @@ class QtHost:
         return clipboard.get_text() or ""
 
     def set_clipboard(self, text):
+        """Put text on the clipboard from the UI thread. Its hidden owner window gets Windows
+        messages there; a worker thread's owner window never processes any."""
         from phraseforge.platform import clipboard
-        clipboard.set_text(text)
+        self._ui(lambda: clipboard.set_text(text))
+
+    def copy_checked(self, text: str, tries: int = 3) -> bool:
+        """set_clipboard, then read it back; retries a few times (another program may hold
+        or replace the clipboard). True when the clipboard holds the text."""
+        import time
+        for i in range(tries):
+            try:
+                self.set_clipboard(text)
+                got = self._ui(self.get_clipboard)
+            except Exception as e:
+                log.warning("clipboard copy failed (try %d): %s", i + 1, e)
+                got = None
+            if got is not None and got.replace("\r\n", "\n") == text.replace("\r\n", "\n"):
+                return True
+            time.sleep(0.15)
+        return False
 
     def clipboard_history(self, index):
         return self.store.clipboard_at(index)
@@ -251,8 +328,31 @@ class QtHost:
         translating = (system or "").startswith("You are a translator.")
         return ai.complete(self.store.settings(), prompt, provider, model, system, raw_system=translating)
 
-    def _ocr(self) -> Capture2TextOCR:
-        return Capture2TextOCR(self.store.setting("ocr.cli_path"))
+    def _ocr(self) -> WindowsOCR:
+        s = self.store.setting
+        try:
+            scale = int(s("ocr.scale", "0") or 0)
+        except ValueError:
+            scale = 0
+        return WindowsOCR(scale=scale, whitelist=s("ocr.whitelist", ""), blacklist=s("ocr.blacklist", ""))
+
+    def ocr_at_cursor(self, mode: str = "line", language: str = "") -> str:
+        """Capture2Text's Text Line / Forward Text Line / Bubble capture: read the text
+        under the mouse pointer without drawing a box."""
+        from phraseforge.ocr import apply_replacements, parse_replace_rules
+        x, y = _cursor_physical()
+        rect = self._ui(lambda: _area_around(x, y, mode))
+        if not rect:
+            raise OCRError("The mouse pointer is outside the screens.")
+        png = self._ui(lambda: _grab_screen_png(rect))
+        if not png:
+            raise OCRError("The area could not be captured.")
+        lang = language or self.store.setting("ocr.language", "Auto")
+        engine = self._ocr()
+        text = engine.ocr_at(png, x - rect[0], y - rect[1], mode=mode, language=lang,
+                             keep_line_breaks=self._keep_breaks(None))
+        rules = parse_replace_rules(self.store.setting("ocr.replace_rules", ""))
+        return apply_replacements(text, rules, engine.last_language or lang) if rules else text
 
     def _keep_breaks(self, keep_line_breaks) -> bool:
         if keep_line_breaks is None:   # Settings > Screen OCR > Keep line breaks
@@ -266,20 +366,40 @@ class QtHost:
         from phraseforge.ocr import apply_replacements, parse_replace_rules
         if rect is None:
             rect = self.select_screen_region()
+            log.info("OCR: area %s", rect)
             if not rect:
                 raise Cancelled()
         self.last_ocr_rect = tuple(rect)
-        lang = language or self.store.setting("ocr.language", "English")
-        text = self._ocr().ocr_rect(*rect, language=lang, keep_line_breaks=self._keep_breaks(keep_line_breaks))
+        lang = language or self.store.setting("ocr.language", "Auto")
+        import time
+        time.sleep(0.15)   # let the selection overlay disappear before the screenshot
+        png = self._ui(lambda: _grab_screen_png(rect))
+        log.info("OCR: captured %d bytes", len(png or b""))
+        if not png:
+            raise OCRError("The selected area could not be captured.")
+        if self.store.setting("ocr.engine", "windows") == "mistral":
+            # Settings > Screen OCR > engine "Mistral OCR (cloud)": the capture is uploaded
+            from phraseforge import mistral_ocr
+            try:
+                text = mistral_ocr.ocr_png_text(self.store.setting("ai.mistral_key", ""), png)
+            except mistral_ocr.MistralOCRError as e:
+                raise OCRError(str(e)) from e
+            used = language or ""
+        else:
+            engine = self._ocr()
+            text = engine.ocr_png(png, language=lang, keep_line_breaks=self._keep_breaks(keep_line_breaks))
+            used = engine.last_language or lang       # with "Auto", rules for the detected language apply
+        log.info("OCR: engine %s, language %s, %d characters read",
+                 self.store.setting("ocr.engine", "windows"), used, len(text or ""))
         rules = parse_replace_rules(self.store.setting("ocr.replace_rules", ""))
-        return apply_replacements(text, rules, lang) if rules else text
+        return apply_replacements(text, rules, used) if rules else text
 
     def onenote_page_text(self, ref, include_title=False, include_ocr=False):
         """{#onenote} macro: text of a OneNote page (worker thread, own COM apartment)."""
         return self.app._onenote().page_text(ref, include_title=include_title, include_ocr=include_ocr)
 
     def ocr_image(self, path, language=""):
-        lang = language or self.store.setting("ocr.language", "English")
+        lang = language or self.store.setting("ocr.language", "Auto")
         return self._ocr().ocr_image(path, language=lang, keep_line_breaks=self._keep_breaks(None))
 
     def setting(self, key, default=""):
@@ -396,6 +516,7 @@ class PhraseForgeApp(QObject):
         self.clip_window = None
         self.file_window = None
         self.quick_note = None
+        self.sticky = None          # ui.sticky_notes.StickyNotesManager, created on first use
         self.file_index = None
 
         from phraseforge.macros import MacroEngine
@@ -416,9 +537,14 @@ class PhraseForgeApp(QObject):
         self._build_cloud()
         self._build_local_backups()
         self._build_file_index()
+        self._build_update_check()
         # the executor tells the trigger layer while it types, so our own output is ignored
         self.output = OutputExecutor(store.setting, busy_callback=self.triggers.set_busy)
         threading.Thread(target=self._worker, name="expansion", daemon=True).start()
+        # OneNote actions get their own thread: a OneNote call that waits (for example while
+        # OneNote shows a dialog) must not hold up text expansion and OCR.
+        self._onenote_jobs: queue.Queue = queue.Queue()
+        threading.Thread(target=self._onenote_worker, name="onenote", daemon=True).start()
 
     # ---------------------------------------------------------- commands
     def _build_commands(self):
@@ -456,11 +582,20 @@ class PhraseForgeApp(QObject):
         reg("autocorrect", lambda arg, hwnd: self._jobs.put(("replace", arg, hwnd)))       # "<erase>:<text>"
         reg("undo_expansion", lambda arg, hwnd: self._jobs.put(("undo", arg, hwnd)))       # "<pid>:<typed>"
         # Microsoft OneNote (Settings > OneNote hotkeys, tray menu)
-        reg("onenote_send_clipboard", lambda arg, hwnd: self._jobs.put(("call", self._onenote_send_clipboard, hwnd)))
-        reg("onenote_clip", lambda arg, hwnd: self._jobs.put(("call", self._onenote_clip, hwnd)))
+        reg("onenote_send_clipboard", lambda arg, hwnd: self._onenote_jobs.put(self._onenote_send_clipboard))
+        reg("onenote_clip", lambda arg, hwnd: self._onenote_jobs.put(self._onenote_clip))
         reg("quick_note", lambda arg, hwnd: post(self._show_quick_note))   # like ONENOTEM "New Quick Note"
-        # Microsoft Sticky Notes
-        reg("open_sticky_notes", lambda arg, hwnd: self._open_sticky_notes())
+        # Sticky notes built into PhraseForge (ui/sticky_notes.py)
+        reg("open_sticky_notes", lambda arg, hwnd: post(
+            lambda: self._open_sticky_notes(int(arg) if arg.isdigit() else None)))
+        reg("new_sticky_note", lambda arg, hwnd: post(self._new_sticky_note))
+        reg("sync_now", lambda arg, hwnd: post(self.sync_now))
+        reg("prompt_tower", lambda arg, hwnd: post(lambda: self.show_prompt_tower(arg)))
+        reg("ocr_file", lambda arg, hwnd: post(lambda: self.ocr_file(arg)))
+        reg("prompt_optimizer", lambda arg, hwnd: post(self.show_prompt_optimizer))
+        reg("boost_selection", lambda arg, hwnd: self._jobs.put(("call", lambda: self._boost_selection(hwnd), hwnd)))
+        reg("delete_sticky_note", lambda arg, hwnd: post(
+            lambda: self.sticky_notes().delete_note(int(arg)) if arg.isdigit() else None))
         # Search files (Listary-style launcher, phraseforge/filesearch.py)
         reg("file_search", lambda arg, hwnd: post(lambda: self._show_file_search(hwnd)))
 
@@ -498,7 +633,7 @@ class PhraseForgeApp(QObject):
         if self.quick_note is None:
             self.quick_note = QuickNoteWindow()
             self.quick_note.send_to_onenote.connect(
-                lambda text: self._jobs.put(("call", lambda: self._onenote_send_note(text), 0)))
+                lambda text: self._onenote_jobs.put(lambda: self._onenote_send_note(text)))
             self.quick_note.save_as_phrase.connect(self._quick_note_phrase)
         self.quick_note.show_note()
 
@@ -513,27 +648,19 @@ class PhraseForgeApp(QObject):
         self.tray.notify("PhraseForge", "Quick note saved as a phrase")
 
     def _onenote_clip(self):
-        """Screen clipping: PhraseForge's region selector (or OneNote's own clipping tool),
-        then add the image to OneNote and/or OCR it to the clipboard (Settings > OneNote)."""
+        """Screen clipping with PhraseForge's own area selection, then add the image to
+        OneNote and/or read its text with the built-in OCR (Settings > OneNote)."""
         st = self.store.setting
         action = st("onenote.clip_action", "image")
-        if st("onenote.clip_tool", "phraseforge") == "onenote":
-            png = self._clip_with_onenote_tool()
-        else:
-            rect = self.host.select_screen_region()
-            png = self.host._ui(lambda: _grab_screen_png(rect)) if rect else None
+        rect = self.host.select_screen_region()
+        if rect:
+            time.sleep(0.15)   # let the selection overlay disappear before the screenshot
+        png = self.host._ui(lambda: _grab_screen_png(rect)) if rect else None
         if not png:
             return
         if action in ("ocr", "both"):
-            import tempfile
-            fd, tmp = tempfile.mkstemp(suffix=".png")
-            os.close(fd)
-            try:
-                with open(tmp, "wb") as fh:
-                    fh.write(png)
-                text = self.host.ocr_image(tmp)
-            finally:
-                os.unlink(tmp)
+            text = self.host._ocr().ocr_png(png, language=st("ocr.language", "Auto"),
+                                            keep_line_breaks=self.host._keep_breaks(None))
             if text:
                 self.host.set_clipboard(text)
                 self.poster.posted.emit(lambda: self.tray.notify("Clip text copied", text[:100]))
@@ -542,32 +669,29 @@ class PhraseForgeApp(QObject):
             self._onenote().send(image_png=png, target=ref, title="Screen clipping")
             self.poster.posted.emit(lambda: self.tray.notify("Clip sent to OneNote", ref or "Quick Notes"))
 
-    def _clip_with_onenote_tool(self, timeout_s: float = 60):
-        """Start OneNote's screen clipping tool and wait for the clip to land on the clipboard."""
-        import subprocess
-        import time
-        from phraseforge.onenote import capture_exe
-        from phraseforge.platform import clipboard
-        exe = capture_exe()
-        if not exe:
-            self.poster.posted.emit(lambda: self.tray.notify("OneNote", "onenotecapture.exe was not found."))
-            return None
-        before = clipboard.sequence_number()
-        subprocess.Popen([exe])
-        end = time.time() + timeout_s
-        while time.time() < end:
-            time.sleep(0.3)
-            if clipboard.sequence_number() != before:
-                time.sleep(0.3)
-                return self.host._ui(_clipboard_png)
-        return None
+    def sticky_notes(self):
+        """The sticky-notes manager (main thread)."""
+        if self.sticky is None:
+            from phraseforge.ui.sticky_notes import StickyNotesManager
+            self.sticky = StickyNotesManager(self.store)
+            self.sticky.save_as_phrase.connect(self._sticky_note_phrase)
+        return self.sticky
 
-    def _open_sticky_notes(self):
-        try:
-            from phraseforge import stickynotes
-            stickynotes.open_app()
-        except Exception as e:
-            self.poster.posted.emit(lambda e=e: self.tray.notify("Sticky Notes", f"Could not open Sticky Notes: {e}"))
+    def _open_sticky_notes(self, note_id=None):
+        if note_id is None:
+            self.sticky_notes().show_list()
+        else:
+            self.sticky_notes().open_note(note_id)
+
+    def _new_sticky_note(self):
+        self.sticky_notes().new_note()
+
+    def _sticky_note_phrase(self, title: str, text: str):
+        from phraseforge.models import Phrase
+        if not text.strip():
+            return
+        self.store.add_phrase(Phrase(title, text, tags=["stickynotes"]))
+        self.tray.notify("PhraseForge", "Note saved as a phrase")
 
     # ---- trigger-layer command handlers
     def _pause_cmd(self):
@@ -655,7 +779,8 @@ class PhraseForgeApp(QObject):
         self.tray.settings.connect(self.show_settings)
         if hasattr(self.tray, "show_statistics"):
             self.tray.show_statistics.connect(self.show_statistics)
-        for sig in ("onenote_send_clipboard", "onenote_clip", "open_sticky_notes", "file_search", "quick_note",
+        for sig in ("onenote_send_clipboard", "onenote_clip", "open_sticky_notes", "new_sticky_note",
+                    "file_search", "quick_note", "prompt_tower", "prompt_optimizer",
                     "new_phrase_from_clipboard", "edit_last_phrase"):   # OneNote / Sticky Notes items
             if hasattr(self.tray, sig):
                 getattr(self.tray, sig).connect(lambda _=None, c=sig: self.on_command(c))
@@ -711,12 +836,90 @@ class PhraseForgeApp(QObject):
         self._cloud_timer.timeout.connect(self._cloud_tick)
         self._cloud_timer.start(60_000)
         QTimer.singleShot(10_000, lambda: self._cloud_tick(force_sync=True))
+        # Sync soon after phrases change, so nobody has to remember Send/Receive. Each new
+        # change restarts the wait, so a burst of edits gives one sync.
+        self._change_sync_timer = QTimer(self)
+        self._change_sync_timer.setSingleShot(True)
+        self._change_sync_timer.setInterval(AFTER_CHANGE_SYNC_MS)
+        self._change_sync_timer.timeout.connect(self._sync_after_change)
 
-    def _cloud_tick(self, force_sync: bool = False):
+    def _schedule_sync_after_change(self):
+        """UI thread: (re)start the short wait before syncing a change."""
+        st = self.store
+        timer = getattr(self, "_change_sync_timer", None)
+        if timer is not None and st.setting("sync.provider", "off") != "off" \
+                and st.setting("sync.auto", "1") == "1":
+            timer.start()
+
+    def _sync_after_change(self):
+        st = self.store
+        if st.setting("sync.provider", "off") == "off" or st.setting("sync.auto", "1") != "1":
+            return
+        if not self._cloud_tick(force_sync=True):
+            self._change_sync_timer.start()          # a sync is running: try again after the wait
+
+    # ---------------------------------------------------------- automatic update check
+    def _build_update_check(self):
+        """Look for a newer release on GitHub shortly after start and then once a day
+        (Settings > General > Check for updates automatically)."""
+        from PySide6.QtCore import QTimer
+        self._update_timer = QTimer(self, interval=60 * 60_000)        # re-checks hourly whether a day passed
+        self._update_timer.timeout.connect(self.auto_check_updates)
+        self._update_timer.start()
+        QTimer.singleShot(30_000, self.auto_check_updates)
+
+    def auto_check_updates(self, latest=None, force: bool = False) -> dict | None:
+        """latest: test hook () -> release dict. Returns the newer release it announced."""
+        from datetime import datetime
+        from phraseforge import __version__, updates
+        st = self.store
+        if st.setting("updates.auto_check", "1") != "1":
+            return None
+        if not force and not updates.check_due(st.setting("updates.last_check", "")):
+            return None
+        box: dict = {}
+
+        def work():
+            try:
+                box["rel"] = (latest or updates.latest_release)()
+            except Exception as e:      # offline, proxy, rate limit: try again tomorrow
+                log.info("update check failed: %s", e)
+            st.set_setting("updates.last_check", datetime.now().isoformat(timespec="seconds"))
+            rel = box.get("rel")
+            if rel and updates.is_newer(rel["version"], __version__) and \
+                    st.setting("updates.notified_version", "") != rel["version"]:
+                st.set_setting("updates.notified_version", rel["version"])
+                url = rel.get("setup_url") or rel["url"]
+
+                def show(rel=rel, url=url):
+                    from PySide6.QtCore import QUrl
+                    from PySide6.QtGui import QDesktopServices
+                    self.tray.notify(f"PhraseForge {rel['version']} is available",
+                                     f"You have {__version__}. Click here to download the new version.",
+                                     ms=15000, on_click=lambda: QDesktopServices.openUrl(QUrl(url)))
+                self.poster.posted.emit(show)
+                box["announced"] = rel
+        if latest is not None:
+            work()                      # tests: run inline
+            return box.get("announced")
+        threading.Thread(target=work, name="update-check", daemon=True).start()
+        return None
+
+    def sync_now(self):
+        """Send/Receive updates (Ctrl+F5): synchronize with the cloud now."""
+        if self.store.setting("sync.provider", "off") == "off":
+            self.tray.notify("Send/Receive updates",
+                             "Choose a cloud service in Settings > Backup & Sync first.")
+            self.show_settings()
+            return
+        if not self._cloud_tick(force_sync=True, manual=True):
+            self.tray.notify("Send/Receive updates", "A synchronization is already running.")
+
+    def _cloud_tick(self, force_sync: bool = False, manual: bool = False) -> bool:
         from datetime import datetime, timedelta
         st = self.store
         if st.setting("sync.provider", "off") == "off" or not self._cloud_busy.acquire(blocking=False):
-            return
+            return False
 
         def due(key: str, minutes: float) -> bool:
             last = st.setting(key, "")
@@ -724,13 +927,13 @@ class PhraseForgeApp(QObject):
                 return not last or datetime.now() - datetime.fromisoformat(last) >= timedelta(minutes=minutes)
             except ValueError:
                 return True
-        do_sync = st.setting("sync.auto", "1") == "1" and (
-            force_sync or due("sync.last_time", float(st.setting("sync.interval_min", "15") or 15)))
-        do_backup = st.setting("backup.cloud_auto", "1") == "1" and due(
+        do_sync = manual or st.setting("sync.auto", "1") == "1" and (
+            force_sync or due("sync.last_time", float(st.setting("sync.interval_min", "7") or 7)))
+        do_backup = not manual and st.setting("backup.cloud_auto", "1") == "1" and due(
             "backup.cloud_last", 60 * float(st.setting("backup.cloud_interval_hours", "24") or 24))
         if not (do_sync or do_backup):
             self._cloud_busy.release()
-            return
+            return True
 
         def work():
             try:
@@ -744,6 +947,10 @@ class PhraseForgeApp(QObject):
                     st.set_setting("backup.cloud_last", datetime.now().isoformat(timespec="seconds"))
                 if do_sync:
                     res = cs.sync()
+                    if manual and res.action not in ("pulled", "conflict"):
+                        msg = {"pushed": "Your phrases were sent to the cloud."}.get(
+                            res.action, "Your phrases are up to date.")
+                        self.poster.posted.emit(lambda m=msg: self.tray.notify("Send/Receive updates", m))
                     if res.action in ("pulled", "conflict"):
                         def on_ui(cs=cs, res=res):
                             from phraseforge.ui.cloud_ui import handle_sync_result
@@ -757,6 +964,7 @@ class PhraseForgeApp(QObject):
             finally:
                 self._cloud_busy.release()
         threading.Thread(target=work, name="cloud-sync", daemon=True).start()
+        return True
 
     def _cloud_push_on_exit(self):
         """Upload local changes before quitting (no pull, no prompts)."""
@@ -783,6 +991,8 @@ class PhraseForgeApp(QObject):
             self.learner.invalidate_phrases()
         if kind in ("phrase", "folder", "setting"):
             self.poster.posted.emit(self.triggers.reload)
+        if kind in ("phrase", "folder"):
+            self.poster.posted.emit(self._schedule_sync_after_change)
         if kind == "setting" and getattr(self, "tray", None) is not None:
             self.poster.posted.emit(self._apply_tray_click)
 
@@ -917,7 +1127,18 @@ class PhraseForgeApp(QObject):
         self.tray.notify("PhraseForge paused", f"Text expansion resumes in {secs} seconds.")
         QTimer.singleShot(secs * 1000, lambda: self.set_paused(False))
 
-    # ---------------------------------------------------------- worker thread
+    # ---------------------------------------------------------- worker threads
+    def _onenote_worker(self):
+        while True:
+            fn = self._onenote_jobs.get()
+            try:
+                fn()
+            except Cancelled:
+                pass
+            except Exception as e:
+                log.exception("OneNote job failed")
+                self.poster.posted.emit(lambda e=e: self.tray.notify("OneNote", str(e)))
+
     def _worker(self):
         while True:
             kind, payload, hwnd = self._jobs.get()
@@ -971,11 +1192,15 @@ class PhraseForgeApp(QObject):
         p = self.store.get_phrase(req.phrase_id)
         if not p:
             return
+        if not unlocked_for(self, p, req):
+            return
         ctx = req.context
         ctx.phrase_id, ctx.phrase_description = p.id, p.description
         # language version: chosen in the phrase menu, else the active language (Settings)
         lang = getattr(req, "language", "") or self.store.setting("phrase.active_language", "")
         p.content, p.content_format = self.store.phrase_text(p, lang)
+        if not approved_for(self, p, req):
+            return
         if "{#selection" in p.content and not ctx.selected_text:
             from phraseforge.platform import windows
             ctx.selected_text = windows.get_selected_text() or ""
@@ -1149,18 +1374,29 @@ class PhraseForgeApp(QObject):
     def _ocr_language_choices(self):
         """Tray "OCR language" menu: the current language plus the quick-access ones."""
         from phraseforge.ocr import quick_languages
-        current = self.store.setting("ocr.language", "English")
+        from phraseforge.ocr import AUTO
+        current = self.store.setting("ocr.language", AUTO)
         langs = quick_languages(self.store.setting("ocr.quick_languages", ""))
         if current and current not in langs:
             langs.insert(0, current)
+        if AUTO not in langs:
+            langs.insert(0, AUTO)
         return langs, current
 
     def _ocr_to_clipboard(self, mode: str = ""):
         """mode: "" draw an area; "recapture" OCR the last area again; "quickN" draw an
         area and use quick-access language N (Settings > Screen OCR)."""
-        from phraseforge.ocr import format_log_entry, quick_languages
+        from phraseforge.ocr import quick_languages
         s = self.store.setting
         language, rect = "", None
+        if mode in ("textline", "forward", "bubble"):
+            try:
+                text = self.host.ocr_at_cursor({"textline": "line"}.get(mode, mode))
+            except OCRError as e:
+                self.poster.posted.emit(lambda e=e: self.tray.notify("OCR", str(e)))
+                return
+            self._ocr_deliver(text)
+            return
         if mode == "recapture":
             rect = getattr(self.host, "last_ocr_rect", None)
             if not rect:
@@ -1173,8 +1409,19 @@ class PhraseForgeApp(QObject):
                 self.poster.posted.emit(lambda: self.tray.notify("OCR", f"Quick-access language {i + 1} is not set"))
                 return
             language = langs[i]
-        text = self.host.ocr_region(language=language, rect=rect)
+        try:
+            text = self.host.ocr_region(language=language, rect=rect)
+        except OCRError as e:   # e.g. the OCR language is not installed in Windows
+            self.poster.posted.emit(lambda e=e: self.tray.notify("OCR", str(e)))
+            return
+        self._ocr_deliver(text)
+
+    def _ocr_deliver(self, text: str):
+        """Settings > Screen OCR > Output: log file, clipboard, notification."""
+        s = self.store.setting
+        from phraseforge.ocr import format_log_entry
         if not text:
+            log.info("OCR: no text recognised")
             self.poster.posted.emit(lambda: self.tray.notify("OCR", "No text recognised"))
             return
         log_file = s("ocr.log_file", "").strip()
@@ -1185,8 +1432,14 @@ class PhraseForgeApp(QObject):
             except OSError:
                 log.exception("OCR log file")
         copied = s("ocr.save_to_clipboard", "1") != "0"
-        if copied:
-            self.host.set_clipboard(text)
+        if copied and not self.host.copy_checked(text):
+            log.warning("OCR: the text could not be put on the clipboard")
+            self.poster.posted.emit(lambda: self.tray.notify(
+                "OCR", "The text was read but could not be copied to the clipboard. Another program "
+                       "may be holding the clipboard; try again."))
+            return
+        log.info("OCR: %d characters delivered (clipboard %s, notification %s)", len(text),
+                 "on" if copied else "off", "on" if s("ocr.show_popup", "1") != "0" else "off")
         if s("ocr.show_popup", "1") != "0":
             preview = text if len(text) < 120 else text[:117] + "..."
             title = "OCR copied to clipboard" if copied else "OCR"
@@ -1218,6 +1471,7 @@ class PhraseForgeApp(QObject):
                     lambda text: self._jobs.put(("text", text, self._popup_hwnd)))
             if hasattr(self.popup, "new_phrase_requested"):
                 self.popup.new_phrase_requested.connect(self._new_phrase_from_popup)
+                self.popup.sticky_notes_requested.connect(lambda: self._open_sticky_notes())
         try:
             from phraseforge.platform import windows
             self._popup_app = windows.foreground_app()[0]
@@ -1246,7 +1500,7 @@ class PhraseForgeApp(QObject):
 
     def show_statistics(self):
         from phraseforge.ui.stats_window import StatsWindow
-        StatsWindow(self.store).exec()
+        _exec_in_front(StatsWindow(self.store))
 
     # ---- Search files (Listary-style launcher)
     def _build_file_index(self):
@@ -1268,6 +1522,107 @@ class PhraseForgeApp(QObject):
         self._file_index_timer = QTimer(interval=minutes * 60_000)
         self._file_index_timer.timeout.connect(lambda: self.file_index.building or self.file_index.build_async())
         self._file_index_timer.start()
+
+    def show_prompt_tower(self, set_name: str = ""):
+        """Prompt Tower: build an AI prompt from project files (ui/prompt_tower.py)."""
+        from phraseforge.ui.prompt_tower import PromptTowerWindow
+        w = getattr(self, "prompt_tower", None)
+        if w is None:
+            w = self.prompt_tower = PromptTowerWindow(self.store)
+            w.save_as_phrase.connect(self._prompt_to_phrase)
+        if set_name:
+            w.load_set(set_name)
+        if w.isMinimized():
+            w.showNormal()
+        _bring_to_front(w)
+        return w
+
+    def _boost_selection(self, hwnd: int, get_selection=None, boost=None) -> str:
+        """PromptBoost hotkey (worker thread): the text selected in any program is replaced
+        by a detailed, structured prompt. On any error the selection stays as it was."""
+        from phraseforge import ai
+        if get_selection is None:
+            from phraseforge.platform import windows
+            get_selection = windows.get_selected_text
+        text = (get_selection() or "").strip()
+        notify = lambda t, m: self.poster.posted.emit(lambda: self.tray.notify(t, m))   # noqa: E731
+        if not text:
+            notify("Boost prompt", "Select the prompt text first, then press the hotkey again.")
+            return ""
+        notify("Boost prompt", "Improving the selected prompt…")
+        try:
+            out = (boost or (lambda t: ai.boost_prompt(self.store.settings(), t)))(text)
+        except Exception as e:      # noqa: BLE001 - shown to the user, selection unchanged
+            notify("Boost prompt", f"The prompt was not changed: {e}")
+            return ""
+        hwnd = self._prepare_target(hwnd)
+        self._with_triggers_paused(lambda: self.output.execute([TextAction(out)], app_exe=self._exe_of(hwnd)))
+        return out
+
+    def ocr_file(self, path: str = "", post=None, open_result: bool = True):
+        """Tools > OCR PDF / image (Mistral OCR): Markdown and images are saved in a folder named
+        after the file, then the Markdown opens. Runs the upload on a background thread."""
+        from phraseforge import mistral_ocr
+        if not path:
+            from PySide6.QtWidgets import QFileDialog
+            path, _ = QFileDialog.getOpenFileName(None, "OCR a PDF or image", "",
+                                                  mistral_ocr.FILE_FILTER)
+            if not path:
+                return None
+        key = self.store.setting("ai.mistral_key", "").strip()
+        # With a Mistral key the file goes to Mistral OCR (cloud); without one it is read on this
+        # PC: the PDF's own text, or Windows OCR for scans and images.
+        title = "Mistral OCR" if key else "OCR"
+        self.tray.notify(title, f"Reading {os.path.basename(path)}…")
+        box: dict = {}
+
+        def work():
+            try:
+                if key:
+                    md, pages = mistral_ocr.ocr_file(key, path, post=post)
+                else:
+                    from phraseforge import local_ocr_file
+                    lang = self.store.setting("ocr.language", "Auto")
+                    engine = self.host._ocr()
+                    md, pages = local_ocr_file.ocr_file(
+                        path, lambda png: engine.ocr_png(png, language=lang, keep_line_breaks=True))
+                box["md"] = md
+                log.info("OCR file: %d page(s) from %s saved to %s", len(pages), os.path.basename(path), md)
+
+                def done(md=md, n=len(pages)):
+                    self.tray.notify(title, f"{n} page(s) saved to {md.parent.name}.")
+                    if open_result:
+                        from PySide6.QtCore import QUrl
+                        from PySide6.QtGui import QDesktopServices
+                        QDesktopServices.openUrl(QUrl.fromLocalFile(str(md)))
+                self.poster.posted.emit(done)
+            except Exception as e:      # noqa: BLE001 - shown to the user
+                log.warning("%s failed: %s", title, e)
+                self.poster.posted.emit(lambda e=e: self.tray.notify(f"{title} failed", str(e)))
+        t = threading.Thread(target=work, name="ocr-file", daemon=True)
+        t.start()
+        if post is not None:          # tests: wait for the result
+            t.join(30)
+            return box.get("md")
+        return None
+
+    def show_prompt_optimizer(self):
+        """Prompt Optimizer: chat that turns an idea into a precise prompt (ui/prompt_optimizer.py)."""
+        from phraseforge.ui.prompt_optimizer import PromptOptimizerWindow
+        w = getattr(self, "prompt_optimizer", None)
+        if w is None:
+            w = self.prompt_optimizer = PromptOptimizerWindow(self.store)
+            w.save_as_phrase.connect(self._prompt_to_phrase)
+            w.to_prompt_tower.connect(lambda text: self.show_prompt_tower().prefix.setPlainText(text))
+        if w.isMinimized():
+            w.showNormal()
+        _bring_to_front(w)
+        return w
+
+    def _prompt_to_phrase(self, description: str, text: str):
+        from phraseforge.models import Phrase
+        p = self.store.add_phrase(Phrase(description[:80], text, tags=["prompttower"]))
+        self.tray.notify("Prompt Tower", f'Saved as the phrase "{p.description}".')
 
     def _show_file_search(self, hwnd):
         from phraseforge.ui.file_search import FileSearchWindow
@@ -1318,14 +1673,14 @@ class PhraseForgeApp(QObject):
         from phraseforge.ui.main_window import MainWindow
         if self.main_window is None:
             self.main_window = MainWindow(self.store, on_test_phrase=self.test_phrase,
-                                          on_command=self.on_command)
-        self.main_window.show()
-        self.main_window.raise_()
-        self.main_window.activateWindow()
+                                          on_command=self.on_command, tray=getattr(self, "tray", None))
+        if self.main_window.isMinimized():
+            self.main_window.showNormal()
+        _bring_to_front(self.main_window)
 
     def show_settings(self):
         from phraseforge.ui.settings_dialog import SettingsDialog
-        SettingsDialog(self.store).exec()
+        _exec_in_front(SettingsDialog(self.store))
         try:
             from phraseforge import autostart
             autostart.set_enabled(self.store.setting("app.start_with_windows", "0") == "1")
@@ -1343,6 +1698,8 @@ class PhraseForgeApp(QObject):
 
     def quit(self):
         try:
+            if self.sticky is not None:
+                self.sticky.flush()      # save notes typed in the last half second
             self.triggers.stop()
             self.clip_history.stop()
             self._cloud_push_on_exit()
@@ -1351,26 +1708,114 @@ class PhraseForgeApp(QObject):
             self.qapp.quit()
 
 
+# ---------------------------------------------------------- protection (security.py)
+# Module functions (not methods) so tests can drive _expand with a stand-in app.
+def _skipped_phrase(app, p, why: str) -> None:
+    from phraseforge.ui.i18n import tr
+    log.warning("phrase %s (%r) not run: %s", p.id, p.description, why)
+    text = tr('"{name}" was skipped: it is not approved on this PC and was started automatically.')
+    app.poster.posted.emit(lambda: app.tray.notify(tr("Phrase not run"), text.format(name=p.description)))
+
+
+def unlocked_for(app, p, req: ExpansionRequest) -> bool:
+    """A phrase in a password folder needs the password first (once per session).
+    Nothing has been typed or erased yet, so a refused unlock leaves the abbreviation."""
+    from phraseforge.security import LOCKS
+    while (locked := LOCKS.locked_folder(app.store, p.folder_id)) is not None:
+        if req.automatic:
+            log.info("phrase %s not run: folder %r is locked", p.id, locked.name)
+            return False
+        from phraseforge.ui.dialogs import ask_folder_password
+        if not app.host._ui(lambda f=locked: ask_folder_password(app.store, f)):
+            return False
+    return True
+
+
+def approved_for(app, p, req: ExpansionRequest) -> bool:
+    """Imported or synced phrases that use privileged macros need the user's OK.
+    Sets req.context.allow_privileged for the engine's run-time check."""
+    origin = app.store.quarantine_origin(p.id)
+    if not origin:
+        return True
+    from phraseforge import output_target
+    from phraseforge.security import scan_privileged
+    reasons = scan_privileged(p.content)
+    target = output_target.resolve(app.store, p)[0]
+    if target == "program":
+        reasons.append("start a program (output target)")
+    elif target in ("email", "onenote"):
+        reasons.append(f"send its text by {'e-mail' if target == 'email' else 'OneNote'} (output target)")
+    req.context.allow_privileged = False
+    if not reasons:
+        return True                       # nothing privileged to block; the engine still guards
+    if req.automatic:
+        _skipped_phrase(app, p, f"unapproved {origin} phrase wants to: {', '.join(reasons)}")
+        return False
+    from phraseforge.ui import dialogs
+    answer = app.host._ui(lambda: dialogs.approve_phrase(p.description, origin, reasons))
+    if answer == dialogs.ALLOW_ALWAYS:
+        app.store.release_quarantine(p.id)
+    if answer in (dialogs.ALLOW_ONCE, dialogs.ALLOW_ALWAYS):
+        req.context.allow_privileged = True
+        return True
+    return False
+
+
+def quiet_http_loggers() -> None:
+    """HTTP libraries log every request URL at INFO (and headers at DEBUG). URLs can hold the
+    text sent for translation or a token in a {#http} query string, so keep them out of the log."""
+    for name in ("httpx", "httpcore", "urllib3", "googleapiclient", "google_auth_oauthlib", "oauthlib"):
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+
 def main(argv: list[str] | None = None) -> int:
     if "--self-test" in (argv if argv is not None else sys.argv):
         from phraseforge.selftest import run
         return run()
     logging.basicConfig(filename=str(paths.data_dir() / "phraseforge.log"), level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    quiet_http_loggers()
     sys.excepthook = lambda *a: log.error("".join(traceback.format_exception(*a)))
     # Qt 6 sets per-monitor DPI awareness itself; setting it here first made Qt warn.
     qapp = QApplication(argv if argv is not None else sys.argv)
     qapp.setApplicationName("PhraseForge")
     qapp.setQuitOnLastWindowClosed(False)
+    from phraseforge.single_instance import SingleInstance, instance_name
+    argv_list = list(argv if argv is not None else sys.argv)
+    instance = SingleInstance(instance_name(str(paths.data_dir().resolve())))
+    if not instance.acquire():
+        log.info("PhraseForge is already running; handing over %s", argv_list[1:])
+        instance.forward(argv_list[1:])
+        return 0
     store = Store(paths.db_path())
     configure_logging(store)          # diagnostic mode from the start
     from phraseforge.ui.theme import apply_theme
     from phraseforge.ui import i18n
     apply_theme(qapp, store.setting("ui.theme", "system"), i18n.resolve_language(store.setting("ui.language", "auto")))
     app = PhraseForgeApp(qapp, store)
+
+    def _unhandled(*exc):
+        # An error in a menu or button handler used to be written only to the log, so the
+        # click looked as if it did nothing; show it too.
+        log.error("".join(traceback.format_exception(*exc)))
+        try:
+            app.tray.notify("PhraseForge error", f"{exc[0].__name__}: {exc[1]}"[:200])
+        except Exception:
+            pass
+    sys.excepthook = _unhandled
+    try:   # sticky notes that were open last time come back where they were
+        if store.sticky_notes():
+            app.sticky_notes().restore()
+    except Exception:
+        log.exception("restoring sticky notes")
     if store.setting("app.first_run_done", "0") != "1":
         from phraseforge.ui.wizard import FirstRunWizard
         FirstRunWizard(store).exec()
-    if "--minimized" not in (argv or sys.argv):
+    # a second launch (e.g. the Start-menu shortcut) brings this window to the front
+    instance.message.connect(lambda args: None if "--minimized" in args else app.show_main())
+    if "--minimized" not in argv_list:
         app.show_main()
-    return qapp.exec()
+    try:
+        return qapp.exec()
+    finally:
+        instance.release()

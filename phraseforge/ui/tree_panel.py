@@ -27,25 +27,23 @@ LAST_USED_MAX = 20      # default; Settings > Features > Last used phrases (last
 
 
 def sticky_available() -> bool:
-    """Microsoft Sticky Notes installed (tests monkeypatch this)."""
-    try:
-        from phraseforge import stickynotes
-        return stickynotes.installed()
-    except Exception:
-        return False
+    """Sticky notes are built in, so the folder is always available."""
+    return True
 
 
-def sticky_notes() -> list:
-    """The user's sticky notes, newest first, read-only (tests monkeypatch this)."""
+def sticky_notes(store: Store | None = None) -> list:
+    """PhraseForge's sticky notes, newest first (tests monkeypatch this)."""
+    if store is None:
+        return []
     try:
-        from phraseforge import stickynotes
-        return stickynotes.read_notes()
+        return store.sticky_notes()
     except Exception:
         return []
 
 
 def show_sticky(store: Store) -> bool:
-    return _on(store, "stickynotes.show_folder") and sticky_available()
+    """The folder appears once the user has a sticky note."""
+    return _on(store, "stickynotes.show_folder") and sticky_available() and bool(sticky_notes(store))
 
 
 def _on(store: Store, key: str, default: str = "1") -> bool:
@@ -92,6 +90,30 @@ def phrase_label(p: Phrase) -> str:
     return p.description or "(no description)"
 
 
+ITEM_MIME = "application/x-phraseforge-item"
+DRAGGABLE = ("phrase", "folder", "clip", "note")     # clip / note: dropping makes a new phrase
+
+
+def item_mime(kind: str, id_) -> "QMimeData":
+    """Drag data for one item; the description goes along as plain text for other programs."""
+    import json
+    from PySide6.QtCore import QMimeData
+    md = QMimeData()
+    md.setData(ITEM_MIME, json.dumps({"kind": kind, "id": id_}).encode("utf-8"))
+    return md
+
+
+def read_item_mime(md) -> tuple[str, object] | None:
+    import json
+    if md is None or not md.hasFormat(ITEM_MIME):
+        return None
+    try:
+        d = json.loads(bytes(md.data(ITEM_MIME)).decode("utf-8"))
+        return (d["kind"], d["id"]) if d.get("kind") in DRAGGABLE else None
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
 class PhraseTree(QTreeWidget):
     """Tree with drag & drop; drops are reported to the owner instead of moved by Qt."""
     dropped = Signal(str, int, object)   # kind, id, new parent folder id (None = root)
@@ -107,7 +129,36 @@ class PhraseTree(QTreeWidget):
         self.setIndentation(14)
         self.setUniformRowHeights(True)
 
+    def _external(self, e):
+        return None if e.source() is self else read_item_mime(e.mimeData())
+
+    def dragEnterEvent(self, e):  # noqa: N802
+        if self._external(e):
+            e.setDropAction(Qt.MoveAction)
+            e.accept()
+            return
+        super().dragEnterEvent(e)
+
+    def dragMoveEvent(self, e):  # noqa: N802
+        if self._external(e):
+            target = self.itemAt(e.position().toPoint())
+            ok = target is not None and target.data(0, ROLE_KIND) in ("folder", "root")
+            e.setDropAction(Qt.MoveAction)
+            e.accept() if ok else e.ignore()
+            return
+        super().dragMoveEvent(e)
+
     def dropEvent(self, e):  # noqa: N802
+        ext = self._external(e)
+        if ext:
+            target = self.itemAt(e.position().toPoint())
+            e.ignore()
+            if target is not None and target.data(0, ROLE_KIND) in ("folder", "root"):
+                folder = target.data(0, ROLE_ID) if target.data(0, ROLE_KIND) == "folder" else None
+                e.setDropAction(Qt.MoveAction)
+                e.accept()
+                self.dropped.emit(ext[0], ext[1], folder)
+            return
         src = self.currentItem()
         target = self.itemAt(e.position().toPoint())
         e.ignore()
@@ -136,7 +187,8 @@ class TreePanel(QWidget):
     def __init__(self, store: Store, parent=None):
         super().__init__(parent)
         self.store = store
-        self.unlocked: set[int] = set()
+        from phraseforge.security import LOCKS
+        self.unlocked = LOCKS        # shared with the phrase menu and expansion (security.py)
         self.folders_only = False
         self.notes_by_id: dict = {}          # Sticky Notes shown in the tree, by note id
         self.flat = False
@@ -262,13 +314,13 @@ class TreePanel(QWidget):
                     c.setToolTip(0, e.text[:500])
                     c.setFlags(c.flags() & ~Qt.ItemIsDragEnabled & ~Qt.ItemIsDropEnabled)
                     cc.addChild(c)
-            # Microsoft Sticky Notes (read-only view of the user's notes)
+            # PhraseForge's own sticky notes (ui/sticky_notes.py)
             self.notes_by_id = {}
             if show_sticky(self.store):
                 sn = self._special("sticky_notes", "Sticky Notes", "sticky_notes")
                 tree.addTopLevelItem(sn)
                 if not self.folders_only:
-                    for n in sticky_notes():
+                    for n in sticky_notes(self.store):
                         self.notes_by_id[n.id] = n
                         c = QTreeWidgetItem([n.title])
                         c.setIcon(0, icon("sticky_notes"))
@@ -283,6 +335,8 @@ class TreePanel(QWidget):
                 for p in sorted(self.store.phrases(), key=lambda p: p.description.lower()):
                     if not self.locked(p.folder_id):
                         root.addChild(self.make_phrase_item(p, colors))
+            elif self.flat:
+                pass                # three columns: the middle list shows every phrase under "Phrases"
             else:
                 self._add_folders(root, None, colors)
                 if not self.folders_only:
@@ -347,10 +401,88 @@ class TreePanel(QWidget):
             self.selected.emit(cur.data(0, ROLE_KIND), cur.data(0, ROLE_ID))
 
 
+class _DragList(QTreeWidget):
+    """Middle-column list: items can be dragged (to the folder tree or onto a folder row);
+    drops on a folder row or ".." move there, drops on empty space move into the shown folder."""
+    dropped = Signal(str, object, object)     # kind, id, target folder id (None = root)
+
+    def __init__(self, owner: "PhraseList"):
+        super().__init__(owner)
+        self.owner = owner
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(QAbstractItemView.DragDrop)
+        self.setDefaultDropAction(Qt.MoveAction)
+
+    def mimeTypes(self):  # noqa: N802
+        return [ITEM_MIME, "text/plain"]
+
+    def mimeData(self, items):  # noqa: N802
+        it = items[0] if items else None
+        if it is None or it.data(0, ROLE_KIND) not in DRAGGABLE:
+            return None
+        md = item_mime(it.data(0, ROLE_KIND), it.data(0, ROLE_ID))
+        md.setText(it.text(0))
+        return md
+
+    def startDrag(self, actions):  # noqa: N802
+        it = self.currentItem()
+        if it is not None and it.data(0, ROLE_KIND) in DRAGGABLE:
+            super().startDrag(Qt.MoveAction | Qt.CopyAction)
+
+    def target_folder(self, pos):
+        """(ok, folder id) for a drop at pos."""
+        it = self.itemAt(pos)
+        o = self.owner
+        if it is not None and it.data(0, ROLE_KIND) == "folder":
+            return True, it.data(0, ROLE_ID)
+        if it is not None and it.data(0, ROLE_KIND) == "up":
+            f = o.store.get_folder(o.folder_id) if o.folder_id else None
+            return True, f.parent_id if f else None
+        if o.kind in ("folder", "root") and not (o.kind == "root" and o.panel.flat):
+            return True, o.folder_id if o.kind == "folder" else None
+        return False, None
+
+    def _accept(self, e) -> bool:
+        src = read_item_mime(e.mimeData())
+        if not src:
+            return False
+        ok, folder = self.target_folder(e.position().toPoint())
+        if not ok or (src[0] == "folder" and src[1] == folder):
+            return False
+        return True
+
+    def dragEnterEvent(self, e):  # noqa: N802
+        if read_item_mime(e.mimeData()):
+            e.setDropAction(Qt.MoveAction)
+            e.accept()
+        else:
+            e.ignore()
+
+    def dragMoveEvent(self, e):  # noqa: N802
+        if self._accept(e):
+            e.setDropAction(Qt.MoveAction)
+            e.accept()
+        else:
+            e.ignore()
+
+    def dropEvent(self, e):  # noqa: N802
+        src = read_item_mime(e.mimeData())
+        e.ignore()
+        if not src or not self._accept(e):
+            return
+        _ok, folder = self.target_folder(e.position().toPoint())
+        e.setDropAction(Qt.MoveAction)
+        e.accept()
+        self.dropped.emit(src[0], src[1], folder)
+
+
 class PhraseList(QWidget):
     """Middle column of the three-column layout: content of one folder."""
     selected = Signal(str, object)
     open_folder = Signal(object)          # folder id (None = root)
+    open_note = Signal(object)            # sticky note id (double-click opens it on the desktop)
 
     def __init__(self, store: Store, panel: TreePanel, parent=None):
         super().__init__(parent)
@@ -364,14 +496,18 @@ class PhraseList(QWidget):
         h = QLabel("Folders and phrases")
         h.setObjectName("PanelHeader")
         lay.addWidget(h)
-        self.list = QTreeWidget(self)
-        self.list.setHeaderLabels(["Description", "Autotext", "Hotkey"])
+        self.list = _DragList(self)
+        self.dropped = self.list.dropped
+        self.list.setHeaderLabels([tr("Description"), tr("Autotext"), tr("Hotkey")])
         self.list.setRootIsDecorated(False)
         self.list.setUniformRowHeights(True)
         self.list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.list.header().setSectionResizeMode(0, QHeaderView.Interactive)
-        self.list.setColumnWidth(0, 150)
-        self.list.setColumnWidth(1, 70)
+        # Description takes the free width, so the list needs no horizontal scroll bar
+        hdr = self.list.header()
+        hdr.setStretchLastSection(False)
+        hdr.setSectionResizeMode(0, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)   # header text never cut off
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         lay.addWidget(self.list, 1)
         self.list.currentItemChanged.connect(self._sel)
         self.list.itemDoubleClicked.connect(self._open)
@@ -398,7 +534,7 @@ class PhraseList(QWidget):
                 self.list.addTopLevelItem(it)
         elif kind == "sticky_notes":
             phrases, folders = [], []
-            for n in sticky_notes():
+            for n in sticky_notes(self.store):
                 self.panel.notes_by_id[n.id] = n
                 it = QTreeWidgetItem([n.title])
                 it.setIcon(0, icon("sticky_notes"))
@@ -406,6 +542,11 @@ class PhraseList(QWidget):
                 it.setData(0, ROLE_ID, n.id)
                 it.setToolTip(0, n.text[:500])
                 self.list.addTopLevelItem(it)
+        elif kind == "root" and self.panel.flat:
+            # Flat list: every phrase of every (unlocked) folder, without folders
+            folders = []
+            phrases = sorted((p for p in self.store.phrases() if not self.panel.locked(p.folder_id)),
+                             key=lambda p: p.description.lower())
         elif kind in ("folder", "root"):
             fid = folder_id if kind == "folder" else None
             folders = [] if self.panel.locked(fid) else sorted_folders(self.store, fid)
@@ -446,3 +587,5 @@ class PhraseList(QWidget):
         elif k == "up":
             f = self.store.get_folder(self.folder_id) if self.folder_id else None
             self.open_folder.emit(f.parent_id if f else None)
+        elif k == "note":
+            self.open_note.emit(it.data(0, ROLE_ID))

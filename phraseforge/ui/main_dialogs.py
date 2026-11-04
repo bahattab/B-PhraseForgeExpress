@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -22,7 +21,6 @@ from phraseforge.models import Folder, Phrase, TriggerKind
 from phraseforge.ui.i18n import tr
 from phraseforge.ui.iconset import icon
 
-NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 
 # ======================================================================= properties
@@ -103,16 +101,12 @@ class PhrasePropertiesDialog(QDialog):
 
 # ======================================================================= program restrictions
 def running_programs() -> list[str]:
-    """Exe names of running programs (sorted, unique)."""
-    if os.name != "nt":
-        return []
+    """Exe names of running programs (sorted, unique), read directly from Windows."""
     try:
-        out = subprocess.run(["tasklist", "/fo", "csv", "/nh"], capture_output=True, timeout=10,
-                             creationflags=NO_WINDOW).stdout.decode("utf-8", "replace")
+        from phraseforge.platform.processes import running_exes
+        return [n for n in running_exes() if n.endswith(".exe")]
     except Exception:
         return []
-    names = {line.split('","')[0].strip('"').lower() for line in out.splitlines() if line.startswith('"')}
-    return sorted(n for n in names if n.endswith(".exe"))
 
 
 class ProgramCombo(QComboBox):

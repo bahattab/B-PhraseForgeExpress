@@ -75,6 +75,7 @@ class ExpansionContext:
     window_title: str = ""
     regex_groups: tuple[str, ...] = ()  # groups from a regex trigger
     depth: int = 0                   # nesting depth for {#insert}
+    allow_privileged: bool = True    # False: {#run}, {#http}, ... are blocked (unapproved phrase)
 
 
 class Cancelled(Exception):
@@ -125,3 +126,4 @@ class ExpansionRequest:
     context: ExpansionContext = field(default_factory=ExpansionContext)
     trailing_delimiter: str = ""    # delimiter typed after abbreviation, re-typed after expansion
     language: str = ""              # language version to insert ("" = phrase.active_language / default)
+    automatic: bool = False         # fired without a user action (time, window focus, clipboard)

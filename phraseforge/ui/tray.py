@@ -25,8 +25,12 @@ class Tray(QSystemTrayIcon):
     onenote_send_clipboard = Signal()   # "Send clipboard to OneNote"
     onenote_clip = Signal()             # "Screen clip to OneNote"
     file_search = Signal()              # "Search files"
+    prompt_tower = Signal()             # "Prompt Tower" (AI prompts from project files)
+    prompt_optimizer = Signal()         # "Prompt Optimizer" (chat that improves a prompt)
     ocr_language = Signal(str)          # picked in "OCR language" (like Capture2Text's tray menu)
     quick_note = Signal()               # "New quick note" (like ONENOTEM)
+    new_sticky_note = Signal()          # "New sticky note" (built-in sticky notes)
+    open_sticky_notes = Signal()        # "Sticky notes" list
     new_phrase_from_clipboard = Signal()   # TextExpander "New Snippet from Clipboard"
     edit_last_phrase = Signal()            # TextExpander "Edit Last Expanded Snippet"
     app_enabled = Signal(str, bool)        # PhraseExpress 'Enabled in "<program>"' (exe, on)
@@ -38,31 +42,48 @@ class Tray(QSystemTrayIcon):
         self.setToolTip("PhraseForge")
         m = QMenu()
         self._menu = m
+        # Every menu item by key, so the main window's Tools tab can run the same items.
+        self.items: dict[str, QAction] = {}
         a = m.addAction(icon("phrase"), tr("Open PhraseForge"), self.open_main.emit)
+        self.items["open_main"] = a
         f = QFont(a.font())
         f.setBold(True)
         a.setFont(f)
-        m.addAction(icon("new_phrase"), tr("New phrase from clipboard"), self.new_phrase_from_clipboard.emit)
-        m.addAction(icon("pencil"), tr("Edit last used phrase"), self.edit_last_phrase.emit)
+        self.items["new_phrase_from_clipboard"] = m.addAction(
+            icon("new_phrase"), tr("New phrase from clipboard"), self.new_phrase_from_clipboard.emit)
+        self.items["edit_last_phrase"] = m.addAction(icon("pencil"), tr("Edit last used phrase"),
+                                                     self.edit_last_phrase.emit)
         m.addSeparator()
-        m.addAction(icon("search"), tr("Phrase menu"), self.show_popup.emit)
-        m.addAction(icon("clipboard_cache"), tr("Clipboard history"), self.clipboard_history.emit)
-        m.addAction(icon("m_ocr"), tr("OCR to clipboard"), self.ocr_to_clipboard.emit)
+        self.items["popup"] = m.addAction(icon("search"), tr("Phrase menu"), self.show_popup.emit)
+        self.items["clipboard_history"] = m.addAction(icon("clipboard_cache"), tr("Clipboard history"),
+                                                      self.clipboard_history.emit)
+        self.items["ocr"] = m.addAction(icon("m_ocr"), tr("OCR to clipboard"), self.ocr_to_clipboard.emit)
         # filled before showing from ocr_languages_provider() -> (languages, current)
         self.ocr_languages_provider = None
         self.ocr_lang_menu = m.addMenu(icon("languages"), tr("OCR language"))
         self.ocr_lang_menu.menuAction().setVisible(False)
-        m.addAction(icon("file_search"), tr("Search files"), self.file_search.emit)
+        self.ocr_lang_menu.aboutToShow.connect(self._fill_ocr_languages)   # also when opened from the ribbon
+        self.items["ocr_language"] = self.ocr_lang_menu.menuAction()
+        self.items["file_search"] = m.addAction(icon("file_search"), tr("Search files"), self.file_search.emit)
+        self.items["prompt_tower"] = m.addAction(icon("m_ai"), tr("Prompt Tower"), self.prompt_tower.emit)
+        self.items["prompt_optimizer"] = m.addAction(icon("m_ai"), tr("Prompt Optimizer"),
+                                                     self.prompt_optimizer.emit)
         m.addSeparator()
         self.onenote_send_action = m.addAction(icon("on_send"), tr("Send clipboard to OneNote"),
                                                self.onenote_send_clipboard.emit)
         self.onenote_clip_action = m.addAction(icon("on_clip"), tr("Screen clip to OneNote"),
                                                self.onenote_clip.emit)
         self.quick_note_action = m.addAction(icon("sticky_notes"), tr("New quick note"), self.quick_note.emit)
+        self.new_sticky_action = m.addAction(icon("sticky_notes"), tr("New sticky note"), self.new_sticky_note.emit)
+        self.sticky_list_action = m.addAction(icon("sticky_notes"), tr("Sticky notes"), self.open_sticky_notes.emit)
+        self.items.update(onenote_send_clipboard=self.onenote_send_action, onenote_clip=self.onenote_clip_action,
+                          quick_note=self.quick_note_action, new_sticky_note=self.new_sticky_action,
+                          open_sticky_notes=self.sticky_list_action)
         m.addSeparator()
         self.stats_action = m.addAction(icon("statistics"), tr("Statistics"), self.show_statistics.emit)
-        m.addAction(icon("settings"), tr("Settings"), self.settings.emit)
-        m.addAction(icon("about"), tr("About PhraseForge"), self._about)
+        self.items["statistics"] = self.stats_action
+        self.items["settings"] = m.addAction(icon("settings"), tr("Settings"), self.settings.emit)
+        self.items["about"] = m.addAction(icon("about"), tr("About PhraseForge"), self._about)
         m.addSeparator()
         # PhraseExpress tray menu (observed): Language selection, Enabled in "<last program>"
         self.language_provider = None          # () -> current language code
@@ -72,6 +93,8 @@ class Tray(QSystemTrayIcon):
             a.setCheckable(True)
             a.setData(code)
             a.triggered.connect(lambda _=False, c=code: self.language.emit(c))
+        self.language_menu.aboutToShow.connect(self._check_language)
+        self.items["language"] = self.language_menu.menuAction()
         self.last_app_provider = None          # () -> (exe, label) of the last program used, or None
         self.excluded_provider = None          # () -> set of excluded exe names
         self._app_exe = ""
@@ -79,12 +102,14 @@ class Tray(QSystemTrayIcon):
         self.app_toggle_action.triggered.connect(lambda on: self.app_enabled.emit(self._app_exe, on))
         self.app_toggle_action.setVisible(False)
         m.addAction(self.app_toggle_action)
+        self.items["app_enabled"] = self.app_toggle_action
         m.addSeparator()
         self.pause_action = QAction(tr("Pause"), m, checkable=True)
         self.pause_action.toggled.connect(self._on_pause)
         m.addAction(self.pause_action)
+        self.items["pause"] = self.pause_action
         m.addSeparator()
-        m.addAction(icon("exit"), tr("Quit"), self.quit.emit)
+        self.items["quit"] = m.addAction(icon("exit"), tr("Quit"), self.quit.emit)
         m.aboutToShow.connect(self._before_show)
         self.setContextMenu(m)
         self.activated.connect(self._on_activated)
@@ -100,12 +125,19 @@ class Tray(QSystemTrayIcon):
             a.setChecked(lang == current)
             a.triggered.connect(lambda _=False, l=lang: self.ocr_language.emit(l))
 
-    def _before_show(self) -> None:
-        self._fill_ocr_languages()
-        self._fill_app_toggle()
+    def _check_language(self) -> None:
         cur = self.language_provider() if self.language_provider else "en"
         for a in self.language_menu.actions():
             a.setChecked(a.data() == cur)
+
+    def refresh(self) -> None:
+        """Bring the changing items up to date (OCR languages, "Enabled in", ...)."""
+        self._before_show()
+
+    def _before_show(self) -> None:
+        self._fill_ocr_languages()
+        self._fill_app_toggle()
+        self._check_language()
         connected = self.isSignalConnected(QMetaMethod.fromSignal(self.show_statistics))
         self.stats_action.setVisible(connected)
         # OneNote items appear once the app has wired them
@@ -172,5 +204,10 @@ class Tray(QSystemTrayIcon):
     def _on_activated(self, reason) -> None:
         self.handle_click(reason)
 
-    def notify(self, title: str, text: str, ms: int = 4000) -> None:
+    def notify(self, title: str, text: str, ms: int = 4000, on_click=None) -> None:
+        """Balloon message; on_click runs when the user clicks it (e.g. open a download page)."""
+        self._on_message_click = on_click
+        if not getattr(self, "_click_hooked", False):
+            self.messageClicked.connect(lambda: (getattr(self, "_on_message_click", None) or (lambda: None))())
+            self._click_hooked = True
         self.showMessage(title, text, QSystemTrayIcon.Information, ms)

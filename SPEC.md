@@ -33,23 +33,33 @@ Run: `.venv\Scripts\python -m phraseforge`. Tests: `.venv\Scripts\python -m pyte
 | Settings, first-start wizard, tray | TSETTINGSFORM, TFIRSTSTARTWIZDLG, TTRAYHINTDLG | `ui.settings`, `app` |
 | Excluded apps, password-protected folders | TIGNOREDLG, TPASSDLG | `db`, `triggers` |
 
-| Screen OCR (extra, via Capture2Text) | — (user request) | `ocr`, `ui.region_select`, `{#ocr}` macro |
+| Screen OCR (extra, built in: Windows OCR engine) | — (user request) | `ocr`, `ui.region_select`, `{#ocr}` macro |
+| Sticky notes (extra, built in) | — (user request) | `ui.sticky_notes`, `stickynotes`, `{#stickynote}` macro |
 
-### Capture2Text OCR integration
-Capture2Text (GPLv3) is called as a separate program through
-`Capture2Text_CLI.exe`; it is not bundled or linked. Default location:
-`C:\Program Files\00 - Capture2Text v4.6.3 - Arabic\Capture2Text_CLI.exe`
-(configurable in Settings). Installed languages: Arabic, English, Russian.
+### Built-in screen OCR
+Text recognition runs inside PhraseForge with the Windows OCR engine
+(`Windows.Media.Ocr`, through the `winrt-*` Python bindings). No other program
+is started; Capture2Text is not needed and none of its code is used.
 
-- `ocr.Capture2TextOCR.ocr_rect(x1,y1,x2,y2, language, keep_line_breaks)` -> str
-  runs `Capture2Text_CLI.exe -s "x1 y1 x2 y2" -l <lang> [-b]` and returns stdout.
-- `ocr.Capture2TextOCR.ocr_image(path, language)` uses `-i <file>`.
-- `languages()` uses `--show-languages`.
+- `ocr.WindowsOCR(scale, whitelist, blacklist)`: `recognize(png, lang)` returns
+  lines with word boxes; `ocr_png`, `ocr_image`, `ocr_at(png, x, y, mode)` with
+  mode `line` / `forward` / `bubble`; `languages()` lists the OCR languages
+  installed in Windows (Arabic needs the Arabic language added in Windows).
+- Small captures are enlarged (automatic or 1-4x) and padded before reading.
+- Capture2Text-style options: quick-access languages, re-capture last area,
+  text line / forward text line / bubble capture around the mouse pointer,
+  character whitelist/blacklist, replace rules, log file, clipboard, notification.
 - UI: a full-screen translucent overlay lets the user drag a rectangle
   (`ui.region_select`), returned in physical screen pixels.
 - Macro `{#ocr -lang Arabic -linebreaks}` asks for a region and inserts the text;
   `{#ocrfile path -lang English}` OCRs an image file.
 - Global hotkey (default Ctrl+Alt+O): OCR region -> clipboard, with a tray notice.
+
+### Built-in sticky notes
+`ui.sticky_notes` (windows, list, manager) and the `sticky_notes` table. Notes
+are frameless desktop windows: seven colours, rich text, always on top, autosave,
+position restore at start-up, search, delete, save as phrase, and a read-only
+import of the Microsoft Sticky Notes file (`stickynotes.read_notes`).
 
 ### TextExpander compatibility
 TextExpander's license forbids reverse engineering, so it was NOT inspected

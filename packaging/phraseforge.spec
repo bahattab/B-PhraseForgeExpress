@@ -40,21 +40,31 @@ datas = [
     (str(ROOT / "README.md"), "."),     # About dialog / Help open README next to the package
     (str(ROOT / "docs" / "USER_GUIDE.ar.md"), "docs"),   # Help > User guide in the Arabic interface
     (str(ROOT / "LICENSE"), "."),
+    (str(ROOT / "THIRD_PARTY_NOTICES.md"), "."),
     (str(ROOT / "phraseforge" / "macros" / "README.md"), "phraseforge/macros"),
 ]
+# Built-in Google sign-in client (written by the release workflow when the secrets exist).
+if (ROOT / "phraseforge" / "cloud" / "google_client.json").is_file():
+    datas.append((str(ROOT / "phraseforge" / "cloud" / "google_client.json"), "phraseforge/cloud"))
 datas += collect_data_files("qtawesome")          # icon fonts
 datas += collect_data_files("googleapiclient")    # Drive API discovery documents
 
 hiddenimports = collect_submodules("phraseforge")   # modules loaded lazily / by name
 hiddenimports += ["google_auth_oauthlib.flow", "google.auth.transport.requests",
                   "googleapiclient.discovery", "googleapiclient.http"]
+# Built-in OCR (Windows.Media.Ocr through the WinRT bindings).
+hiddenimports += ["winrt.windows.media.ocr", "winrt.windows.globalization", "winrt.windows.graphics.imaging",
+                  "winrt.windows.storage.streams", "winrt.windows.foundation",
+                  "winrt.windows.foundation.collections", "winrt.runtime", "winrt.system"]
+# OneNote COM client (comtypes generates its wrapper modules at run time) and ODBC queries.
+hiddenimports += collect_submodules("comtypes") + ["pyodbc", "win32com.client", "PySide6.QtPdf"]
 
 # Qt modules PhraseForge never uses; keeps the build much smaller.
 excludes = [
     "tkinter", "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineQuick",
     "PySide6.Qt3DCore", "PySide6.Qt3DRender", "PySide6.QtQuick", "PySide6.QtQml",
     "PySide6.QtQuick3D", "PySide6.QtCharts", "PySide6.QtDataVisualization", "PySide6.QtMultimedia",
-    "PySide6.QtPdf", "PySide6.QtBluetooth", "PySide6.QtSerialPort", "PySide6.QtSql",
+    "PySide6.QtBluetooth", "PySide6.QtSerialPort", "PySide6.QtSql",
     "PySide6.QtDesigner", "PySide6.QtHelp", "PySide6.QtLocation", "PySide6.QtPositioning",
     "PySide6.QtSensors", "PySide6.QtWebSockets", "PySide6.QtRemoteObjects", "PySide6.QtScxml",
     "PySide6.QtTextToSpeech", "PySide6.QtNfc", "PySide6.QtSpatialAudio",

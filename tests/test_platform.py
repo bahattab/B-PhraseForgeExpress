@@ -85,6 +85,31 @@ def test_clipboard_roundtrip_and_restore():
 
 
 @win
+def test_clipboard_set_text_from_worker_threads():
+    """OCR results are copied from a worker thread; that used to fail with
+    "SetClipboardData(13) failed" because the clipboard was opened without an owner."""
+    from phraseforge.platform import clipboard as cb
+    snap = cb.save_all()
+    errors = []
+
+    def work(i):
+        try:
+            cb.set_text(f"worker {i} مرحبا")
+            assert cb.get_text() == f"worker {i} مرحبا"
+            assert cb._owner_hwnd()
+        except Exception as e:      # noqa: BLE001
+            errors.append(e)
+    try:
+        for i in range(5):
+            t = threading.Thread(target=work, args=(i,))
+            t.start()
+            t.join()
+        assert errors == []
+    finally:
+        cb.restore(snap)
+
+
+@win
 def test_clipboard_watcher_skips_own_changes():
     from phraseforge.platform import clipboard as cb
     seen = []

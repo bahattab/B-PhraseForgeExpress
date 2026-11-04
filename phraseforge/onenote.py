@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import base64
 import html
-import os
 import re
 import threading
 import xml.etree.ElementTree as ET
@@ -23,18 +22,72 @@ from pathlib import Path
 NS = "http://schemas.microsoft.com/office/onenote/2013/onenote"
 _N = f"{{{NS}}}"
 DEFAULT_EXE = r"C:\Program Files\Microsoft Office\root\Office16\ONENOTE.EXE"
-CAPTURE_EXE = r"C:\Program Files\Microsoft Office\root\Office16\onenotecapture.exe"
 
 # OneNote enums (documented in the OneNote 2013 developer reference)
 HS_PAGES = 4               # HierarchyScope.hsPages
 XS_2013 = 2                # XMLSchema.xs2013
 PI_BASIC = 0               # PageInfo.piBasic
-SL_UNFILED_NOTES = 2       # SpecialLocation.slUnfiledNotesSection
+SL_UNFILED_NOTES = 1       # SpecialLocation.slUnfiledNotesSection (2 is slDefaultNotebookFolder)
+CFT_NONE, CFT_SECTION = 0, 3   # CreateFileType for OpenHierarchy
+
+# OneNote error codes (OneNote 2013 developer reference, "Error codes")
+HRESULTS = {
+    0x80042000: "The XML is not well-formed.", 0x80042001: "The XML is invalid.",
+    0x80042002: "The section could not be created.", 0x80042003: "The section could not be opened.",
+    0x80042004: "The section does not exist.", 0x80042005: "The page does not exist.",
+    0x80042006: "The file does not exist.", 0x80042007: "The image could not be inserted.",
+    0x8004200B: "The section is read-only.", 0x8004200C: "The page is read-only.",
+    0x80042014: "The object does not exist.", 0x80042015: "The notebook does not exist.",
+    0x8004201B: "The section is encrypted and locked.", 0x8004201C: "The action is disabled by a policy.",
+    0x8004201D: "OneNote has not yet synchronized content.", 0x80042023: "The action timed out.",
+    0x80042030: "A OneNote dialog is open; close it and try again.",
+}
 NPS_DEFAULT = 0            # NewPageStyle.npsDefault
+
+# PublishFormat (OneNote 2013 developer reference) for IApplication.Publish
+PF = {"one": 0, "onepkg": 1, "mht": 2, "pdf": 3, "xps": 4, "docx": 5, "doc": 5, "emf": 6, "html": 7}
+# File types the user can export OneNote content to, label -> (extension, PublishFormat)
+PUBLISH_FORMATS = (
+    ("OneNote Section (*.one)", "one"),
+    ("OneNote Package (*.onepkg)", "onepkg"),
+    ("Word Document (*.docx)", "docx"),
+    ("PDF (*.pdf)", "pdf"),
+    ("XPS (*.xps)", "xps"),
+    ("Single File Web Page (*.mht)", "mht"),
+)
 
 
 class OneNoteError(RuntimeError):
     pass
+
+
+def explain(e: Exception) -> str:
+    """Readable text for a OneNote COM error such as (-2147213308, None, (...))."""
+    hr = getattr(e, "hresult", None)
+    if hr is None and e.args and isinstance(e.args[0], int):
+        hr = e.args[0]
+    if isinstance(hr, int):
+        code = hr & 0xFFFFFFFF
+        text = HRESULTS.get(code)
+        if text:
+            return f"OneNote: {text} (0x{code:08X})"
+        return f"OneNote error 0x{code:08X}"
+    return str(e)
+
+
+def _friendly(fn):
+    """OneNote methods raise OneNoteError with a readable message instead of raw COM errors."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(*a, **kw):
+        try:
+            return fn(*a, **kw)
+        except OneNoteError:
+            raise
+        except Exception as e:
+            raise OneNoteError(explain(e)) from e
+    return wrapper
 
 
 @dataclass
@@ -177,6 +230,57 @@ def page_update_xml(page_id: str, text: str = "", image_png: bytes | None = None
 # ---------------------------------------------------------------- COM client
 _tls = threading.local()
 
+_COMMON_DIRS = (r"C:\Program Files\Microsoft Office\root\Office16",
+                r"C:\Program Files (x86)\Microsoft Office\root\Office16",
+                r"C:\Program Files\Microsoft Office\Office16",
+                r"C:\Program Files (x86)\Microsoft Office\Office16",
+                r"C:\Program Files\Microsoft Office\root\Office15",
+                r"C:\Program Files\Microsoft Office\Office15",
+                r"C:\Program Files (x86)\Microsoft Office\Office15")
+
+
+def _registry_candidates() -> list[str]:
+    """ONENOTE.EXE paths that Windows knows about (App Paths, OneNote.Application's COM server)."""
+    try:
+        import winreg
+    except ImportError:
+        return []
+    found: list[str] = []
+
+    def read(root, key, value=""):
+        for view in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
+            try:
+                with winreg.OpenKey(root, key, 0, winreg.KEY_READ | view) as k:
+                    return str(winreg.QueryValueEx(k, value)[0])
+            except OSError:
+                continue
+        return ""
+
+    for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        found.append(read(root, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\ONENOTE.EXE"))
+    clsid = read(winreg.HKEY_CLASSES_ROOT, r"OneNote.Application\CLSID")
+    if clsid:
+        found.append(read(winreg.HKEY_CLASSES_ROOT, rf"CLSID\{clsid}\LocalServer32"))
+    out = []
+    for f in found:
+        f = f.strip()
+        if f.startswith('"'):
+            f = f[1:].split('"', 1)[0]
+        elif f.lower().find(".exe") > 0:
+            f = f[:f.lower().find(".exe") + 4]
+        if f:
+            out.append(f)
+    return out
+
+
+def find_exe(preferred: str = "") -> str:
+    """The desktop OneNote program: the configured path if it exists, else the one
+    registered in Windows, else a standard Office folder. "" when not installed."""
+    for cand in [preferred, *_registry_candidates(), *(d + "\\ONENOTE.EXE" for d in _COMMON_DIRS)]:
+        if cand and Path(cand).is_file():
+            return cand
+    return ""
+
 
 def _com_app(exe: str = DEFAULT_EXE):
     """OneNote.Application for the current thread (COM objects are per apartment)."""
@@ -193,8 +297,11 @@ def _com_app(exe: str = DEFAULT_EXE):
         comtypes.CoInitialize()
     except OSError:
         pass  # already initialised on this thread
-    if not Path(exe).is_file():
-        raise OneNoteError(f"OneNote desktop app not found: {exe}")
+    found = find_exe(exe)
+    if not found:
+        raise OneNoteError(f"The OneNote desktop app was not found ({exe}). "
+                           "Install OneNote for Windows, or set its path in Settings > OneNote.")
+    exe = found
     try:
         mod = comtypes.client.GetModule(LoadTypeLibEx(exe + "\\3"))
         app = comtypes.client.CreateObject("OneNote.Application", interface=mod.IApplication)
@@ -221,12 +328,14 @@ class OneNote:
             return False
 
     # ---- reading
+    @_friendly
     def notebooks(self) -> list[Node]:
         return parse_hierarchy(self.app.GetHierarchy("", HS_PAGES, XS_2013))
 
     def page_xml(self, page_id: str) -> str:
         return self.app.GetPageContent(page_id, PI_BASIC, XS_2013)
 
+    @_friendly
     def page_text(self, ref: str, include_title: bool = False, nodes: list[Node] | None = None,
                   include_ocr: bool = False) -> str:
         node = find(nodes or self.notebooks(), ref, "page")
@@ -235,10 +344,28 @@ class OneNote:
         return page_text_from_xml(self.page_xml(node.id), include_title, include_ocr)[1]
 
     # ---- writing
+    @_friendly
     def quick_notes_section(self) -> str:
-        """Section ID of OneNote's Quick Notes (GetSpecialLocation returns its file path)."""
-        path = self.app.GetSpecialLocation(SL_UNFILED_NOTES)
-        return self.app.OpenHierarchy(path, "", 0)          # CreateFileType.cftNone
+        """Section ID of OneNote's Quick Notes (GetSpecialLocation returns its file path).
+        The section is created when it does not exist yet; if OneNote still cannot open it
+        (for example notebooks that are only on OneDrive), the first section is used."""
+        path = str(self.app.GetSpecialLocation(SL_UNFILED_NOTES) or "")
+        if path and not path.lower().endswith(".one"):
+            sep = "/" if "://" in path else "\\"
+            path = path.rstrip("/\\") + sep + "Quick Notes.one"
+        first_error = None
+        if path:
+            try:
+                return self.app.OpenHierarchy(path, "", CFT_SECTION)
+            except Exception as e:      # noqa: BLE001
+                first_error = e
+        for nb in self.notebooks():
+            for n in nb.walk():
+                if n.kind == "section":
+                    return n.id
+        raise OneNoteError("No OneNote section to write to. Open OneNote and create a notebook, "
+                           "or choose a page or section in Settings > OneNote."
+                           + (f" ({explain(first_error)})" if first_error else ""))
 
     def create_page(self, section_id: str, title: str, text: str = "", image_png: bytes | None = None) -> str:
         page_id = self.app.CreateNewPage(section_id, NPS_DEFAULT)
@@ -248,6 +375,7 @@ class OneNote:
     def append(self, page_id: str, text: str = "", image_png: bytes | None = None) -> None:
         self.app.UpdatePageContent(page_update_xml(page_id, text, image_png), 0, XS_2013, False)
 
+    @_friendly
     def send(self, text: str = "", image_png: bytes | None = None, target: str = "", title: str = "") -> str:
         """Send text/image to OneNote. target: page path/ID (append), section path/ID (new page),
         or "" for a new page in Quick Notes. Returns the page ID."""
@@ -264,6 +392,30 @@ class OneNote:
             raise OneNoteError("Choose a OneNote page or section (not a notebook or group).")
         return self.create_page(self.quick_notes_section(), title or _title_from(text), text, image_png)
 
+    @_friendly
+    def open_file(self, path: str) -> str:
+        """Open a .one (section) or .onetoc2 (notebook) file already on disk and return its
+        hierarchy ID, so its pages can be read. The file is not copied or changed."""
+        if not Path(path).is_file():
+            raise OneNoteError(f"File not found: {path}")
+        return self.app.OpenHierarchy(str(path), "", CFT_NONE)
+
+    @_friendly
+    def new_section_file(self, path: str) -> str:
+        """Create (or open) a .one section file at path and return its section ID, for writing."""
+        return self.app.OpenHierarchy(str(path), "", CFT_SECTION)
+
+    @_friendly
+    def publish(self, hierarchy_id: str, path: str, fmt: str) -> str:
+        """Export a page/section/notebook (by hierarchy ID) to a file. fmt is a key of PF
+        (one, onepkg, docx, pdf, xps, mht, html). Returns the path written."""
+        code = PF.get((fmt or "").lower())
+        if code is None:
+            raise OneNoteError(f"Unknown export format: {fmt}")
+        self.app.Publish(hierarchy_id, str(path), code, "")
+        return str(path)
+
+    @_friendly
     def navigate(self, object_id: str) -> None:
         self.app.NavigateTo(object_id, "", False)
 
@@ -272,6 +424,3 @@ def _title_from(text: str) -> str:
     first = next((l.strip() for l in (text or "").splitlines() if l.strip()), "")
     return (first[:60] + "...") if len(first) > 60 else (first or "PhraseForge")
 
-
-def capture_exe() -> str:
-    return CAPTURE_EXE if os.path.isfile(CAPTURE_EXE) else ""

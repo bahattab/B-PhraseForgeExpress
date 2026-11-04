@@ -82,7 +82,7 @@ def test_every_bound_control_round_trips(app, store):
     d.save()
     for k, v in expected.items():
         assert store.setting(k) == v, k
-        if k in SCHEMA and k not in ("ocr.cli_path",):
+        if k in SCHEMA:
             assert v != SCHEMA[k] or k in ("backup.directory",), f"{k} did not change"
     # a fresh dialog shows the saved values
     d2 = _dialog(store)
