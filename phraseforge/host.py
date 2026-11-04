@@ -59,10 +59,15 @@ Action = TextAction | HtmlAction | KeyAction | CursorAction | SleepAction | Mous
 class FormField:
     """One field in a fill-in form ({#form...} macros)."""
     kind: str           # "edit" | "memo" | "combo" | "checkbox" | "radio" | "date" | "label" | "number"
+    #                     | "checkcombo" | "group" | "groupend"
     name: str
     label: str = ""
     default: Any = ""
     options: list[str] = field(default_factory=list)
+    required: bool = False
+    validate: str = ""          # rule for formcheck.field_error, e.g. "email" or "regex:\d+"
+    group: str = ""             # name of the {#formgroup} the field sits in
+    checkable: bool = True      # group only: a checkbox shows or hides its fields
 
 
 @dataclass
