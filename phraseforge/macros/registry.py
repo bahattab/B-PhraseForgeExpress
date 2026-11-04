@@ -41,5 +41,5 @@ def register(name, category, syntax, description, template=None, aliases=(), fn=
 
 
 def catalog() -> list[MacroInfo]:
-    from phraseforge.macros import commands, commands_extra  # noqa: F401  (ensure registration)
+    from phraseforge.macros import commands, commands_extra, commands_pe  # noqa: F401  (ensure registration)
     return [REGISTRY[n][0] for n in _PRIMARY]

@@ -434,12 +434,24 @@ def _field(rt, kind, args, opts):
             pass
     elif kind in ("combo", "radio") and not default and options:
         default = options[0]
-    f = FormField(kind=kind, name=name, label=label, default=default, options=options)
+    elif kind == "checkcombo":
+        osep = opts.get("sep", ",")
+        default = [x.strip() for x in opts.get("checked", "").split(osep) if x.strip()]
+    elif kind == "group":
+        default = not _flag(opts, "fixed") and (_flag(opts, "checked") or "unchecked" not in opts)
+    f = FormField(kind=kind, name=name, label=label, default=default, options=options,
+                  required=_flag(opts, "required"), validate=opts.get("validate", ""),
+                  group="" if kind in ("group", "groupend") else rt.form_group,
+                  checkable=not _flag(opts, "fixed"))
     rt.field_specs[name] = opts
+    if kind == "group":
+        rt.form_group = name
+    elif kind == "groupend":
+        rt.form_group = ""
     if rt.collecting is not None:
         rt.collecting.append(f)
         return None
-    if kind == "label":
+    if kind in ("label", "group", "groupend"):
         return None
     from phraseforge.macros.engine import store_form_values
     values = rt.host.show_form(opts.get("title", label), [f])
@@ -455,6 +467,18 @@ for _kind, _desc in [("edit", "single-line text"), ("memo", "multi-line text"), 
              f'{{#form{_kind} name -label "Label"}}',
              aliases=(("formeditbox",) if _kind == "edit" else ("formcombobox",) if _kind == "combo" else ()),
              fn=(lambda k: lambda rt, a, o: _field(rt, k, a, o))(_kind))
+
+register("formcheckcombo", "Forms", '{#formcheckcombo name -label "Label" -options "a,b,c" -checked "a" -join ", "}',
+         "Form field: drop-down list with a checkbox per item; outputs the checked items joined with -join.",
+         '{#formcheckcombo items -label "Items" -options "a,b,c"}', aliases=("formcheckcombobox",),
+         fn=lambda rt, a, o: _field(rt, "checkcombo", a, o))
+register("formgroup", "Forms", '{#formgroup name -label "Caption" -unchecked -fixed}',
+         "Starts a group of form fields (ends at {#formgroupend}). The group has a checkbox that shows "
+         "or hides its fields; hidden fields output nothing and are not checked. -unchecked starts it "
+         "closed, -fixed shows a plain frame without the checkbox. {#formvalue name} is the -on/-off text.",
+         '{#formgroup details -label "Details"}', fn=lambda rt, a, o: _field(rt, "group", a, o))
+register("formgroupend", "Forms", "{#formgroupend}", "Ends the {#formgroup} above.",
+         fn=lambda rt, a, o: _field(rt, "groupend", [o.get("name", f"groupend{len(rt.field_specs) + 1}")], o))
 
 
 @macro("formvalue", "Forms", "{#formvalue name}", "Value entered in a form field, input or choose (-name).")
@@ -650,7 +674,12 @@ def _insert(rt, args, opts):
     key = _arg(args, 0)
     if key.lower() in rt.insert_stack or len(rt.insert_stack) >= MAX_INSERT_DEPTH:
         return ""   # cycle or too deep
-    found = rt.host.phrase_content(key)
+    found = None
+    if rt.level and rt.store is not None:            # {#setlevel}: that language version
+        p = rt.store.find_phrase(key) or (rt.store.get_phrase(int(key)) if key.isdigit() else None)
+        found = rt.store.phrase_text(p, rt.level) if p else None
+    if found is None:
+        found = rt.host.phrase_content(key)
     if found is None and rt.store is not None:
         p = rt.store.find_phrase(key) or (rt.store.get_phrase(int(key)) if key.isdigit() else None)
         found = (p.content, p.content_format) if p else None
