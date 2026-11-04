@@ -44,6 +44,9 @@ class Match:
     typed: str = ""                    # abbreviation text as the user typed it (incl. completing char)
     groups: tuple[str, ...] = ()
     swallow: bool = True
+    # other triggers with the same abbreviation that matched at the same keystroke
+    # (PhraseExpress "multiple choice autotext": the caller offers a menu)
+    alternatives: tuple[Trigger, ...] = ()
 
 
 def typed_len(m: Match) -> int:
@@ -156,6 +159,17 @@ class AutotextMatcher:
         start = len(buf) - len(v)
         return start if self._lead_ok(t, buf, start) else None
 
+    @staticmethod
+    def _same(t: Trigger, rest: list[Trigger], matches: Callable[[Trigger], bool]) -> tuple[Trigger, ...]:
+        """Triggers after t (same list, longest first) with the same abbreviation that also match."""
+        out = []
+        for o in rest:
+            if len(o.value) != len(t.value):
+                break
+            if o.value.casefold() == t.value.casefold() and matches(o):
+                out.append(o)
+        return tuple(out)
+
     # ------------------------------------------------------------ matching
     def feed(self, char: str | None, key: str | None = None) -> Match | None:
         """Feed one keystroke. char is the produced text (may be '\\n'/'\\t');
@@ -169,11 +183,12 @@ class AutotextMatcher:
                 return None
             buf = self._buf + char
             # 1. triggers that need no trailing delimiter (abbreviation ends with this char)
-            for t in self._no_trail:
+            for i, t in enumerate(self._no_trail):
                 start = self._suffix(t, buf)
                 if start is not None:
                     self._buf = ""
-                    return Match(t, erase_chars=len(t.value) - 1, typed=buf[start:])
+                    alts = self._same(t, self._no_trail[i + 1:], lambda o: self._suffix(o, buf) == start)
+                    return Match(t, erase_chars=len(t.value) - 1, typed=buf[start:], alternatives=alts)
             # 2. regex triggers
             for t, rx in self._regex:
                 m = rx.search(buf)
@@ -183,13 +198,20 @@ class AutotextMatcher:
                                  groups=tuple(g or "" for g in m.groups()))
             # 3. triggers completed by a trailing delimiter (this char)
             prev = self._buf
-            for t in self._trail:
+            for i, t in enumerate(self._trail):
                 pred = self._trail_pred(t)
                 if pred is not None and pred(char):
                     start = self._suffix(t, prev)
                     if start is not None:
                         self._buf = ""
-                        return Match(t, erase_chars=len(t.value), trailing_delimiter=char, typed=prev[start:])
+
+                        def also(o, start=start):
+                            op = self._trail_pred(o)
+                            return op is not None and op(char) and self._suffix(o, prev) == start
+
+                        alts = self._same(t, self._trail[i + 1:], also)
+                        return Match(t, erase_chars=len(t.value), trailing_delimiter=char, typed=prev[start:],
+                                     alternatives=alts)
             self._buf = buf[-MAX_BUFFER:]
             if char == "\n":
                 self._buf = "\n"   # keep a boundary marker, drop old line

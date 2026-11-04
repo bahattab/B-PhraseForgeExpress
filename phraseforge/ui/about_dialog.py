@@ -22,6 +22,7 @@ CREDITS = [
     ("SQLite", "Public domain", "phrase database"),
     ("httpx", "BSD", "HTTP and AI requests"),
     ("openpyxl", "MIT", "Excel macros"),
+    ("spylls", "MPL 2.0", "spell check (Hunspell dictionaries, downloaded separately)"),
 ]
 
 

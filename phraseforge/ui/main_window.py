@@ -2234,22 +2234,52 @@ class MainWindow(QMainWindow):
             return None
 
     # ================================================================= import / export
-    def _import_path(self, path: str):
+    def _import_path(self, path: str, mode: str = "copy"):
         from phraseforge import io_formats
-        res = io_formats.import_file(self.store, path, self.selected_folder_id())
+        res = io_formats.import_file(self.store, path, self.selected_folder_id(), mode=mode)
         self.refresh_tree()
         return res
 
+    IMPORT_MODE_LABELS = {
+        "copy": "Save a copy (the file's contents become the phrase)",
+        "link": "Macro that loads the contents when the phrase is used",
+        "open": "Macro that opens the file in its program",
+        "lines": "Line by line (one phrase per paragraph or row)",
+    }
+
+    def choose_import_mode(self, path: str) -> str | None:
+        """How to import a Word, RTF, Excel or image file (PhraseExpress's four options)."""
+        from PySide6.QtWidgets import QInputDialog
+        from phraseforge.importers.files import modes_for
+        modes = modes_for(path)
+        labels = [tr(self.IMPORT_MODE_LABELS[m]) for m in modes]
+        text, ok = QInputDialog.getItem(self, tr("File import"), Path(path).name, labels, 0, False)
+        return modes[labels.index(text)] if ok and text in labels else None
+
     def import_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "File import", "",
-                                              "Phrase files (*.json *.csv *.txt *.textexpander);;All files (*)")
-        if not path:
+        paths_, _ = QFileDialog.getOpenFileNames(
+            self, "File import", "",
+            "Phrase files and documents (*.json *.csv *.txt *.textexpander *.docx *.docm *.rtf *.xlsx *.xlsm "
+            "*.png *.jpg *.jpeg *.gif *.bmp);;All files (*)")
+        if not paths_:
             return
-        try:
-            res = self._import_path(path)
-            QMessageBox.information(self, "Import", f"Imported: {res}" if res is not None else "Imported.")
-        except Exception as e:
-            QMessageBox.warning(self, "Import", str(e))
+        from phraseforge.importers.files import SUPPORTED
+        total, errors = 0, []
+        for path in paths_:
+            mode = "copy"
+            if Path(path).suffix.lower() in SUPPORTED:
+                mode = self.choose_import_mode(path)
+                if mode is None:
+                    continue
+            try:
+                res = self._import_path(path, mode)
+                total += res if isinstance(res, int) else 1
+            except Exception as e:
+                errors.append(f"{Path(path).name}: {e}")
+        if errors:
+            QMessageBox.warning(self, "Import", "\n".join(errors))
+        if total or not errors:
+            QMessageBox.information(self, "Import", f"Imported: {total}")
 
     def import_folder(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "Import files including directory structure")
@@ -2652,9 +2682,9 @@ class MainWindow(QMainWindow):
                 btn = box.addButton("Open download page", QMessageBox.AcceptRole)
                 box.exec()
                 if dl is not None and box.clickedButton() is dl:
-                    QDesktopServices.openUrl(QUrl(rel["setup_url"]))
+                    QDesktopServices.openUrl(QUrl(updates.safe_release_url(rel["setup_url"]) or updates.RELEASES_PAGE))
                 elif box.clickedButton() is btn:
-                    QDesktopServices.openUrl(QUrl(rel["url"]))
+                    QDesktopServices.openUrl(QUrl(updates.safe_release_url(rel["url"]) or updates.RELEASES_PAGE))
             else:
                 box.exec()
         return msg

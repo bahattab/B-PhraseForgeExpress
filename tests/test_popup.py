@@ -322,6 +322,24 @@ def test_show_at_folder(app, store):
     assert sub.id
 
 
+def test_show_at_choice_lists_only_those_phrases(app, store):
+    from phraseforge.ui.popup import PhrasePopup
+    a = store.add_phrase(Phrase("Formal", "Kind regards"))
+    store.add_phrase(Phrase("Unrelated", "x"))
+    b = store.add_phrase(Phrase("Short", "Cheers"))
+    pop = PhrasePopup(store)
+    got = []
+    pop.phrase_chosen.connect(got.append)
+    pop.show_at(10, 10, caret=None, folder=f"choice:{a.id},{b.id}")
+    assert [(r[1], r[2]) for r in _rows(pop)] == [(a.id, "Formal"), (b.id, "Short")]
+    assert pop.band.title == "Select phrase" and not pop.footer.isVisible()
+    pop._activate(pop.list.item(1))
+    assert got == [b.id]
+    pop.show_at(10, 10, caret=None)                              # back to the normal menu
+    assert pop.folder_key is None and "Unrelated" in [r[2] for r in _rows(pop)]
+    pop.hide_all(force=True)
+
+
 def test_last_used_cap_and_clipboard_switch(app, store):
     from phraseforge.ui.popup import LAST_USED, CLIPBOARD, PhrasePopup
     for i in range(5):
