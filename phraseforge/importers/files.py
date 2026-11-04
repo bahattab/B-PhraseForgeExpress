@@ -21,6 +21,7 @@ Readers (also used by the {#document} macro):
 """
 from __future__ import annotations
 
+import codecs
 import hashlib
 import re
 import shutil
@@ -58,15 +59,41 @@ _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 MAX_DOCUMENT_XML = 64 * 1024 * 1024     # unpacked word/document.xml; larger is treated as a zip bomb
 
 
+class _PrologDone(Exception):
+    pass
+
+
+def refuse_dtd(data: bytes) -> None:
+    """Raise ValueError if the XML has a DTD. Word never writes one; refusing it rules
+    out entity expansion and external entities whatever the parser's own limits are.
+    The XML parser reads the prolog itself, so the check holds for every encoding
+    (a byte search for "<!DOCTYPE" misses UTF-16). Parsing stops at the first element."""
+    from xml.parsers import expat
+
+    def doctype(*_):
+        raise ValueError("word/document.xml contains a DTD")
+
+    def first_element(*_):
+        raise _PrologDone
+
+    p = expat.ParserCreate()
+    p.StartDoctypeDeclHandler = doctype
+    p.EntityDeclHandler = doctype
+    p.StartElementHandler = first_element
+    try:
+        p.Parse(data, True)
+    except _PrologDone:
+        pass
+    except expat.ExpatError as e:
+        raise ValueError(f"word/document.xml is not valid XML: {e}") from None
+
+
 def docx_paragraphs(path: str | Path) -> list[str]:
     with zipfile.ZipFile(path) as z:
         if z.getinfo("word/document.xml").file_size > MAX_DOCUMENT_XML:
             raise ValueError("word/document.xml is too large")
         data = z.read("word/document.xml")
-    # Word never writes a DTD; refusing one rules out entity expansion and external
-    # entities whatever the XML parser's own protections are.
-    if b"<!DOCTYPE" in data[:4096].upper() or b"<!ENTITY" in data.upper():
-        raise ValueError("word/document.xml contains a DTD")
+    refuse_dtd(data)
     root = ET.fromstring(data)
     out = []
     for para in root.iter(_W + "p"):
@@ -88,6 +115,20 @@ _RTF_SKIP = {"fonttbl", "colortbl", "stylesheet", "info", "pict", "header", "foo
              "xmlnstbl", "themedata", "colorschememapping", "datastore", "latentstyles", "object", "fldinst",
              "filetbl", "revtbl", "mmathPr", "pgdsctbl"}
 _RTF_TOKEN = re.compile(r"\\([a-zA-Z]+)(-?\d+)? ?|\\'([0-9a-fA-F]{2})|\\(.)|([{}])|([^\\{}\r\n]+)|[\r\n]+", re.S)
+
+
+# \ansicpg values Python has no "cpN" name for, and the old character-set words
+_RTF_CODEPAGES = {"10000": "mac_roman", "10004": "mac_arabic", "10006": "mac_greek", "10007": "mac_cyrillic",
+                  "10029": "mac_latin2", "10079": "mac_iceland", "10081": "mac_turkish"}
+_RTF_CHARSETS = {"ansi": "cp1252", "mac": "mac_roman", "pc": "cp437", "pca": "cp850"}
+
+
+def _rtf_codec(name: str) -> str:
+    """A codec Python knows, or cp1252 (RTF's default) for an unknown or broken code page."""
+    try:
+        return codecs.lookup(name).name
+    except LookupError:
+        return "cp1252"
 
 
 def rtf_to_text(rtf: str) -> str:
@@ -121,13 +162,17 @@ def rtf_to_text(rtf: str) -> str:
             if word in _RTF_SKIP:
                 skipping = True
             elif word == "ansicpg" and arg:
-                codepage = f"cp{arg}"
+                codepage = _rtf_codec(_RTF_CODEPAGES.get(arg.lstrip("-"), f"cp{arg.lstrip('-')}"))
+            elif word in _RTF_CHARSETS and not stack[1:]:     # \mac, \pc ... in the header
+                codepage = _RTF_CHARSETS[word]
             elif word == "uc" and arg:
                 uc = int(arg)
             elif word == "u" and arg:
                 if not skipping:
                     n = int(arg)
-                    out.append(chr(n + 65536 if n < 0 else n))
+                    n = n + 65536 if n < 0 else n
+                    if 0 <= n <= 0xFFFF:          # RTF \uN is 16-bit; pairs are joined below
+                        out.append(chr(n))
                 pending_skip = uc
             elif not skipping:
                 if word in ("par", "line", "sect", "page"):
@@ -159,7 +204,10 @@ def rtf_to_text(rtf: str) -> str:
             if not skipping and text:
                 out.append(text)
     flush_hex()
-    lines = "".join(out).split("\n")
+    # Word writes characters outside the BMP (emoji) as two \uN surrogates: join them,
+    # and turn a lone surrogate into U+FFFD so the text can be stored.
+    joined = "".join(out).encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+    lines = joined.split("\n")
     return "\n".join(line.rstrip() for line in lines).strip("\n")
 
 
