@@ -348,13 +348,20 @@ def _sleep(rt, args, opts):
     return SleepAction(int(float(_arg(args, 0, "500"))))
 
 
-@macro("mouse", "Keys & cursor", "{#mouse click -x 100 -y 200}", "Mouse click|rclick|dblclick|move at x,y.")
+@macro("mouse", "Keys & cursor", "{#mouse click -x 100 -y 200}",
+       "Mouse click|rclick|dblclick|move at x,y (-relative 1: from the top-left corner of the window in "
+       "front), or wheel -delta N (120 per notch, negative scrolls down).")
 def _mouse(rt, args, opts):
     kind = _arg(args, 0, "click").lower()
-    if kind not in ("click", "rclick", "dblclick", "move"):
+    if kind not in ("click", "rclick", "dblclick", "move", "wheel"):
         raise MacroError(f"unknown mouse action {kind}")
-    x, y = opts.get("x"), opts.get("y")
-    return MouseAction(kind, int(x) if x else None, int(y) if y else None)
+    try:
+        x, y = opts.get("x"), opts.get("y")
+        x, y = (int(x) if x not in (None, "") else None), (int(y) if y not in (None, "") else None)
+        delta = int(opts.get("delta", "-120" if kind == "wheel" else "0") or 0)
+    except ValueError as e:
+        raise MacroError(f"mouse: {e}") from e
+    return MouseAction(kind, x, y, delta=delta, relative=_flag(opts, "relative"))
 
 
 # ====================================================================== clipboard / context

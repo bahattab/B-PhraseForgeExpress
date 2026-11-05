@@ -785,6 +785,9 @@ class MainWindow(QMainWindow):
                                           key="New Phrase")
         self.btn_new_folder.setToolTip("New Folder (Ctrl+O)")
         self.btn_new_phrase.setToolTip("New Phrase (Ctrl+N)")
+        b = g.add_large("Record\nmacro", "m_recorder", self.record_macro, key="Record macro")
+        b.setToolTip("Record keys and mouse clicks in any program as a new phrase "
+                     "(stop with Ctrl+Shift+F12 or the Stop button)")
         b = g.add_large("Signatures", "email", self.show_signatures)
         b.setToolTip("E-mail signatures, dated footers and random quotes; export them to Outlook")
         g = t.add_group("Sync")
@@ -2676,6 +2679,11 @@ class MainWindow(QMainWindow):
         if SharedDialog(self.store, self).exec() and self.on_command is not None \
                 and self.store.setting("shared.enabled", "0") == "1":
             self.on_command("shared_sync")
+
+    def record_macro(self) -> None:
+        if self.on_command is not None:
+            self.showMinimized()                      # out of the way of what is being recorded
+            self.on_command("record_macro")
 
     def show_signatures(self) -> None:
         from phraseforge.ui.signatures_dialog import SignaturesDialog
