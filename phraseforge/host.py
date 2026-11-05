@@ -42,9 +42,11 @@ class SleepAction:
 
 @dataclass
 class MouseAction:
-    kind: str           # "click" | "move" | "rclick" | "dblclick"
+    kind: str           # "click" | "move" | "rclick" | "dblclick" | "wheel"
     x: int | None = None
     y: int | None = None
+    delta: int = 0      # wheel: +120 per notch away from the user
+    relative: bool = False   # x, y relative to the foreground window's top-left corner
 
 
 @dataclass

@@ -256,10 +256,18 @@ class OutputExecutor:
             elif isinstance(a, SleepAction):
                 time.sleep(max(0, a.ms) / 1000)
             elif isinstance(a, MouseAction):
-                if a.kind == "move" and a.x is not None and a.y is not None:
-                    si.mouse_move(a.x, a.y)
+                x, y = a.x, a.y
+                if a.relative and x is not None and y is not None:
+                    left, top = si.foreground_origin()
+                    x, y = x + left, y + top
+                if a.kind == "wheel":
+                    if x is not None and y is not None:
+                        si.mouse_move(x, y)
+                    si.mouse_wheel(a.delta)
+                elif a.kind == "move" and x is not None and y is not None:
+                    si.mouse_move(x, y)
                 elif a.kind in ("click", "rclick", "dblclick"):
-                    si.mouse_click(a.x, a.y, button="right" if a.kind == "rclick" else "left",
+                    si.mouse_click(x, y, button="right" if a.kind == "rclick" else "left",
                                    double=a.kind == "dblclick")
             else:
                 log.warning("unknown action %r", a)

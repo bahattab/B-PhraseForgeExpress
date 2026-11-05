@@ -571,6 +571,7 @@ class PhraseForgeApp(QObject):
         reg("open_main", lambda arg, hwnd: post(self.show_main))
         reg("open_settings", lambda arg, hwnd: post(self.show_settings))
         reg("shared_sync", lambda arg, hwnd: post(lambda: self.shared_tick(manual=True)))
+        reg("record_macro", lambda arg, hwnd: post(self.record_macro))
         reg("clear_clipboard_cache", lambda arg, hwnd: self.store.clear_clipboard(keep_pinned=True))
         reg("pause", lambda arg, hwnd: post(self._pause_cmd))
         reg("sound", lambda arg, hwnd: self._play(arg))   # "sound:<event>" from other layers
@@ -1728,6 +1729,33 @@ class PhraseForgeApp(QObject):
     def test_phrase(self, phrase_id: int):
         """'Test' button in the editor: expand into the previously focused app."""
         self._jobs.put(("expand", ExpansionRequest(phrase_id=phrase_id), _foreground_hwnd()))
+
+    # ---------------------------------------------------------- macro recorder (recorder.py)
+    def record_macro(self):
+        """Start recording, or stop when a recording runs. The result becomes a new phrase."""
+        ctl = getattr(self, "_recording", None)
+        if ctl is not None and ctl.active:
+            ctl.finish()
+            return
+        from phraseforge.ui.recording_bar import RecordingController
+        try:
+            from phraseforge.platform.windows import focused_is_password
+        except Exception:
+            focused_is_password = None
+        self._recording = RecordingController(self.store, self._recorded, post=self.poster.posted.emit,
+                                              triggers=self.triggers, password_check=focused_is_password)
+        self._recording.start()
+
+    def _recorded(self, text: str):
+        if not text.strip():
+            self.tray.notify("PhraseForge", "Nothing was recorded.")
+            return
+        from datetime import datetime
+        from phraseforge.models import Phrase
+        p = self.store.add_phrase(Phrase("Recorded macro " + datetime.now().strftime("%Y-%m-%d %H:%M"), text))
+        self.show_main()
+        self.main_window.refresh_tree()
+        self.main_window.select_phrase(p.id)
 
     def show_main(self):
         from phraseforge.ui.main_window import MainWindow

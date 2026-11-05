@@ -176,6 +176,27 @@ def _mouse(flags: int, dx: int = 0, dy: int = 0) -> INPUT:
     return inp
 
 
+MOUSEEVENTF_WHEEL = 0x0800
+
+
+def mouse_wheel(delta: int) -> None:
+    """Scroll: +120 per notch away from the user, negative towards."""
+    if delta:
+        inp = _mouse(MOUSEEVENTF_WHEEL)
+        inp.mi.mouseData = ctypes.c_uint32(int(delta)).value     # DWORD carries a signed value
+        _send([inp])
+
+
+def foreground_origin() -> tuple[int, int]:
+    """Top-left corner of the window in front (for {#mouse ... -relative 1})."""
+    from ctypes import wintypes as wt
+    rect = wt.RECT()
+    hwnd = user32.GetForegroundWindow()
+    if hwnd and user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return rect.left, rect.top
+    return 0, 0
+
+
 def mouse_move(x: int, y: int) -> None:
     user32.SetCursorPos(int(x), int(y))
 
