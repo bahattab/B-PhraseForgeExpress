@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Target repo | `https://github.com/bahattab/B-PhraseForgeExpress`, inventory and gap analysis checked against release **0.6.5** (PR #29, `4c477a8`; 0.6.4 is `c100c2e`) |
+| Target repo | `https://github.com/bahattab/B-PhraseForgeExpress`, inventory and gap analysis checked against release **0.6.5** (`aae8e89`; 0.6.4 is `c100c2e`) and `main` after it (`104a091`, with #30 and #32) |
 | Reference product | PhraseExpress 18.0.84.0, installed at `C:\Program Files (x86)\PhraseExpress` |
 | Date | 2026-11-04 (v6, v5) · 2026-11-02 (v4) · 2026-10-30 (v3) · 2026-10-29 (v1, v2) |
-| Status | Draft v6 — 0.6.4 and 0.6.5 recorded: review fixes R12–R18 (Section 7.5.1), spell check and document import from a parallel session, spell latency budget P-09, U-08 Hunspell part resolved (the frozen EXE does not load a dictionary in its self-test yet). v5: security work of 0.6.1–0.6.3 recorded (G-34 closed, red-team review R1–R11, Section 7.5.1); trust-model storage recorded as decision D7; PE export routes from the vendor documentation (U-15) |
+| Status | Draft v6 — 0.6.4, 0.6.5 and `main` after 0.6.5 (#30, #32) recorded: review fixes R12–R18 (Section 7.5.1), spell check and document import from a parallel session, spell latency budget P-09, U-08 Hunspell part resolved (the frozen EXE does not load a dictionary in its self-test yet). v5: security work of 0.6.1–0.6.3 recorded (G-34 closed, red-team review R1–R11, Section 7.5.1); trust-model storage recorded as decision D7; PE export routes from the vendor documentation (U-15) |
 | Method | Static analysis only. No PhraseExpress binary was executed. No PhraseExpress code, assets, keys or text are reproduced here. |
 
 ---
@@ -18,8 +18,9 @@ v6 records releases **0.6.4** and **0.6.5** (both 2026-11-04). 0.6.4 shipped the
 |---|---|---|
 | 0.6.4 | #24, #26, #25 | #24 spell check (FR-EDT-01, G-20 partial). #26 import of Word, RTF, Excel and image files with PE's four file-import options: copy, link, open, line by line (`importers/files.py`; G-16 moves forward inside "partial"). The `{#document}` macro now uses #26's RTF reader. #25: review of #7, R12 (lost delimiter) and R13 (locked phrase names) |
 | 0.6.5 | #29, #27 | #27 (parallel session, merged before #29): phrase export as RTF (G-16) and phrase suggestions from sentences repeated in sent e-mail, from Outlook Sent Items or `.eml`/`.mbox` files (`mail_analysis.py`, row E5). #27 has not had a security review yet. #29: review of #24 and #26, R14–R18. **R14** (High, older than both PRs): the file-reading macros reached network shares without approval, which on Windows sends the user's NTLM credentials to the host. A network path now needs an approved phrase. R15: spelling suggestions moved off the UI thread (a long Arabic word froze the editor for 9–30 s). R16: RTF with any code page. R17: DTD refusal in any encoding. R18: synced spell settings cannot name a file |
+| `main` after 0.6.5 | #30, #32 | #30 (parallel session): **G-28 closed**: `%ProgramData%\PhraseForge\policy.toml` (`policy.py`) locks Settings or editing, turns statistics off, disables named macros and forces settings; an unreadable file fails closed. Also an e-mail signature manager (`signatures.py`: a Signatures folder with footers shown between dates and random quotes, `{#signature}`, export to Outlook's signature folder); PE has one [EVIDENCE.md], no Section 1.2 row. #32 (parallel session): **G-25 open → partial**, stage 1 of a shared phrase database on SQL Server or PostgreSQL (`shared/`): revision counter, optimistic concurrency, conflict copies, soft deletes; per-folder permissions are stage 2. Neither PR has had a security review; one open item from #32 is recorded as R19 (Section 7.5.1) |
 
-Gap count unchanged since v5: **6 of 34 closed**, 15 partial, 13 open. R14 extends the closed gap G-02 (FR-SEC-05) and does not reopen it: the gap was "privileged macros run from untrusted phrases", and reading a network share was a privileged action the list did not name.
+Gap count at 0.6.5: unchanged since v5, **6 of 34 closed**, 15 partial, 13 open. On `main` after 0.6.5: **7 closed** (G-28), **16 partial** (G-25), **11 open**. R14 extends the closed gap G-02 (FR-SEC-05) and does not reopen it: the gap was "privileged macros run from untrusted phrases", and reading a network share was a privileged action the list did not name.
 
 Evidence for v6 [REPO]: 0.6.4 published with all three assets (Setup, portable, win64 zip; CI green on `c0208d4`, including the frozen-EXE self-test and silent install/uninstall); 0.6.5 on `4c477a8` (PR #29); `pytest --collect-only` 860 tests in 58 files; red-team suite 78 cases. Each R14–R18 case fails on 0.6.4 (17 of 18; the 18th is a control: local files need no approval). Timing for R15 measured with the LibreOffice `ar` dictionary on Linux: menu open ≤ 0.42 s for the worst word, against 30.4 s before.
 
@@ -360,7 +361,7 @@ Priority: **M** must-have (core parity, or a security defect), **S** should-have
 
 PE evidence for each gap: Section 1.2. Also open: `test_filesearch.py::test_speed_gate_50k_entries_answers_in_milliseconds` (median < 50 ms) was reported failing on slower machines in 0.5.4; it passed in the 0.5.6 Linux run, so its status on slower Windows machines is unconfirmed.
 
-**Summary for 0.6.4 and 0.6.5:** no gap changed state; G-16 and G-20 moved forward inside "partial", and R14 extends closed gap G-02. **Summary for `main` after 0.6.3:** G-20 partial (#24) → 6 closed, 15 partial, 13 open. **Summary for 0.6.3:** unchanged from 0.6.1 (the red-team fixes harden closed gaps G-01, G-02 and G-34 and add no new gap). **Summary for 0.6.1:** G-34 closed → 6 of 34 closed, 14 partial, 14 open.
+**Summary for `main` after 0.6.5:** G-28 closed (#30), G-25 open → partial (#32): 7 closed, 16 partial, 11 open. **Summary for 0.6.4 and 0.6.5:** no gap changed state; G-16 and G-20 moved forward inside "partial", and R14 extends closed gap G-02. **Summary for `main` after 0.6.3:** G-20 partial (#24) → 6 closed, 15 partial, 13 open. **Summary for 0.6.3:** unchanged from 0.6.1 (the red-team fixes harden closed gaps G-01, G-02 and G-34 and add no new gap). **Summary for 0.6.1:** G-34 closed → 6 of 34 closed, 14 partial, 14 open.
 
 **Summary for 0.6.0:** no gap changed state between 0.5.6 and 0.6.0. G-15, G-16 and G-31 moved forward inside "partial"; G-34 is still the open security item. The counts below still hold.
 
@@ -641,7 +642,8 @@ Critical path: P0 → P1 → P2 → P3 → P5. P4 can start after P2 in parallel
 | P2 (pulled forward) | **partly done** | FR-SEC-04/05 trust gate for imported and synced phrases (`security.py`, `phrase_quarantine` table), hardened in 0.6.2/0.6.3 (output targets, Win-key aliases, device settings, variables) and 0.6.5 (network-share reads); storage recorded as decision D7; FR-SEC-08 lock before expansion | FR-SEC-08 `passcheck` modes; FR-DAT-00..05 |
 | P5 (started early, user request) | **partly done** | FR-IMP-01 text route and folder tree; FR-IMP-05 HTML/DOCX export; OneNote exchange (outside the FR list); PE-style Word/RTF/Excel/image file import (0.6.4, outside the FR list) | FR-IMP-01 real-sample check and macro translation (needs P3 `pe_compat`); FR-IMP-02 `phraseexpress` tag and `origin` (imports use the 0.5.5 quarantine instead); FR-IMP-04 importers; FR-IMP-05 XML/XLSX |
 | P6 (started early, parallel session) | **started** | FR-EDT-01 partial: spell check (0.6.4), suggestions off the UI thread (0.6.5) | FR-EDT-01 dictionary per phrase level; FR-EDT-02; FR-DYN-01/02; FR-OL-01; FR-UI-01/02 |
-| P1, P3, P4, P7, P8 | not started | — | All their FRs |
+| P8 (started early, parallel session, on `main` after 0.6.5) | **started** | FR-APP-04 lockdown policy (#30); FR-SYN-05 stage 1, shared SQL database (#32) | FR-APP-02/03/05, FR-REC-01, FR-MAC-05; FR-SYN-05 permissions (stage 2); R19 |
+| P1, P3, P4, P7 | not started | — | All their FRs |
 
 **Next step on the critical path (v6, unchanged from v5):** P0 now lacks only the `bench/` harness and the FR-QA-01 timing items. Build `bench/` first, so P1 has the baseline numbers it is measured against: P-02 (matcher decision) and P-06 (popup with 10k phrases) can run on any OS in CI; P-01, P-03, P-04 and P-08 need a Windows runner with an interactive desktop (Section 7.3). Then start P1 with a `pfhook.dll` spike that measures P-01.
 
@@ -737,6 +739,9 @@ Review of PR #24 (spell check) and PR #26 (Word, RTF, Excel and image import), b
 - **R16 (Medium):** an RTF with a code page Python does not know (`\ansicpg10000` from old Macs, `\ansicpg0`) raised `LookupError`. That broke the import and `{#document}`, which read the file before #26. Mac code pages and `\mac`/`\pc`/`\pca` are now mapped, and anything else falls back to cp1252. Also fixed: an emoji written by Word as two `\uN` surrogates came out as two broken characters that could not be stored; the pair is now joined.
 - **R17 (Low):** the DTD check on `word/document.xml` searched the bytes for `<!DOCTYPE`, which a UTF-16 document passes. expat now reads the prolog and refuses any DTD in every encoding.
 - **R18 (Low):** `spell.latin` and `spell.arabic` arrive by sync and were used as file names. Only codes in the dictionary list are used.
+
+Noted while recording #32 in v6, not fixed yet (#30 and #32 have not been reviewed as a whole):
+- **R19 (High, open):** a phrase pulled from the shared database is quarantined only when its `modified_by` names another user (`shared/mirror.py`, `_pull_phrase`). The client writes that column itself (`modified_by = ?` in `shared/server.py`), so anyone who can write to the tables can put the victim's name on a phrase, and its `{#run}` or `{#http}` runs without approval. A team that shares one database login is never quarantined at all. Proposed fix: decide by content, not by name. Quarantine every pulled phrase whose fingerprint differs from the one this PC last pushed or approved; the mirror's map already keeps that fingerprint.
 
 Still open: Linux single-instance socket squatting by the same user; with a proxy, `{#http}` relies on the name check only.
 
