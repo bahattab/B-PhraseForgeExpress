@@ -38,6 +38,8 @@ class Runtime:
     insert_stack: list[str] = field(default_factory=list)
     collecting: list[FormField] | None = None       # set while inside {#form}
     field_specs: dict[str, dict[str, str]] = field(default_factory=dict)
+    level: str = ""                                  # language version for {#insert} ({#setlevel})
+    form_group: str = ""                             # open {#formgroup} while collecting fields
 
     def now(self) -> datetime:
         return self.engine.clock()
@@ -362,6 +364,7 @@ class MacroEngine:
             fields = rt.collecting
         finally:
             rt.collecting = prev
+            rt.form_group = ""
         values = rt.host.show_form(title, fields)
         store_form_values(rt, fields, values)
         return []
@@ -369,14 +372,29 @@ class MacroEngine:
 
 def store_form_values(rt: Runtime, fields: list[FormField], values: dict) -> None:
     from phraseforge.macros.datetimes import format_dt
+
+    def raw(f):
+        return values.get(f.name, f.default) if values is not None else f.default
+
+    def is_on(v):
+        return isinstance(v, bool) and v or (isinstance(v, str) and _truthy(v))
+
+    # fields in a group whose checkbox is off output nothing
+    closed = {f.name for f in fields if f.kind == "group" and f.checkable and not is_on(raw(f))}
     for f in fields:
-        if f.kind == "label":
+        if f.kind in ("label", "groupend"):
             continue
-        v = values.get(f.name, f.default) if values is not None else f.default
+        v = raw(f)
         spec = rt.field_specs.get(f.name, {})
-        if f.kind == "checkbox":
-            on = isinstance(v, bool) and v or (isinstance(v, str) and _truthy(v))
+        if f.group in closed:
+            rt.form_values[f.name] = ""
+            continue
+        if f.kind in ("checkbox", "group"):
+            on = is_on(v) or (f.kind == "group" and not f.checkable)
             v = spec.get("on", "1") if on else spec.get("off", "")
+        elif f.kind == "checkcombo":
+            items = v if isinstance(v, (list, tuple)) else [x for x in str(v or "").split(",") if x.strip()]
+            v = _esc_join(spec.get("join", ", ")).join(str(x) for x in items)
         elif f.kind == "date" and spec.get("format") and v:
             try:
                 v = format_dt(datetime.fromisoformat(str(v)), spec["format"], spec.get("lang", "en"))
@@ -387,6 +405,10 @@ def store_form_values(rt: Runtime, fields: list[FormField], values: dict) -> Non
         elif isinstance(v, float) and v.is_integer():
             v = str(int(v))
         rt.form_values[f.name] = "" if v is None else str(v)
+
+
+def _esc_join(s: str) -> str:
+    return s.replace("\\n", "\n").replace("\\t", "\t")
 
 
 def _norm(res) -> list:
