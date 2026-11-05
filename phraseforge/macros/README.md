@@ -246,6 +246,7 @@ editing.
 |---|---|---|
 | `insert` | `{#insert "Phrase description" -autotext abbr -folder "A/B" -pick manual\|random\|N -same}` | Insert another phrase (its macros run too): by description, by its autotext, or picked from a folder. |
 | `setphrase` | `{#setphrase "Description" "content" -target "Existing phrase" -folder "A/B"}` | Create a phrase, or replace the content of -target (no output). |
+| `signature` | `{#signature}` | E-mail signature from the Signatures folder: the default one, or {#signature "Name"}, with its active footers and, if switched on, a random quote. -lang picks a language version. |
 | `setlevel` | `{#setlevel de}` | Use this language version for the {#insert} calls that follow in this expansion ("" or default = the default version). |
 
 ### Files & data
