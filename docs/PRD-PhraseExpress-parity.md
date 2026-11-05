@@ -243,7 +243,7 @@ PE macro names [C-EXE, from the macro name table], compared with PF's 153 comman
 | E11 | UI languages EN/DE | [C-DLL] pexlang | ➕ EN/AR with right-to-left layout; 1,277-entry Arabic table (`ui/i18n.py` + `ui/i18n_ar.py`); 0.6.0 translated the remaining list headers and breadcrumb; no `.ts` pipeline |
 | E12 | Event sounds (6) | [C-DATA] `DoSound0–5` | ✅ `sounds.py` |
 | E13 | Toast notifications (WinRT) | [C-EXE] `RoActivateInstance` [I] | 🟡 tray balloon |
-| E14 | Admin lockdown via machine-wide `C:\ProgramData\PhraseExpress\config.xml` (`ConfigDisabled, EditDisabled, DoStats`) | [C-DATA] | ❌ |
+| E14 | Admin lockdown via machine-wide `C:\ProgramData\PhraseExpress\config.xml` (`ConfigDisabled, EditDisabled, DoStats`) | [C-DATA] | ✅ `%ProgramData%\PhraseForge\policy.toml` (G-28) |
 | E15 | CLI switches (Section 3.9) and portable mode | [C-EXE] | 🟡 `--self-test`, `--minimized`, argv handed to the running instance (`single_instance.py`), portable EXE, `PHRASEFORGE_HOME`; no other switches |
 
 #### F. Integration, sync, network
@@ -347,10 +347,10 @@ Priority: **M** must-have (core parity, or a security defect), **S** should-have
 | G-22 | Dynamic folders | S | L | FR-DYN-01/02 | open |
 | G-23 | Macro recorder | N | L | FR-REC-01 | open |
 | G-24 | Change-set sync | S | L | FR-SYN-01..04 | open (whole snapshot). 0.5.8 made snapshot sync automatic (interval, start, exit, after edits), which makes the missing merge more visible: two PCs that both edit between syncs still get keep-mine/keep-theirs |
-| G-25 | Multi-user server, ACLs, directory identity | N | XL | FR-SYN-05 | open |
+| G-25 | Multi-user server, ACLs, directory identity | N | XL | FR-SYN-05 | partial (stage 1): shared folders and phrases on SQL Server or PostgreSQL (`shared/`), Windows or database sign-in checked by the server, revision counter with optimistic concurrency, conflict copies, soft deletes; setup in `docs/shared-database.md`. Missing: per-folder permissions (stage 2), change history, offline queue beyond the next sync |
 | G-26 | Outlook context | N | M | FR-OL-01 | partial: `{#outlook field}` via COM |
 | G-27 | Duplicate finder, backup compare, vacuum | N | S | FR-UI-01 | partial: bulk remove duplicates |
-| G-28 | Admin lockdown policy file | N | S | FR-APP-04 | open |
+| G-28 | Admin lockdown policy file | N | S | FR-APP-04 | done: `%ProgramData%\PhraseForge\policy.toml` (`policy.py`, example in `docs/policy.example.toml`): settings_locked, editing_disabled (enforced in the store; sync pulls still apply), stats_enabled, macros_disabled, locked_settings, forced `[settings]`, message; an unreadable file fails closed. `plugins_allowed` waits for the plugin system |
 | G-29 | Auto-update | N | M | FR-APP-05 | partial: GitHub release check + setup link |
 | G-30 | SAPI, layout conversion, mouse/sound macros | N | S | FR-MAC-05 | open |
 | G-31 | Full UI localisation | S | M | FR-UI-02 | partial, **changed in 0.6.0**: 1,277-entry Arabic table, RTL; list headers, panel title and breadcrumb now translated; strings are still found by hand (no extraction step) |

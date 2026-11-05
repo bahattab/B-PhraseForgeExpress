@@ -32,7 +32,8 @@ OUTLOOK = [("@direct", "Title", "{#outlook title}"), ("@direct", "First name", "
            ("@direct", "Sender email", "{#outlook senderemail}"),
            ("@direct", "Recipient email", "{#outlook recipientemail}"),
            ("@direct", "Subject", "{#outlook subject}"), ("@direct", "Body", "{#outlook body}"), None,
-           ("@direct", "Gender", "{#outlook gender}")]
+           ("@direct", "Gender", "{#outlook gender}"), None,
+           ("@direct", "E-mail signature", "{#signature}")]
 ACTIVE_DIRECTORY = [("@direct", "Name", "{#ad name}"), ("@direct", "Email", "{#ad email}"),
                     ("@direct", "Nickname", "{#ad nickname}"), ("@direct", "Telephone number", "{#ad telephone}"),
                     ("@direct", "Street", "{#ad street}"), ("@direct", "ZIP code", "{#ad zip}"),
@@ -230,6 +231,8 @@ def display_name(token: str) -> str:
         return "Form value: " + args[0]
     if name == "insert" and args:
         return "Insert: " + args[0]
+    if name == "signature":
+        return "Signature: " + args[0] if args else "Signature"
     if name == "env" and args:
         return f"%{args[0]}%"
     if name in ("sleep", "wait") and args:
