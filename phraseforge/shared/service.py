@@ -68,3 +68,23 @@ def test_connection(store, connectors: dict | None = None) -> tuple[str, bool]:
         return server.user(), server.ready()
     finally:
         server.close()
+
+
+def with_server(store, fn, connectors: dict | None = None):
+    """Run fn(server) on a fresh connection and close it afterwards."""
+    server = connect(store.setting, connectors)
+    try:
+        return fn(server)
+    finally:
+        server.close()
+
+
+def remote_phrase_id(store, local_id: int) -> int | None:
+    """The shared database id of a local phrase, or None when it is not shared."""
+    try:
+        with store.lock:
+            r = store.conn.execute("SELECT remote_id FROM shared_map WHERE kind='phrase' AND local_id=?",
+                                   (local_id,)).fetchone()
+    except Exception:                                   # no shared_map table: never synced
+        return None
+    return int(r[0]) if r else None

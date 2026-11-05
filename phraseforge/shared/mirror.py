@@ -22,6 +22,12 @@ everything again. Phrases changed by another user are quarantined like a cloud
 sync pull (security.py), so their {#run} and similar macros wait for approval.
 Pulls go through Store.policy_bypass(): an administrator's "editing disabled"
 policy still lets shared phrases arrive.
+
+Permissions (stage 2): the server sends only what this login may read. When the
+permissions change, the next sync reads everything again and removes copies that
+may no longer be read. A change the permissions refuse is undone here (the
+server's version comes back) and the local text is kept as a phrase in the local
+folder "Not saved to the shared database", outside the Shared folder.
 """
 from __future__ import annotations
 
@@ -31,7 +37,7 @@ import logging
 from dataclasses import dataclass, field
 
 from phraseforge.models import Folder, Phrase, Trigger
-from phraseforge.shared.server import Conflict, RemoteFolder, RemotePhrase, SharedServer
+from phraseforge.shared.server import Conflict, PermissionDenied, RemoteFolder, RemotePhrase, SharedServer
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +49,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS shared_map_local ON shared_map (kind, local_id
 CREATE TABLE IF NOT EXISTS shared_state (k TEXT PRIMARY KEY, v TEXT);
 """
 CONFLICT_SUFFIX = " (conflict copy)"
+NOT_SAVED = "Not saved to the shared database"    # local folder for edits the permissions refused
 
 
 @dataclass
@@ -51,6 +58,7 @@ class SyncResult:
     pushed: int = 0
     deleted: int = 0
     conflicts: list[str] = field(default_factory=list)
+    denied: list[str] = field(default_factory=list)
     user: str = ""
 
     def summary(self) -> str:
@@ -59,6 +67,8 @@ class SyncResult:
             parts.append(f"{self.deleted} deleted")
         if self.conflicts:
             parts.append(f"{len(self.conflicts)} conflicts kept as copies")
+        if self.denied:
+            parts.append(f"{len(self.denied)} changes not allowed (kept in \"{NOT_SAVED}\")")
         return ", ".join(parts)
 
 
@@ -178,13 +188,52 @@ class Mirror:
 
     def pull(self, root: int, res: SyncResult) -> None:
         last = int(self._state("last_rev", "0") or 0)
+        acl_rev = str(self.server.acl_rev()) if hasattr(self.server, "acl_rev") else ""
+        full = acl_rev != self._state("acl_rev", "")
+        if full:
+            last = 0                                   # permissions changed: read everything again
         folders, phrases, top = self.server.changes_since(last)
         me = (res.user or self.server.user()).casefold()
         with self.store.policy_bypass():
             self._pull_folders(folders, root, res)
             for rp in phrases:
                 self._pull_phrase(rp, root, res, me)
+            if full:
+                self._drop_unreadable(root, {f.id for f in folders if not f.deleted},
+                                      {p.id for p in phrases if not p.deleted}, res)
         self._set_state("last_rev", top)
+        self._set_state("acl_rev", acl_rev)
+
+    def _not_saved_folder(self) -> int:
+        f = next((f for f in self.store.folders(None) if f.name == NOT_SAVED), None)
+        return (f or self.store.add_folder(Folder(NOT_SAVED))).id
+
+    def _keep_outside(self, p: Phrase) -> None:
+        """Copy a phrase the server would not take into the local Not saved folder."""
+        self.store.add_phrase(Phrase(p.description, p.content, folder_id=self._not_saved_folder(),
+                                     content_format=p.content_format,
+                                     triggers=[Trigger.from_dict(t) for t in _triggers_out(p)]))
+
+    def _drop_unreadable(self, root: int, folder_ids: set[int], phrase_ids: set[int], res: SyncResult) -> None:
+        """After a full read: remove local copies of what this login may no longer read."""
+        for local_id, remote_id, _rev, fp in self._all_maps("phrase"):
+            if remote_id not in phrase_ids:
+                p = self.store.get_phrase(local_id)
+                if p is not None:
+                    if fp != self._phrase_fp(p, root):
+                        self._keep_outside(p)           # edited here and not sent: keep the text
+                    self.store.delete_phrase(local_id)
+                    res.pulled += 1
+                self._drop_map("phrase", remote_id)
+        for local_id, remote_id, _rev, _fp in self._all_maps("folder"):
+            if remote_id not in folder_ids:
+                if self.store.get_folder(local_id) is not None:
+                    for p in self.store.phrases(local_id):
+                        if self._map("phrase", local=p.id) is None:
+                            self._keep_outside(p)       # never sent: keep it
+                    self.store.delete_folder(local_id)
+                    res.pulled += 1
+                self._drop_map("folder", remote_id)
 
     def _pull_folders(self, folders: list[RemoteFolder], root: int, res: SyncResult) -> None:
         live = []
@@ -294,6 +343,17 @@ class Mirror:
                     res.pushed += 1
             except Conflict:
                 res.conflicts.append(f.name)            # the next pull brings the server's version
+            except PermissionDenied:
+                res.denied.append(f.name)
+                self._set_state("acl_rev", "")          # read everything again: the server's tree comes back
+                if m is None:
+                    with self.store.policy_bypass():
+                        for p in self.store.phrases(f.id):
+                            if self._map("phrase", local=p.id) is None:
+                                self._keep_outside(p)
+                        self.store.delete_folder(f.id)
+                else:
+                    self._set_map("folder", f.id, m[1], -1, self._folder_fp(f, root))
         phrases = [p for p in self.store.phrases() if p.folder_id in folder_ids]
         for p in phrases:
             m = self._map("phrase", local=p.id)
@@ -309,6 +369,14 @@ class Mirror:
                     res.pushed += 1
             except Conflict:
                 res.conflicts.append(p.description)
+            except PermissionDenied:
+                res.denied.append(p.description)
+                with self.store.policy_bypass():
+                    self._keep_outside(p)
+                    if m is None:
+                        self.store.delete_phrase(p.id)
+                    else:
+                        self._restore_from_server(m[1], p, root)
         # deleted (or moved out of the Shared folder) here: delete on the server
         live_phrases = {p.id for p in phrases}
         for local_id, remote_id, rev, _fp in self._all_maps("phrase"):
@@ -318,6 +386,9 @@ class Mirror:
                     res.deleted += 1
                 except Conflict:
                     pass                                # changed or deleted there: the next pull decides
+                except PermissionDenied:
+                    res.denied.append(str(remote_id))
+                    self._set_state("acl_rev", "")      # the next sync brings it back
                 self._drop_map("phrase", remote_id)
         for local_id, remote_id, rev, _fp in self._all_maps("folder"):
             if local_id not in folder_ids:
@@ -326,4 +397,26 @@ class Mirror:
                     res.deleted += 1
                 except Conflict:
                     pass
+                except PermissionDenied:
+                    res.denied.append(str(remote_id))
+                    self._set_state("acl_rev", "")
                 self._drop_map("folder", remote_id)
+
+    def _restore_from_server(self, remote_id: int, local: Phrase, root: int) -> None:
+        """Put the server's current version back into the local copy."""
+        rp = self.server.get_phrase(remote_id)
+        if rp is None or rp.deleted:
+            self.store.delete_phrase(local.id)
+            self._drop_map("phrase", remote_id)
+            return
+        local.description, local.content, local.content_format = rp.description, rp.content, rp.content_format
+        local.folder_id = self._local_of_folder(rp.folder_id, root)
+        local.triggers = [Trigger.from_dict(d) for d in rp.triggers]
+        self.store.update_phrase(local, record_history=False)
+        local = self.store.get_phrase(local.id)
+        self._set_map("phrase", local.id, remote_id, rp.rev, self._phrase_fp(local, root))
+
+    def remote_id(self, local_phrase_id: int) -> int | None:
+        """The server id of a local shared phrase (for its history)."""
+        m = self._map("phrase", local=local_phrase_id)
+        return m[1] if m else None
