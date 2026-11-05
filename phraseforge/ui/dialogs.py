@@ -218,8 +218,9 @@ class FormDialog(QDialog):
             s = getattr(w, sig, None)
             if s is not None and hasattr(s, "connect"):
                 s.connect(lambda *_a: self._validate())
-        if hasattr(w, "group"):
-            w.group.buttonToggled.connect(lambda *_a: self._validate())
+        grp = getattr(w, "group", None)          # radio row; QCheckBox.group() is a Qt method
+        if isinstance(grp, QButtonGroup):
+            grp.buttonToggled.connect(lambda *_a: self._validate())
 
     def errors(self) -> list[str]:
         """Problems with the current entries; hidden (closed-group) fields are skipped."""
