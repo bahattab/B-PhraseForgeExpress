@@ -457,3 +457,89 @@ def test_spell_settings_from_sync_cannot_name_a_path(tmp_path, monkeypatch):
     assert c.code_for("latin") == "" and c.code_for("arabic") == ""
     assert not spell.installed("../../x")
     assert not c.is_misspelled("helo") and loaded == []
+
+
+# ---------------------------------------------------------------- 0.6.6: shared database (#32)
+@pytest.fixture
+def shared(tmp_path):
+    from phraseforge import policy
+    from tests.test_shared import Client, sqlite_backend
+    policy.set_current(policy.NO_POLICY)
+    backend = sqlite_backend(tmp_path)
+    clients = []
+
+    def client(user):
+        c = Client(backend, user)
+        clients.append(c)
+        return c
+    yield client
+    for c in clients:
+        c.close()
+    policy.set_current(None)
+
+
+def _share(c, description, content):
+    from phraseforge.models import Phrase
+    p = c.store.add_phrase(Phrase(description, content, folder_id=c.root))
+    c.sync()
+    return p
+
+
+def test_a_shared_phrase_signed_with_my_name_is_still_quarantined(shared):
+    """R19: quarantine depended on modified_by, which the writing client fills in itself."""
+    alice = shared("alice")
+    forger = shared("alice")            # bob writing to the tables under alice's name
+    _share(forger, "Report", '{#run "calc.exe"}')
+    alice.sync()
+    got = alice.phrases()["Report"]
+    assert alice.store.quarantine_origin(got.id) == "synced"
+
+
+def test_a_team_sharing_one_database_login_still_quarantines(shared):
+    a, b = shared("team"), shared("team")
+    _share(a, "Deploy", '{#run "deploy.cmd"}')
+    b.sync()
+    assert b.store.quarantine_origin(b.phrases()["Deploy"].id) == "synced"
+
+
+def test_shared_approval_holds_until_the_content_changes(shared):
+    a, b = shared("alice"), shared("bob")
+    mine = _share(a, "Tool", '{#run "tool.exe"}')
+    assert a.store.quarantine_origin(mine.id) is None          # my own phrase, pushed from here
+    b.sync()
+    got = b.phrases()["Tool"]
+    b.store.release_quarantine(got.id)                          # bob approves it ("Always allow")
+    mine = a.store.get_phrase(mine.id)
+    mine.description = "Tool (renamed)"
+    a.store.update_phrase(mine)
+    a.sync()
+    b.sync()
+    got = b.store.get_phrase(got.id)
+    assert got.description == "Tool (renamed)" and b.store.quarantine_origin(got.id) is None
+    mine = a.store.get_phrase(mine.id)
+    mine.content = '{#run "evil.exe"}'
+    a.store.update_phrase(mine)
+    a.sync()
+    b.sync()
+    assert b.store.get_phrase(got.id).content == '{#run "evil.exe"}'
+    assert b.store.quarantine_origin(got.id) == "synced"         # new content: ask again
+    assert a.store.quarantine_origin(mine.id) is None             # a's own echo stays approved
+
+
+def test_a_conflict_copy_keeps_the_trust_of_the_edit_it_saves(shared):
+    a, b = shared("alice"), shared("bob")
+    _share(a, "Note", "v1")
+    b.sync()
+    got = b.phrases()["Note"]
+    b.store.release_quarantine(got.id)
+    got.content = "b's edit"
+    b.store.update_phrase(got)
+    p = a.phrases()["Note"]
+    p.content = "a's edit"
+    a.store.update_phrase(p)
+    a.sync()
+    b.sync()
+    from phraseforge.shared.mirror import CONFLICT_SUFFIX
+    copy = b.phrases()["Note" + CONFLICT_SUFFIX]
+    assert copy.content == "b's edit" and b.store.quarantine_origin(copy.id) is None
+    assert b.store.quarantine_origin(got.id) == "synced"         # a's text arrived: not approved here

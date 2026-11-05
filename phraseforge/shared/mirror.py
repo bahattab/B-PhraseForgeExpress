@@ -18,8 +18,13 @@ it was edited here is kept the same way.
 
 Safety: if the local Shared folder is gone (deleted by the user, a restored
 backup ...), nothing is deleted on the server: the mirror starts over and pulls
-everything again. Phrases changed by another user are quarantined like a cloud
-sync pull (security.py), so their {#run} and similar macros wait for approval.
+everything again. A pulled phrase is quarantined like a cloud sync pull
+(security.py, PRD decision D7), so its {#run} and similar macros wait for approval,
+when it is new here or its fingerprint (content, language versions, output target,
+the variables it reads) changed. Who wrote it does not matter: the server's
+modified_by column is written by the clients, so it can name anyone, and a team
+may share one database login. A change that leaves the fingerprint alone (a new
+description, a move inside a folder without output target) keeps the approval.
 Pulls go through Store.policy_bypass(): an administrator's "editing disabled"
 policy still lets shared phrases arrive.
 
@@ -193,14 +198,21 @@ class Mirror:
         if full:
             last = 0                                   # permissions changed: read everything again
         folders, phrases, top = self.server.changes_since(last)
-        me = (res.user or self.server.user()).casefold()
+        fingerprints = getattr(self.store, "phrase_fingerprints", None)
+        before = fingerprints() if fingerprints else {}
+        self._pulled: set[int] = set()
         with self.store.policy_bypass():
             self._pull_folders(folders, root, res)
             for rp in phrases:
-                self._pull_phrase(rp, root, res, me)
+                self._pull_phrase(rp, root, res)
             if full:
                 self._drop_unreadable(root, {f.id for f in folders if not f.deleted},
                                       {p.id for p in phrases if not p.deleted}, res)
+        if fingerprints and hasattr(self.store, "quarantine"):
+            after = fingerprints()
+            for pid in self._pulled:
+                if pid in after and before.get(pid) != after[pid]:
+                    self.store.quarantine(pid, "synced")
         self._set_state("last_rev", top)
         self._set_state("acl_rev", acl_rev)
 
@@ -284,7 +296,7 @@ class Mirror:
                     self.store.update_phrase(p, record_history=False)
             todo += [f.id for f in self.store.folders(fid)]
 
-    def _pull_phrase(self, rp: RemotePhrase, root: int, res: SyncResult, me: str) -> None:
+    def _pull_phrase(self, rp: RemotePhrase, root: int, res: SyncResult) -> None:
         m = self._map("phrase", remote=rp.id)
         local = self.store.get_phrase(m[0]) if m else None
         edited_here = local is not None and m is not None and m[3] != self._phrase_fp(local, root)
@@ -304,7 +316,10 @@ class Mirror:
             copy = Phrase(local.description + CONFLICT_SUFFIX, local.content, folder_id=local.folder_id,
                           content_format=local.content_format,
                           triggers=[Trigger.from_dict(t) for t in _triggers_out(local)])
-            self.store.add_phrase(copy)
+            copy = self.store.add_phrase(copy)
+            origin = self.store.quarantine_origin(local.id) if hasattr(self.store, "quarantine_origin") else None
+            if origin:                                  # the copy is as trusted as the edit it keeps
+                self.store.quarantine(copy.id, origin)
             res.conflicts.append(local.description)
         folder = self._local_of_folder(rp.folder_id, root)
         triggers = []
@@ -320,8 +335,7 @@ class Mirror:
             local.description, local.content, local.content_format = rp.description, rp.content, rp.content_format
             local.folder_id, local.triggers = folder, triggers
             self.store.update_phrase(local)
-        if rp.modified_by.casefold() != me and hasattr(self.store, "quarantine"):
-            self.store.quarantine(local.id, "synced")
+        self._pulled.add(local.id)          # quarantined in pull() if new or its fingerprint changed
         local = self.store.get_phrase(local.id)
         self._set_map("phrase", local.id, rp.id, rp.rev, self._phrase_fp(local, root))
         res.pulled += 1
