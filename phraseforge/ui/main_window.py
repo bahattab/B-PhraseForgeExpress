@@ -803,6 +803,8 @@ class MainWindow(QMainWindow):
         self.btn_sync_interval = c.add_small("Every 7 min", "", menu=self.sync_interval_menu, split=False)
         self.btn_sync_interval.setToolTip("How often Auto sync runs")
         self.refresh_auto_sync()
+        b = g.add_large("Shared\ndatabase", "database", self.show_shared)
+        b.setToolTip("Share folders and phrases with your team through SQL Server or PostgreSQL")
         g = t.add_group("Edit")
         self.color_menu = color_menu(self, self.set_color)
         self.btn_color = g.add_large("Color", "color", menu=self.color_menu, split=False)
@@ -2660,6 +2662,12 @@ class MainWindow(QMainWindow):
 
     def show_clipboard(self) -> None:
         self.panel.select("clipboard_cache", None)
+
+    def show_shared(self) -> None:
+        from phraseforge.ui.shared_dialog import SharedDialog
+        if SharedDialog(self.store, self).exec() and self.on_command is not None \
+                and self.store.setting("shared.enabled", "0") == "1":
+            self.on_command("shared_sync")
 
     def show_signatures(self) -> None:
         from phraseforge.ui.signatures_dialog import SignaturesDialog
