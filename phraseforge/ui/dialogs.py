@@ -6,11 +6,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import QDate, QPoint, Qt, QTimer
-from PySide6.QtGui import QCursor, QGuiApplication
+from PySide6.QtCore import QDate, QPoint, Qt, QTimer, Signal
+from PySide6.QtGui import QCursor, QGuiApplication, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCalendarWidget, QCheckBox, QComboBox, QDateEdit, QDialog,
-    QDialogButtonBox, QDoubleSpinBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QDialogButtonBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QRadioButton, QVBoxLayout, QWidget,
 )
 
@@ -72,6 +72,51 @@ def ask_input(prompt: str, default: str = "", multiline: bool = False) -> str:
 
 
 # ---------------------------------------------------------------- forms
+class CheckCombo(QComboBox):
+    """Drop-down list with a checkbox per item ({#formcheckcombo}); the box shows the checked items."""
+
+    changed = Signal()
+
+    def __init__(self, options: list[str], checked: list[str], parent=None):
+        super().__init__(parent)
+        self.setEditable(True)
+        self.lineEdit().setReadOnly(True)
+        model = QStandardItemModel(self)
+        for o in options:
+            it = QStandardItem(o)
+            it.setFlags(Qt.ItemIsEnabled)        # we toggle on press; no second toggle by the view
+            it.setData(Qt.Checked if o in checked else Qt.Unchecked, Qt.CheckStateRole)
+            model.appendRow(it)
+        self.setModel(model)
+        self.view().pressed.connect(self._toggle)
+        self._refresh()
+
+    def _toggle(self, index) -> None:
+        it = self.model().itemFromIndex(index)
+        on = it.data(Qt.CheckStateRole) == Qt.Checked
+        it.setData(Qt.Unchecked if on else Qt.Checked, Qt.CheckStateRole)
+        self._refresh()
+        self.changed.emit()
+
+    def set_checked(self, items: list[str]) -> None:
+        m = self.model()
+        for i in range(m.rowCount()):
+            m.item(i).setData(Qt.Checked if m.item(i).text() in items else Qt.Unchecked, Qt.CheckStateRole)
+        self._refresh()
+        self.changed.emit()
+
+    def checked(self) -> list[str]:
+        m = self.model()
+        return [m.item(i).text() for i in range(m.rowCount()) if m.item(i).data(Qt.CheckStateRole) == Qt.Checked]
+
+    def _refresh(self) -> None:
+        self.lineEdit().setText(", ".join(self.checked()))
+
+    def hidePopup(self) -> None:
+        super().hidePopup()
+        self._refresh()          # picking an item would otherwise show only that item's text
+
+
 class FormDialog(QDialog):
     """Builds a fill-in form from FormFields. values() returns {name: value}."""
 
@@ -90,7 +135,29 @@ class FormDialog(QDialog):
             if k == "label":
                 form.addRow(QLabel(str(f.default or label)))
                 continue
-            if k == "edit":
+            if k == "group":                  # {#formgroup}: fields go into a frame until groupend
+                box = QGroupBox(label)
+                box.setCheckable(f.checkable)
+                inner = QWidget()
+                form = QFormLayout(inner)
+                form.setContentsMargins(0, 0, 0, 0)
+                bl = QVBoxLayout(box)
+                bl.addWidget(inner)
+                if f.checkable:
+                    box.setChecked(bool(f.default))
+                    inner.setVisible(bool(f.default))
+                    box.toggled.connect(inner.setVisible)
+                    box.toggled.connect(lambda _on: (self._validate(), self.adjustSize()))
+                outer.addWidget(box)
+                self.widgets[f.name] = box
+                continue
+            if k == "groupend":
+                form = QFormLayout()
+                outer.addLayout(form)
+                continue
+            if k == "checkcombo":
+                w = CheckCombo(f.options, list(f.default or []))
+            elif k == "edit":
                 w = QLineEdit(str(f.default or ""))
             elif k == "memo":
                 w = QPlainTextEdit(str(f.default or ""))
@@ -133,9 +200,56 @@ class FormDialog(QDialog):
             else:
                 w = QLineEdit(str(f.default or ""))
             self.widgets[f.name] = w
-            form.addRow(label, w)
-        outer.addWidget(_buttons(self))
+            form.addRow(label + (" *" if f.required else ""), w)
+            self._watch(w)
+        self.error = QLabel()
+        self.error.setObjectName("formError")
+        self.error.setStyleSheet("color: #c0392b;")
+        self.error.setWordWrap(True)
+        self.error.hide()
+        outer.addWidget(self.error)
+        self.buttons = _buttons(self)
+        outer.addWidget(self.buttons)
         self.setMinimumWidth(420)
+        self._validate()
+
+    def _watch(self, w) -> None:
+        for sig in ("textChanged", "currentTextChanged", "toggled", "dateChanged", "valueChanged", "changed"):
+            s = getattr(w, sig, None)
+            if s is not None and hasattr(s, "connect"):
+                s.connect(lambda *_a: self._validate())
+        grp = getattr(w, "group", None)          # radio row; QCheckBox.group() is a Qt method
+        if isinstance(grp, QButtonGroup):
+            grp.buttonToggled.connect(lambda *_a: self._validate())
+
+    def errors(self) -> list[str]:
+        """Problems with the current entries; hidden (closed-group) fields are skipped."""
+        from phraseforge.formcheck import field_error
+        vals = self.values()
+        closed = {f.name for f in self.fields if f.kind == "group" and f.checkable and not vals.get(f.name)}
+        out = []
+        for f in self.fields:
+            if f.kind in ("label", "group", "groupend") or f.group in closed:
+                continue
+            if f.required or f.validate:
+                msg = field_error(f, vals.get(f.name))
+                if msg:
+                    out.append(msg)
+        return out
+
+    def _validate(self) -> None:
+        if not hasattr(self, "buttons"):
+            return
+        errs = self.errors()
+        self.buttons.button(QDialogButtonBox.Ok).setEnabled(not errs)
+        self.error.setText(errs[0] if errs else "")
+        self.error.setVisible(bool(errs))
+
+    def accept(self) -> None:
+        if self.errors():            # Enter in a line edit must not get past the check
+            self._validate()
+            return
+        super().accept()
 
     def values(self) -> dict[str, Any]:
         out: dict[str, Any] = {}
@@ -143,7 +257,11 @@ class FormDialog(QDialog):
             w = self.widgets.get(f.name)
             if w is None:
                 continue
-            if isinstance(w, QLineEdit):
+            if isinstance(w, CheckCombo):
+                out[f.name] = w.checked()
+            elif isinstance(w, QGroupBox):
+                out[f.name] = w.isChecked() if w.isCheckable() else True
+            elif isinstance(w, QLineEdit):
                 out[f.name] = w.text()
             elif isinstance(w, QPlainTextEdit):
                 out[f.name] = w.toPlainText()

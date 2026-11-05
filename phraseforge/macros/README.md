@@ -37,6 +37,21 @@ Weekend days for `wd` come from setting `date.weekend` (default `sat,sun`).
 Key names: enter tab esc backspace delete up down left right home end pageup pagedown insert space f1–f12 win;
 modifiers ctrl alt shift win, joined with `+` (`ctrl+shift+left`). Aliases: bksp, del, escape, pgup, pgdn, ins, return.
 
+## Form checks
+Every form field accepts `-required` (it may not stay empty; a checkbox drop-down needs one
+item checked) and `-validate rule`, where rule is one of anything, email, url, filepath,
+folder, letters, numbers, integer, text, date, time, phone or `regex:<pattern>`. The form's
+OK button stays disabled, with the first problem shown above it, until every visible field
+passes. Fields inside a closed `{#formgroup}` are not checked and output nothing.
+
+## Compatibility with PhraseExpress
+PhraseExpress does not document all parameters of these commands, so PhraseForge defines
+their behaviour itself (compat: approximate): `explode`, `numlist`, `settemp`/`gettemp`,
+`autocase`, `lastchars`, `textempty`, `prefix`, `postfix`, `regexpos`, `regexcount`,
+`setlevel`, `langdetect`, `mousex`/`mousey`/`mouseposition`, `sound`, `formgroup`,
+`formcheckcombo`. Phrases imported from PhraseExpress that use other parameters may need
+editing.
+
 ## Commands
 
 
@@ -64,6 +79,9 @@ modifiers ctrl alt shift win, joined with `+` (`ctrl+shift+left`). Aliases: bksp
 | `formdate` | `{#formdate name -label "Label" -default x}` | Form field: date picker (-format). Inside {#form} it adds a field; alone it asks immediately and outputs the value. |
 | `formnumber` | `{#formnumber name -label "Label" -default x}` | Form field: number. Inside {#form} it adds a field; alone it asks immediately and outputs the value. |
 | `formlabel` | `{#formlabel name -label "Label" -default x}` | Form field: static label. Inside {#form} it adds a field; alone it asks immediately and outputs the value. |
+| `formcheckcombo` (aliases: formcheckcombobox) | `{#formcheckcombo name -label "Label" -options "a,b,c" -checked "a" -join ", "}` | Form field: drop-down list with a checkbox per item; outputs the checked items joined with -join. |
+| `formgroup` | `{#formgroup name -label "Caption" -unchecked -fixed}` | Starts a group of form fields (ends at {#formgroupend}). The group has a checkbox that shows or hides its fields; hidden fields output nothing and are not checked. -unchecked starts it closed, -fixed shows a plain frame without the checkbox. {#formvalue name} is the -on/-off text. |
+| `formgroupend` | `{#formgroupend}` | Ends the {#formgroup} above. |
 | `formvalue` | `{#formvalue name}` | Value entered in a form field, input or choose (-name). |
 | `input` | `{#input "Prompt" -default x -name var -multiline}` | Ask the user for text. |
 | `inputmemo` | `{#inputmemo "Prompt" -default x -name var}` | Ask the user for multi-line text. |
@@ -85,7 +103,7 @@ modifiers ctrl alt shift win, joined with `+` (`ctrl+shift+left`). Aliases: bksp
 
 | Command | Syntax | Description |
 |---|---|---|
-| `date` | `{#date -format "yyyy-MM-dd" -offset +3d -lang en}` | Current date. Offset units: y, m/mo (month), w, d, wd (workday), h, min, s. |
+| `date` | `{#date -format "yyyy-MM-dd" -offset +3d -lang en -calendar hijri -digits arabic}` | Current date. Offset units: y, m/mo (month), w, d, wd (workday), h, min, s. -calendar hijri gives the tabular Hijri date (may differ a day from Umm al-Qura); -digits arabic writes Arabic-Indic digits. |
 | `time` | `{#time -format "HH:mm" -offset +30min}` | Current time. |
 | `datetime` | `{#datetime -format "yyyy-MM-dd HH:mm"}` | Current date and time. |
 | `timestamp` | `{#timestamp}` | Unix timestamp (seconds). |
@@ -137,6 +155,9 @@ modifiers ctrl alt shift win, joined with `+` (`ctrl+shift+left`). Aliases: bksp
 | `f12` | `{#f12 N}` | Press f12 (optionally N times). |
 | `sleep` (aliases: wait) | `{#sleep 500}` | Pause output for N milliseconds. |
 | `mouse` | `{#mouse click -x 100 -y 200}` | Mouse click\|rclick\|dblclick\|move at x,y. |
+| `mousex` | `{#mousex}` | Horizontal mouse position on screen, in pixels. |
+| `mousey` | `{#mousey}` | Vertical mouse position on screen, in pixels. |
+| `mouseposition` | `{#mouseposition -sep ","}` | Mouse position as "x,y". |
 
 ### Text
 
@@ -171,6 +192,16 @@ modifiers ctrl alt shift win, joined with `+` (`ctrl+shift+left`). Aliases: bksp
 | `ltrim` | `{#ltrim text}` | Trim leading spaces. |
 | `rtrim` | `{#rtrim text}` | Trim trailing spaces. |
 | `ascii` | `{#ascii 65}` | Character with the given ASCII/Unicode code (decimal, or 0x hex). |
+| `explode` | `{#explode text -sep "," -index 2 -join "\n" -trim}` | Split text at a separator. With -index N it outputs item N (1-based, negative counts from the end); without it the items are joined again with -join (default: new line). |
+| `numlist` | `{#numlist "a\|b\|c" -sep "\|" -style decimal\|alpha\|ALPHA\|roman\|ROMAN\|arabic\|bullet\|dash -start 1 -suffix ". " -level 1 -indent "  "}` | Numbered or bulleted list, one item per line. -level indents the list (level 2 = one indent). |
+| `autocase` | `{#autocase text}` | Match the case of the typed abbreviation: typed in CAPITALS gives upper case, typed Capitalized gives a capital first letter, otherwise the text is unchanged. |
+| `lastchars` | `{#lastchars text -count 3}` | The last N characters of the text. |
+| `textempty` | `{#textempty text}` | Outputs "1" when the text is empty or only spaces, else "0". Use it in {#if}. |
+| `prefix` | `{#prefix "Dear " text}` | Put the prefix in front of the text, but only when the text is not empty. |
+| `postfix` (aliases: suffix) | `{#postfix ", " text}` | Put the suffix after the text, but only when the text is not empty. |
+| `regexpos` | `{#regexpos text pattern -i}` | 1-based position of the first regex match; 0 when there is none. |
+| `regexcount` | `{#regexcount text pattern -i}` | Number of regex matches in the text. |
+| `langdetect` | `{#langdetect text}` | Two-letter code (ISO 639-1) of the language the text is written in, detected offline (ar, en, de, fr, es, ru, zh, ...). |
 
 ### Clipboard
 
@@ -197,6 +228,7 @@ modifiers ctrl alt shift win, joined with `+` (`ctrl+shift+left`). Aliases: bksp
 | `waitfor` | `{#waitfor "Window title" -timeout 10 -abort}` | Wait until a window whose title contains the text is focused. -abort cancels on timeout. |
 | `focus` | `{#focus -process notepad.exe -title "Untitled" -state normal\|max\|min\|none -timeout 5}` | Bring an application window to the front. |
 | `web` | `{#web "https://example.com" -browser default\|chrome\|edge\|firefox}` | Open a web page. |
+| `sound` | `{#sound "C:\sounds\done.wav"}` | Play a .wav file, or a Windows sound: beep, info, warning, error, question. Outputs nothing. |
 
 ### Variables
 
@@ -205,6 +237,8 @@ modifiers ctrl alt shift win, joined with `+` (`ctrl+shift+left`). Aliases: bksp
 | `set` | `{#set name value -scope local\|global}` | Set a variable (local to this expansion by default; global persists). |
 | `var` (aliases: get) | `{#var name -scope global -default x}` | Read a variable. |
 | `unset` | `{#unset name -scope global}` | Clear a variable. |
+| `settemp` | `{#settemp name value}` | Set a temporary variable: kept between expansions until PhraseForge closes, never saved. |
+| `gettemp` | `{#gettemp name -default x}` | Read a temporary variable. |
 
 ### Phrases
 
@@ -212,6 +246,8 @@ modifiers ctrl alt shift win, joined with `+` (`ctrl+shift+left`). Aliases: bksp
 |---|---|---|
 | `insert` | `{#insert "Phrase description" -autotext abbr -folder "A/B" -pick manual\|random\|N -same}` | Insert another phrase (its macros run too): by description, by its autotext, or picked from a folder. |
 | `setphrase` | `{#setphrase "Description" "content" -target "Existing phrase" -folder "A/B"}` | Create a phrase, or replace the content of -target (no output). |
+| `signature` | `{#signature}` | E-mail signature from the Signatures folder: the default one, or {#signature "Name"}, with its active footers and, if switched on, a random quote. -lang picks a language version. |
+| `setlevel` | `{#setlevel de}` | Use this language version for the {#insert} calls that follow in this expansion ("" or default = the default version). |
 
 ### Files & data
 
@@ -243,8 +279,10 @@ modifiers ctrl alt shift win, joined with `+` (`ctrl+shift+left`). Aliases: bksp
 
 | Command | Syntax | Description |
 |---|---|---|
-| `ai` (aliases: chatgpt, openai) | `{#ai "prompt" -provider openai\|anthropic\|ollama\|openrouter -model name -system "role"}` | Insert an AI model's answer. |
-| `translate` | `{#translate text -to Arabic -from English}` | Translate text using the AI provider. |
+| `ai` (aliases: chatgpt, openai) | `{#ai "prompt" -provider openai\|anthropic\|gpt4all\|ollama\|openrouter -model name -system "role" -preset "Summarize"}` | Insert an AI model's answer. -preset uses a prompt from Settings > AI text processing > Custom presets (the macro text becomes the input). |
+| `translate` | `{#translate text -to Arabic -from English -glossary "Name"}` | Translate text using the translation engine from Settings > Language Translation (ignored words and glossaries are applied). |
+| `promptboost` | `{#promptboost {#clipboard}}` | Turn a short prompt into a detailed, structured one (PromptBoost) with the AI engine from Settings > AI, e.g. {#promptboost Create a REST API for a todo app}. |
+| `prompttower` | `{#prompttower "Saved prompt name"}` | Insert a prompt saved in Prompt Tower (Tools > Prompt Tower): its text before and after and the current contents of its files, as a ready-to-paste AI prompt. |
 
 ### OCR
 
@@ -263,6 +301,13 @@ modifiers ctrl alt shift win, joined with `+` (`ctrl+shift+left`). Aliases: bksp
 | `pastefile` | `{#pastefile "C:\file.pdf"}` | Paste a file (as a file, like Explorer copy/paste) via the clipboard. |
 | `pastemethod` | `{#pastemethod auto\|type\|paste -delay 0}` | Override the output method for this phrase (place at the beginning). -delay = ms between keys. |
 | `setlanguage` | `{#setlanguage "ar-SA"}` | Switch the keyboard layout of the target application (language tag or name). |
+
+### External data
+
+| Command | Syntax | Description |
+|---|---|---|
+| `onenote` | `{#onenote "Notebook/Section/Page" -title -ocr}` | Insert the text of a OneNote page (desktop OneNote, official API). -title adds the page title; -ocr adds text OneNote recognised in images. |
+| `stickynote` | `{#stickynote "first line or search word" -all -sep "\n---\n"}` | Insert the text of one of your PhraseForge sticky notes (matched by its first line, else the newest note containing the words). -all inserts every note. |
 
 Every command also accepts `-caption "Name"`: the label shown on the macro chip in the editor (set by the macro dialogs' Name field); it does not change the output.
 
