@@ -12,12 +12,14 @@ Untrusted phrases
     Phrases that arrive through an import, or that a cloud sync pull added or
     changed, are put in quarantine (Store.quarantine_*). Their privileged macros
     (start programs, open files or web pages, network requests, send mail, write
-    files, query databases, change phrases, Windows-key shortcuts) do not run
+    files, query databases, change phrases, Windows-key shortcuts, read a file
+    from a network share) do not run
     until the user approves the phrase. A trigger that fires on its own (time,
     window focus, clipboard) never asks: the phrase is skipped and logged.
 """
 from __future__ import annotations
 
+import os
 import re
 import threading
 
@@ -33,6 +35,20 @@ PRIVILEGED: dict[str, str] = {
     "setphrase": "create or change phrases",
     "key": "press Windows-key shortcuts",
 }
+
+# Macros that read the file named by their first argument. Reading a local file is
+# harmless, but on Windows opening \\host\share\file connects to that host over SMB
+# and sends this user's NTLM credentials, so a network path needs an approved phrase.
+FILE_READERS = frozenset({"textfile", "document", "csv", "image", "xls", "xlsfind", "sql", "pastefile"})
+NETWORK_READ = "read files from a network share"
+_NETWORK_PATH = re.compile(r"^[\\/]{2}")          # \\host\share, //host/share, \\?\UNC\...
+_FIRST_ARG = re.compile(r'\s*("(?:[^"\\]|\\.)*"|\'[^\']*\'|[^\s"\']+)')
+
+
+def is_network_path(path: str) -> bool:
+    """True for a UNC / network path (after %VAR% expansion, quotes removed)."""
+    p = os.path.expandvars((path or "").strip().strip("\"'").strip())
+    return bool(_NETWORK_PATH.match(p))
 
 
 def opens_system_ui(chord: str) -> bool:
@@ -61,6 +77,8 @@ def opens_system_ui(chord: str) -> bool:
 
 def privileged_reason(name: str, args: list[str], opts: dict[str, str]) -> str | None:
     """Why the call {#name args opts} needs an approved phrase, or None if it is harmless."""
+    if name in FILE_READERS:
+        return NETWORK_READ if args and is_network_path(str(args[0])) else None
     reason = PRIVILEGED.get(name)
     if reason is None:
         return None
@@ -88,6 +106,9 @@ def scan_privileged(content: str) -> list[str]:
         elif name == "mail":
             opts = {o: "" for o in re.findall(r"-(\w+)", rest)}
             reason = privileged_reason(name, [], opts)
+        elif name in FILE_READERS:
+            first = _FIRST_ARG.match(rest)
+            reason = privileged_reason(name, [first.group(1)] if first else [], {})
         else:
             reason = PRIVILEGED.get(name)
         if reason and reason not in found:

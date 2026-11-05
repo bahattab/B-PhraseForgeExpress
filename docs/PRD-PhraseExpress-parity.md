@@ -228,7 +228,7 @@ PE macro names [C-EXE, from the macro name table], compared with PF's 153 comman
 | E11 | UI languages EN/DE | [C-DLL] pexlang | ➕ EN/AR with right-to-left layout; 1,277-entry Arabic table (`ui/i18n.py` + `ui/i18n_ar.py`); 0.6.0 translated the remaining list headers and breadcrumb; no `.ts` pipeline |
 | E12 | Event sounds (6) | [C-DATA] `DoSound0–5` | ✅ `sounds.py` |
 | E13 | Toast notifications (WinRT) | [C-EXE] `RoActivateInstance` [I] | 🟡 tray balloon |
-| E14 | Admin lockdown via machine-wide `C:\ProgramData\PhraseExpress\config.xml` (`ConfigDisabled, EditDisabled, DoStats`) | [C-DATA] | ❌ |
+| E14 | Admin lockdown via machine-wide `C:\ProgramData\PhraseExpress\config.xml` (`ConfigDisabled, EditDisabled, DoStats`) | [C-DATA] | ✅ `%ProgramData%\PhraseForge\policy.toml` (G-28) |
 | E15 | CLI switches (Section 3.9) and portable mode | [C-EXE] | 🟡 `--self-test`, `--minimized`, argv handed to the running instance (`single_instance.py`), portable EXE, `PHRASEFORGE_HOME`; no other switches |
 
 #### F. Integration, sync, network
@@ -332,10 +332,10 @@ Priority: **M** must-have (core parity, or a security defect), **S** should-have
 | G-22 | Dynamic folders | S | L | FR-DYN-01/02 | open |
 | G-23 | Macro recorder | N | L | FR-REC-01 | open |
 | G-24 | Change-set sync | S | L | FR-SYN-01..04 | open (whole snapshot). 0.5.8 made snapshot sync automatic (interval, start, exit, after edits), which makes the missing merge more visible: two PCs that both edit between syncs still get keep-mine/keep-theirs |
-| G-25 | Multi-user server, ACLs, directory identity | N | XL | FR-SYN-05 | open |
+| G-25 | Multi-user server, ACLs, directory identity | N | XL | FR-SYN-05 | partial (stage 1): shared folders and phrases on SQL Server or PostgreSQL (`shared/`), Windows or database sign-in checked by the server, revision counter with optimistic concurrency, conflict copies, soft deletes; setup in `docs/shared-database.md`. Missing: per-folder permissions (stage 2), change history, offline queue beyond the next sync |
 | G-26 | Outlook context | N | M | FR-OL-01 | partial: `{#outlook field}` via COM |
 | G-27 | Duplicate finder, backup compare, vacuum | N | S | FR-UI-01 | partial: bulk remove duplicates |
-| G-28 | Admin lockdown policy file | N | S | FR-APP-04 | open |
+| G-28 | Admin lockdown policy file | N | S | FR-APP-04 | done: `%ProgramData%\PhraseForge\policy.toml` (`policy.py`, example in `docs/policy.example.toml`): settings_locked, editing_disabled (enforced in the store; sync pulls still apply), stats_enabled, macros_disabled, locked_settings, forced `[settings]`, message; an unreadable file fails closed. `plugins_allowed` waits for the plugin system |
 | G-29 | Auto-update | N | M | FR-APP-05 | partial: GitHub release check + setup link |
 | G-30 | SAPI, layout conversion, mouse/sound macros | N | S | FR-MAC-05 | open |
 | G-31 | Full UI localisation | S | M | FR-UI-02 | partial, **changed in 0.6.0**: 1,277-entry Arabic table, RTL; list headers, panel title and breadcrumb now translated; strings are still found by hand (no extraction step) |
@@ -637,7 +637,7 @@ Critical path: P0 → P1 → P2 → P3 → P5. P4 can start after P2 in parallel
 
 ### 7.1 Current baseline [REPO]
 
-`main` after 0.6.3 (`af02529`): **829 tests** in 57 files (adds `test_spell.py` from #24). 0.6.3: **816 tests collected** in 56 files (`pytest --collect-only`, Linux). New since 0.6.0: the DNS-rebinding and TLS-name tests (`test_security.py`), and `test_redteam.py` (58 cases). Each red-team case was run against the release before its fix and failed there; the control cases pass on both. Windows CI ran the full suite, the frozen-EXE self-test and the silent install/uninstall green on `5df197c` (#21), `308dd6d` (#22) and `0b39832` (#23).
+0.6.5: **860 tests** in 58 files (`pytest --collect-only`, Linux; adds `test_document_import.py` from #26, and `test_redteam.py` is now 78 cases with the 0.6.4 and 0.6.5 findings). `main` after 0.6.3 (`af02529`): **829 tests** in 57 files (adds `test_spell.py` from #24). 0.6.3: **816 tests collected** in 56 files (`pytest --collect-only`, Linux). New since 0.6.0: the DNS-rebinding and TLS-name tests (`test_security.py`), and `test_redteam.py` (58 cases). Each red-team case was run against the release before its fix and failed there; the control cases pass on both. Windows CI ran the full suite, the frozen-EXE self-test and the silent install/uninstall green on `5df197c` (#21), `308dd6d` (#22) and `0b39832` (#23).
 
 0.6.0: **750 tests collected** (`pytest --collect-only`, Linux). Windows CI ran the full suite green on `6c4904f`, then the frozen-EXE self-test (which now also checks `PySide6.QtPdf`, the OneNote COM wrappers and the built-in Google client) and a silent install/uninstall. New since 0.5.6: tests for Drive folder detection, automatic sync, quick toolbar, drag and drop, OneNote exchange (with a fake COM client), export formats, PhraseExpress text import (incl. Windows line ends and UTF-16) and the visual audit (contrast ratios, primary buttons, icon palette, Arabic keys). OneNote, Windows OCR and clipboard paths are still checked only with fakes or on the CI runner, not on a machine with OneNote and PhraseExpress installed.
 
@@ -712,6 +712,14 @@ Review of PR #7 (multiple-choice autotext, merged from a parallel session, shipp
 - Held up: a phrase chosen from the menu goes through the same expansion path as any other, so the folder password (`unlocked_for`) and the trust gate (`approved_for`) still apply; disabled folders and per-program restrictions are respected.
 - **R12 (Low):** a delimiter-completed shared autotext (`sig` + Space) lost the delimiter: it was swallowed when the menu opened and never re-typed. The `choose:` command now carries the delimiter, and the chosen phrase re-types it.
 - **R13 (Low):** the menu listed the names of phrases in locked folders, which the normal menu hides, and it erased the typed abbreviation before the folder was unlocked. Locked phrases now show as "Locked phrase", and the abbreviation is erased by the chosen phrase's own expansion, after unlock and approval; cancelling leaves what was typed.
+
+Review of PR #24 (spell check) and PR #26 (Word, RTF, Excel and image import), both merged from a parallel session, fixed in 0.6.5:
+- Held up: imported files are quarantined (`@untrusted_import`); the spelling underline never reaches the saved phrase; a file name holding `}{#run ...}` stays one quoted argument of the link macro; the DOCX size cap holds, because zipfile stops at the declared size.
+- **R14 (High, older than both PRs):** the file-reading macros (`{#textfile}` and its aliases, `{#document}`, `{#csv}`, `{#image}`, `{#xls}`, `{#xlsfind}`, `{#sql}`, `{#pastefile}`) were not privileged, so a synced or imported `{#textfile "\\host\share\a.txt"}` ran without approval. On Windows that opens an SMB connection to the host, which sends the user's NTLM credentials. A network path (`\\`, `//`, after `%VAR%` expansion) in their file argument now needs an approved phrase. The static scan and the engine's run-time check both cover it, so a path built by another macro is blocked too. Local files still need no approval.
+- **R15 (Medium):** spelling suggestions ran on the UI thread. A long misspelt Arabic word froze PhraseForge for 9 to 30 s on right-click (measured with the LibreOffice `ar` dictionary). Suggestions now search in the background with a 0.4 s wait, at most 3 searches at once. The menu opens at once, and the result is kept for the next right-click.
+- **R16 (Medium):** an RTF with a code page Python does not know (`\ansicpg10000` from old Macs, `\ansicpg0`) raised `LookupError`. That broke the import and `{#document}`, which read the file before #26. Mac code pages and `\mac`/`\pc`/`\pca` are now mapped, and anything else falls back to cp1252. Also fixed: an emoji written by Word as two `\uN` surrogates came out as two broken characters that could not be stored; the pair is now joined.
+- **R17 (Low):** the DTD check on `word/document.xml` searched the bytes for `<!DOCTYPE`, which a UTF-16 document passes. expat now reads the prolog and refuses any DTD in every encoding.
+- **R18 (Low):** `spell.latin` and `spell.arabic` arrive by sync and were used as file names. Only codes in the dictionary list are used.
 
 Still open: Linux single-instance socket squatting by the same user; with a proxy, `{#http}` relies on the name check only.
 

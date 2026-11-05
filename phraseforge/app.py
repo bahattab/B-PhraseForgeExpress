@@ -21,7 +21,8 @@ from typing import Any, Callable
 from PySide6.QtCore import QObject, Qt, Signal, Slot
 from PySide6.QtWidgets import QApplication
 
-from phraseforge import paths
+from phraseforge import paths, policy
+from phraseforge.policy import PolicyError
 from phraseforge.db import Store
 from phraseforge.host import (
     Cancelled, ExpansionContext, ExpansionRequest, FormField, TextAction,
@@ -535,6 +536,7 @@ class PhraseForgeApp(QObject):
         self._build_tray()
         self._build_triggers()
         self._build_cloud()
+        self._build_shared()
         self._build_local_backups()
         self._build_file_index()
         self._build_update_check()
@@ -568,6 +570,7 @@ class PhraseForgeApp(QObject):
         reg("toggle_expansion", lambda arg, hwnd: post(self._toggle_expansion))
         reg("open_main", lambda arg, hwnd: post(self.show_main))
         reg("open_settings", lambda arg, hwnd: post(self.show_settings))
+        reg("shared_sync", lambda arg, hwnd: post(lambda: self.shared_tick(manual=True)))
         reg("clear_clipboard_cache", lambda arg, hwnd: self.store.clear_clipboard(keep_pinned=True))
         reg("pause", lambda arg, hwnd: post(self._pause_cmd))
         reg("sound", lambda arg, hwnd: self._play(arg))   # "sound:<event>" from other layers
@@ -875,6 +878,38 @@ class PhraseForgeApp(QObject):
         if not self._cloud_tick(force_sync=True):
             self._change_sync_timer.start()          # a sync is running: try again after the wait
 
+    # ---------------------------------------------------------- shared database (shared/)
+    def _build_shared(self):
+        """Sync the Shared folder with the shared database every shared.interval seconds."""
+        from PySide6.QtCore import QTimer
+        self._shared_error = ""
+        self._shared_next = time.monotonic() + 5
+        self._shared_timer = QTimer(self)
+        self._shared_timer.timeout.connect(self.shared_tick)
+        self._shared_timer.start(15_000)
+
+    def shared_tick(self, manual: bool = False) -> None:
+        from phraseforge.shared import service
+        if not manual and (not service.enabled(self.store) or time.monotonic() < self._shared_next):
+            return
+        self._shared_next = time.monotonic() + service.interval_s(self.store)
+
+        def work():
+            try:
+                res = service.sync(self.store)
+                if res is None:
+                    return                              # another sync is still running
+                if manual or self._shared_error:
+                    self.poster.posted.emit(lambda r=res: self.tray.notify("Shared database", r.summary()))
+                self._shared_error = ""
+            except Exception as e:                      # offline, wrong password ...: say it once
+                msg = str(e)
+                log.warning("shared database sync failed: %s", msg)
+                if manual or msg != self._shared_error:
+                    self.poster.posted.emit(lambda m=msg: self.tray.notify("Shared database", m[:240]))
+                self._shared_error = msg
+        threading.Thread(target=work, name="shared-sync", daemon=True).start()
+
     # ---------------------------------------------------------- automatic update check
     def _build_update_check(self):
         """Look for a newer release on GitHub shortly after start and then once a day
@@ -1077,6 +1112,12 @@ class PhraseForgeApp(QObject):
             return
         try:
             fn(arg, hwnd)
+        except PolicyError as e:            # e.g. "new phrase" while the administrator disabled editing
+            log.info("command %r refused by policy: %s", cmd, e)
+            try:
+                self.tray.notify("PhraseForge", str(e))
+            except Exception:
+                pass
         except Exception:
             log.exception("command %r failed", cmd)
 
@@ -1217,6 +1258,7 @@ class PhraseForgeApp(QObject):
         # language version: chosen in the phrase menu, else the active language (Settings)
         lang = getattr(req, "language", "") or self.store.setting("phrase.active_language", "")
         p.content, p.content_format = self.store.phrase_text(p, lang)
+        ctx.content_format = p.content_format
         if not approved_for(self, p, req):
             return
         if "{#selection" in p.content and not ctx.selected_text:
@@ -1697,6 +1739,9 @@ class PhraseForgeApp(QObject):
         _bring_to_front(self.main_window)
 
     def show_settings(self):
+        from phraseforge.ui.policy_ui import settings_allowed
+        if not settings_allowed():
+            return
         from phraseforge.ui.settings_dialog import SettingsDialog
         _exec_in_front(SettingsDialog(self.store))
         try:
@@ -1815,6 +1860,10 @@ def main(argv: list[str] | None = None) -> int:
     def _unhandled(*exc):
         # An error in a menu or button handler used to be written only to the log, so the
         # click looked as if it did nothing; show it too.
+        if isinstance(exc[1], PolicyError):          # refused by the administrator's policy
+            from phraseforge.ui.policy_ui import show_policy_error
+            show_policy_error(None, exc[1])
+            return
         log.error("".join(traceback.format_exception(*exc)))
         try:
             app.tray.notify("PhraseForge error", f"{exc[0].__name__}: {exc[1]}"[:200])
@@ -1826,7 +1875,7 @@ def main(argv: list[str] | None = None) -> int:
             app.sticky_notes().restore()
     except Exception:
         log.exception("restoring sticky notes")
-    if store.setting("app.first_run_done", "0") != "1":
+    if store.setting("app.first_run_done", "0") != "1" and not policy.current().editing_disabled:
         from phraseforge.ui.wizard import FirstRunWizard
         FirstRunWizard(store).exec()
     # a second launch (e.g. the Start-menu shortcut) brings this window to the front

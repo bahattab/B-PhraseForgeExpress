@@ -81,6 +81,7 @@ class ExpansionContext:
     regex_groups: tuple[str, ...] = ()  # groups from a regex trigger
     depth: int = 0                   # nesting depth for {#insert}
     allow_privileged: bool = True    # False: {#run}, {#http}, ... are blocked (unapproved phrase)
+    content_format: str = ""         # "html" while a formatted phrase expands ({#signature} keeps its HTML)
 
 
 class Cancelled(Exception):

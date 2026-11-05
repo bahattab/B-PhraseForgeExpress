@@ -60,6 +60,7 @@ hiddenimports += ["winrt.windows.media.ocr", "winrt.windows.globalization", "win
 hiddenimports += collect_submodules("comtypes") + ["pyodbc", "win32com.client", "PySide6.QtPdf"]
 # Spell check: spylls is imported lazily; its own sample dictionaries are not needed
 hiddenimports += collect_submodules("spylls")
+hiddenimports += collect_submodules("psycopg") + collect_submodules("psycopg_binary")   # shared database (PostgreSQL)
 
 # Qt modules PhraseForge never uses; keeps the build much smaller.
 excludes = [
