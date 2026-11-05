@@ -537,6 +537,7 @@ class PhraseForgeApp(QObject):
         self._build_triggers()
         self._build_cloud()
         self._build_shared()
+        self._build_dynamic()
         self._build_local_backups()
         self._build_file_index()
         self._build_update_check()
@@ -878,6 +879,35 @@ class PhraseForgeApp(QObject):
             return
         if not self._cloud_tick(force_sync=True):
             self._change_sync_timer.start()          # a sync is running: try again after the wait
+
+    # ---------------------------------------------------------- dynamic folders (dynamic.py)
+    def _build_dynamic(self):
+        """Update dynamic folders whose source changed (files) or whose query is due, every 30 s."""
+        from PySide6.QtCore import QTimer
+        self._dynamic_busy = threading.Lock()
+        self._dynamic_errors: dict[int, str] = {}
+        self._dynamic_timer = QTimer(self)
+        self._dynamic_timer.timeout.connect(self.dynamic_tick)
+        self._dynamic_timer.start(30_000)
+
+    def dynamic_tick(self) -> None:
+        if not self._dynamic_busy.acquire(blocking=False):
+            return
+
+        def work():
+            from phraseforge import dynamic
+            try:
+                now = dict(dynamic.refresh_due(self.store))
+                for fid, err in now.items():
+                    if self._dynamic_errors.get(fid) != err:      # say each new problem once
+                        name = getattr(self.store.get_folder(fid), "name", str(fid))
+                        self.poster.posted.emit(lambda n=name, e=err: self.tray.notify(f"Dynamic folder {n}", e[:240]))
+                self._dynamic_errors = now                       # a fixed problem is announced again if it returns
+            except Exception:
+                log.exception("dynamic folders")
+            finally:
+                self._dynamic_busy.release()
+        threading.Thread(target=work, name="dynamic-folders", daemon=True).start()
 
     # ---------------------------------------------------------- shared database (shared/)
     def _build_shared(self):
