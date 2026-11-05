@@ -2014,6 +2014,9 @@ class MainWindow(QMainWindow):
         item = kind in ("phrase", "folder")
         if kind == "phrase":
             m.addAction(icon("open_tab"), "Open in tab", lambda: self.open_in_window(id_))
+            from phraseforge.shared.service import remote_phrase_id
+            if remote_phrase_id(self.store, id_) is not None:
+                m.addAction(icon("edit_history"), "Shared history...", lambda: self.show_shared_history(id_))
             m.addSeparator()
         add = m.addMenu("Add new...")
         add.addAction(icon("new_phrase"), "Phrase", lambda: self.new_phrase())
@@ -2662,6 +2665,11 @@ class MainWindow(QMainWindow):
 
     def show_clipboard(self) -> None:
         self.panel.select("clipboard_cache", None)
+
+    def show_shared_history(self, phrase_id: int) -> None:
+        from phraseforge.ui.shared_dialog import SharedHistoryDialog
+        if SharedHistoryDialog(self.store, phrase_id, self).exec() and self.on_command is not None:
+            self.on_command("shared_sync")              # bring the restored version here
 
     def show_shared(self) -> None:
         from phraseforge.ui.shared_dialog import SharedDialog
