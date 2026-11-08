@@ -67,6 +67,7 @@ def _alpha(n: int) -> str:
     return s or str(n)
 
 
+NUMLIST_MAX_LEVEL, NUMLIST_MAX_START, NUMLIST_MAX_OUTPUT = 20, 1_000_000, 1_000_000
 NUMLIST_STYLES = ("decimal", "alpha", "ALPHA", "roman", "ROMAN", "bullet", "dash", "arabic")
 
 
@@ -100,13 +101,23 @@ def _numlist(rt, args, opts):
         level = max(1, int(opts.get("level", "1")))
     except ValueError as e:
         raise MacroError("-start and -level must be numbers") from e
-    pad = _esc(opts.get("indent", "  ")) * (level - 1)
+    if level > NUMLIST_MAX_LEVEL:
+        raise MacroError(f"-level is at most {NUMLIST_MAX_LEVEL}")
+    if abs(start) > NUMLIST_MAX_START:
+        raise MacroError(f"-start is at most {NUMLIST_MAX_START:,}")
+    indent = _esc(opts.get("indent", "  "))
+    if len(indent) > 16:
+        raise MacroError("-indent is at most 16 characters")
+    pad = indent * (level - 1)
     suffix = _esc(opts.get("suffix", " " if style in ("bullet", "dash") else ". "))
     lines = []
     for i, item in enumerate(items):
         mark = {"bullet": "•", "dash": "-"}.get(style) or _number(start + i, style)
         lines.append(f"{pad}{mark}{suffix}{item.strip()}")
-    return "\n".join(lines)
+    out = "\n".join(lines)
+    if len(out) > NUMLIST_MAX_OUTPUT:
+        raise MacroError("the list is too long")
+    return out
 
 
 @macro("autocase", "Text", "{#autocase text}",
@@ -147,23 +158,25 @@ def _postfix(rt, args, opts):
     return t + post if t.strip() else ""
 
 
-def _rx(args, opts):
+def _rx(args, opts, fn):
+    """fn(compiled pattern, text) with saferegex's limits (no catastrophic backtracking)."""
+    from phraseforge import saferegex
     try:
-        return re.compile(_arg(args, 1), re.I if _flag(opts, "i") else 0)
-    except re.error as e:
-        raise MacroError(f"bad pattern: {e}") from e
+        return saferegex.run(_arg(args, 1), re.I if _flag(opts, "i") else 0, _arg(args, 0), fn)
+    except saferegex.RegexError as e:
+        raise MacroError(str(e)) from e
 
 
 @macro("regexpos", "Text", "{#regexpos text pattern -i}",
        "1-based position of the first regex match; 0 when there is none.")
 def _regexpos(rt, args, opts):
-    m = _rx(args, opts).search(_arg(args, 0))
+    m = _rx(args, opts, lambda rx, t: rx.search(t))
     return str(m.start() + 1) if m else "0"
 
 
 @macro("regexcount", "Text", "{#regexcount text pattern -i}", "Number of regex matches in the text.")
 def _regexcount(rt, args, opts):
-    return str(sum(1 for _ in _rx(args, opts).finditer(_arg(args, 0))))
+    return str(_rx(args, opts, lambda rx, t: sum(1 for _ in rx.finditer(t))))
 
 
 # ====================================================================== variables

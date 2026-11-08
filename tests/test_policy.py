@@ -69,17 +69,33 @@ def test_a_broken_file_locks_settings_and_editing(tmp_path):
         assert p.settings_locked and p.editing_disabled and p.error, bad
 
 
-def test_load_reads_utf8_with_bom_and_unknown_keys_are_ignored(tmp_path):
+def test_load_reads_utf8_with_bom(tmp_path):
     f = tmp_path / "policy.toml"
-    f.write_bytes('\ufeffediting_disabled = true\nmessage = "اتصل بالدعم"\nfuture_key = 1\n'.encode("utf-8"))
+    f.write_bytes('\ufeffediting_disabled = true\nmessage = "اتصل بالدعم"\n'.encode("utf-8"))
     p = policy.load(f)
     assert p.editing_disabled and not p.settings_locked and p.message == "اتصل بالدعم" and not p.error
 
 
+def test_unknown_key_or_a_folder_fails_closed(tmp_path):
+    """R38: a misspelt key (editing_disable) must not leave everything open."""
+    f = tmp_path / "policy.toml"
+    f.write_text("editing_disable = true\n", encoding="utf-8")
+    p = policy.load(f)
+    assert p.settings_locked and p.editing_disabled and "editing_disable" in p.error
+    d = tmp_path / "dir.toml"
+    d.mkdir()
+    p = policy.load(d)
+    assert p.active and p.settings_locked and p.editing_disabled and p.error
+    assert policy.load(tmp_path / "missing.toml") is policy.NO_POLICY
+
+
 def test_policy_path_is_fixed(monkeypatch):
     monkeypatch.setattr(policy.sys, "platform", "win32")
-    monkeypatch.setenv("ProgramData", r"D:\PD")
-    assert str(policy.policy_path()).replace("/", "\\").endswith(r"PD\PhraseForge\policy.toml")
+    monkeypatch.setenv("ProgramData", r"D:\PD")       # R28: a user can set this, so it is ignored
+    path = str(policy.policy_path()).replace("/", "\\")
+    assert "PD" not in path and path.endswith(r"ProgramData\PhraseForge\policy.toml")
+    monkeypatch.setattr(policy, "_program_data", lambda: r"E:\ProgramData")   # what Windows reports
+    assert str(policy.policy_path()).replace("/", "\\").startswith(r"E:\ProgramData")
     monkeypatch.setattr(policy.sys, "platform", "linux")
     assert policy.policy_path().as_posix() == "/etc/phraseforge/policy.toml"   # also when run on Windows
 

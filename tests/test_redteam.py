@@ -543,3 +543,356 @@ def test_a_conflict_copy_keeps_the_trust_of_the_edit_it_saves(shared):
     copy = b.phrases()["Note" + CONFLICT_SUFFIX]
     assert copy.content == "b's edit" and b.store.quarantine_origin(copy.id) is None
     assert b.store.quarantine_origin(got.id) == "synced"         # a's text arrived: not approved here
+
+
+# ====================================================================== 0.6.7: R20-R42
+# Findings of the security review of #27, #28, #30, #32 and #33. Each test is the probe
+# that showed the problem, turned around to show it is gone.
+def _engine(store):
+    from phraseforge.macros import MacroEngine
+    from phraseforge.ui.main_window import PreviewHost
+    return MacroEngine(PreviewHost(store), store)
+
+
+@pytest.fixture
+def qapp():
+    from PySide6.QtWidgets import QApplication
+    return QApplication.instance() or QApplication([])
+
+
+def test_a_mailed_macro_becomes_plain_text_in_the_new_phrase(qapp):
+    """R20: a sentence repeated in mails, with {#run ...} in it, became a live trusted phrase."""
+    from phraseforge.macros.parser import Call, parse
+    from phraseforge.ui.suggestions_dialog import SuggestionsDialog
+    store = Store(":memory:")
+    text = 'Please confirm the invoice {#run "calc.exe"} today.'
+    store.merge_suggestions({text: 3})
+    p = SuggestionsDialog(store).create_phrase(text, "inv")
+    assert not any(isinstance(n, Call) for n in parse(store.get_phrase(p.id).content))
+    assert _engine(store).expand_to_text(store.get_phrase(p.id).content) == text   # reads as typed
+    store.clear_suggestions()                                                    # R42: can be forgotten
+    assert store.suggestions(1) == []
+
+
+def _signature_with_payload(store, tmp_path, quarantined):
+    from phraseforge import signatures
+    target = tmp_path / "Startup" / "evil.bat"
+    p = signatures.new_signature(store, "Imported", f'Regards{{#outputfile "{target.as_posix()}" "start calc"}}')
+    if quarantined:
+        store.quarantine(p.id, "imported")
+    return target
+
+
+def test_signature_preview_and_export_never_run_an_unapproved_signatures_macros(qapp, tmp_path):
+    """R21: opening the signature manager or exporting to Outlook wrote a file into Startup."""
+    from phraseforge import signatures
+    from phraseforge.ui.signatures_dialog import SignaturesDialog
+    store = Store(":memory:")
+    target = _signature_with_payload(store, tmp_path, quarantined=True)
+    SignaturesDialog(store)                                    # previews the default signature
+    assert not target.exists()
+    signatures.export_outlook(store, signatures.preview_expand(store), tmp_path / "sig")
+    assert not target.exists()
+    assert "blocked" in (tmp_path / "sig" / "Imported.txt").read_text(encoding="utf-16")
+
+
+def test_an_approved_signature_still_exports_with_its_macros(qapp, tmp_path):
+    from phraseforge import signatures
+    store = Store(":memory:")
+    target = _signature_with_payload(store, tmp_path, quarantined=False)
+    expand = signatures.preview_expand(store)
+    assert "blocked" in expand(store.phrases()[0].content, "text")      # a preview never acts
+    assert not target.exists()
+    signatures.export_outlook(store, expand, tmp_path / "sig")
+    assert target.read_text() == "start calc"                           # the user's own signature
+
+
+def test_phrase_preview_does_not_write_files(tmp_path):
+    """R21: the editor's Preview button ran {#outputfile}."""
+    from phraseforge.ui.main_window import preview_text
+    store = Store(":memory:")
+    target = tmp_path / "x.txt"
+    out = preview_text(store, f'a{{#outputfile "{target.as_posix()}" "x"}}')
+    assert "blocked" in out and not target.exists()
+
+
+def test_signature_file_names_keep_dots_and_never_collide(tmp_path):
+    """R29: "Sig.v1" and "Sig.v2" both became Sig.htm; "Mr. Smith" became Mr.htm; CON is a device."""
+    from phraseforge import signatures
+    store = Store(":memory:")
+    for name in ("Sig.v1", "Sig.v2", "Mr. Smith", "CON", "sig.V1"):
+        signatures.new_signature(store, name, "Regards")
+    written = signatures.export_outlook(store, lambda c, f, t=False: c, tmp_path)
+    names = sorted(p.name for p in written)
+    assert names == sorted(["Sig.v1.htm", "Sig.v2.htm", "Mr. Smith.htm", "_CON.htm", "sig.V1 (2).htm"])
+    assert len({n.casefold() for n in names}) == 5
+    assert set(signatures.outlook_names(store).values()) == {n[:-4] for n in names}   # registry = files
+
+
+def _shared_env(tmp_path):
+    from tests.test_shared import sqlite_backend
+    from phraseforge import policy
+    policy.set_current(policy.NO_POLICY)
+    b = sqlite_backend(tmp_path)
+    return b, b("admin")
+
+
+def _not_saved(client):
+    from phraseforge.shared.mirror import NOT_SAVED
+    f = next((f for f in client.store.folders(None) if f.name == NOT_SAVED), None)
+    return [] if f is None else client.store.phrases(f.id)
+
+
+def test_a_phrase_the_server_refuses_stays_quarantined_in_not_saved(tmp_path):
+    """R22: drag a pulled phrase out of a read-only folder, sync: the "Not saved" copy was trusted."""
+    from tests.test_shared import Client
+    from phraseforge import policy
+    from phraseforge.shared.server import AclEntry, RemotePhrase
+    b, adm = _shared_env(tmp_path)
+    fid, _ = adm.create_folder("F", None)
+    adm.add_acl(AclEntry(0, fid, "bob", "user", True, False))
+    adm.create_phrase(RemotePhrase(0, fid, "evil", "{#run calc.exe}", "text", [{"kind": "autotext", "value": "ev#"}]))
+    bob = Client(b, "bob")
+    try:
+        bob.sync()
+        p = bob.phrases()["evil"]
+        p.folder_id = bob.root
+        bob.store.update_phrase(p, record_history=False)               # a drag-move keeps quarantine
+        assert bob.sync().denied
+        copies = _not_saved(bob)
+        assert copies and all(bob.store.quarantine_origin(q.id) == "synced" for q in copies)
+    finally:
+        bob.close()
+        adm.close()
+        policy.set_current(None)
+
+
+def test_deleting_a_folder_cannot_delete_a_protected_subfolder(tmp_path):
+    """R30: delete_folder checked write rights only on the top folder of the delete."""
+    import sqlite3 as sq
+    from phraseforge import policy
+    from phraseforge.shared.server import AclEntry, PermissionDenied, RemotePhrase
+    b, adm = _shared_env(tmp_path)
+    try:
+        f, _ = adm.create_folder("F", None)
+        g, _ = adm.create_folder("Secret", f)
+        adm.create_phrase(RemotePhrase(0, g, "payroll", "salaries", "text", []))
+        adm.add_acl(AclEntry(0, g, "bob", "user", False, False))
+        bob = b("bob")
+        with pytest.raises(PermissionDenied):
+            bob.delete_folder(f, next(x.rev for x in bob.changes_since(0)[0] if x.id == f))
+        bob.close()
+        rows = sq.connect(str(tmp_path / "shared.db")).execute(
+            "SELECT deleted FROM pf_folders UNION ALL SELECT deleted FROM pf_phrases").fetchall()
+        assert all(r[0] == 0 for r in rows)                             # rolled back, nothing deleted
+    finally:
+        adm.close()
+        policy.set_current(None)
+
+
+def test_history_and_deletions_do_not_leak_text_the_user_may_not_read(tmp_path):
+    """R31: history after a move out of a secret folder, after deleting the restricted parent,
+    and the content of deleted rows in changes_since."""
+    from phraseforge import policy
+    from phraseforge.shared.server import AclEntry, RemotePhrase
+    b, adm = _shared_env(tmp_path)
+    try:
+        s, _ = adm.create_folder("Secret", None)
+        pub, _ = adm.create_folder("Public", None)
+        pid, rev = adm.create_phrase(RemotePhrase(0, s, "draft", "SECRET v1", "text", []))
+        adm.add_acl(AclEntry(0, s, "bob", "user", False, False))
+        adm.update_phrase(RemotePhrase(pid, pub, "draft", "public text", "text", []), rev)
+        bob = b("bob")
+        assert [h.content for h in bob.history("phrase", pid)] == ["public text"]
+
+        hr, _ = adm.create_folder("HR", None)
+        sub, _ = adm.create_folder("Sub", hr)
+        secret, _ = adm.create_phrase(RemotePhrase(0, sub, "payroll", "SECRET salaries", "text", []))
+        adm.add_acl(AclEntry(0, hr, "bob", "user", False, False))
+        adm.delete_folder(hr, next(x.rev for x in adm.changes_since(0)[0] if x.id == hr))
+        assert bob.history("phrase", secret) == [] and bob.get_phrase(secret) is None
+        gone = [p for p in bob.changes_since(0)[1] if p.id == secret]
+        assert gone and gone[0].deleted and gone[0].content == "" and gone[0].description == ""
+        bob.close()
+    finally:
+        adm.close()
+        policy.set_current(None)
+
+
+def test_setup_docs_give_users_read_only_permissions_table():
+    """R23: the documented GRANTs let every user INSERT into pf_acl and make themselves admin."""
+    from pathlib import Path
+    doc = (Path(__file__).parent.parent / "docs" / "shared-database.md").read_text(encoding="utf-8")
+    users = [ln for ln in doc.splitlines() if "pf_acl" in ln and "GRANT" in ln and ("Users" in ln or "pf_users" in ln)]
+    assert users and all("INSERT" not in ln and "UPDATE" not in ln for ln in users)
+    assert "ON ALL TABLES" not in doc
+
+
+@pytest.mark.parametrize("content", [r'{#sound "\\host\share\x.wav"}', '{#sound "//host/s/x.wav"}'])
+def test_sound_from_a_network_share_needs_approval(content):
+    """R24: PlaySound on \\\\host sends this user's NTLM credentials to that host."""
+    assert security.scan_privileged(content) == [security.NETWORK_READ]
+    assert security.privileged_reason("sound", [r"\\host\x.wav"], {}) == security.NETWORK_READ
+    assert security.privileged_reason("sound", ["beep"], {}) is None
+
+
+def test_form_check_never_touches_a_network_path(monkeypatch):
+    """R25: -validate filepath/folder ran os.path.isfile on \\\\host\\share as the form opened."""
+    from phraseforge import formcheck
+    touched = []
+    monkeypatch.setattr(formcheck.os.path, "isfile", lambda p: touched.append(p) or True)
+    monkeypatch.setattr(formcheck.os.path, "isdir", lambda p: touched.append(p) or True)
+    assert formcheck.rule_error(r"\\attacker\share\x.txt", "filepath")
+    assert formcheck.rule_error("//attacker/s", "folder")
+    assert touched == []
+    assert formcheck.rule_error(r"C:\x.txt", "filepath") == "" and touched == [r"C:\x.txt"]
+
+
+def test_insert_by_number_checks_the_phrase_it_runs():
+    """R26: {#insert "1"} ran phrase id 1 (quarantined) but checked the phrase described "1"."""
+    from phraseforge.models import Phrase
+    store = Store(":memory:")
+    evil = store.add_phrase(Phrase("evil", '{#run "calc.exe"}'))
+    store.quarantine(evil.id, "synced")
+    store.add_phrase(Phrase(str(evil.id), "harmless"))
+    started = []
+    eng = _engine(store)
+    eng.host.run_program = lambda cmd, args="", wait=False, workdir="": started.append(cmd) or 0
+    out = eng.expand_to_text(f'{{#insert "{evil.id}"}}')
+    assert started == [] and "blocked" in out
+
+
+def test_restore_keeps_settings_the_administrator_locked(tmp_path):
+    """R27: File > Open, a backup restore or a sync pull replaced locked settings."""
+    from phraseforge import policy
+    store = Store(":memory:")
+    store.set_setting("ai.provider", "openai")
+    store.set_setting("learning.enabled", "0")
+    other = Store(tmp_path / "other.db")
+    other.set_setting("ai.provider", "evil")
+    other.set_setting("learning.enabled", "1")
+    other.close()
+    policy.set_current(policy.Policy(locked_settings=("learning.*", "ai.provider"), source="test"))
+    try:
+        for untrusted in (None, "imported", "synced"):
+            store.restore_from(tmp_path / "other.db", untrusted=untrusted)
+            assert store.setting("ai.provider") == "openai" and store.setting("learning.enabled") == "0"
+    finally:
+        policy.set_current(None)
+        store.close()
+
+
+def test_variables_an_unapproved_phrase_leaves_cannot_steer_a_trusted_one():
+    """R32: {#settemp x calc.exe} in an unapproved phrase, then a trusted {#run {#gettemp x}}."""
+    from phraseforge.host import ExpansionContext
+    from phraseforge.macros import commands_pe
+    store = Store(":memory:")
+    for c in ("{#settemp x calc.exe}", "{#set x calc.exe -scope global}", '{#unset x -scope "global"}',
+              "{#set x 1 -scope {#var s}}"):
+        assert security.scan_privileged(c) == ["change variables other phrases use"], c
+    assert security.scan_privileged("{#set x 1}") == [] and security.scan_privileged("{#set x 1 -scope local}") == []
+    commands_pe.TEMP_VARS.pop("x", None)
+    eng = _engine(store)
+    eng.expand_to_text("{#settemp x calc.exe}{#set y evil.exe -scope global}",
+                       ExpansionContext(allow_privileged=False))
+    assert "x" not in commands_pe.TEMP_VARS and store.get_var("y", "global") in ("", None)
+
+
+def test_regex_from_a_phrase_cannot_hang_the_expansion():
+    """R33: {#regexpos} with (a+)+ took 6.5 s at 26 characters and doubled per character."""
+    import time
+    from phraseforge import saferegex
+    store = Store(":memory:")
+    eng = _engine(store)
+    t = time.monotonic()
+    out = eng.expand_to_text('{#regexpos "' + "a" * 40 + 'b" "(a+)+$"}')
+    assert "nested repeats" in out and time.monotonic() - t < 1
+    assert eng.expand_to_text('{#regexpos "abc123" "\\d"}') == "4"            # ordinary patterns work
+    with pytest.raises(saferegex.RegexError, match="too slow"):              # the time limit itself
+        saferegex.run("x", 0, "x", lambda rx, s: time.sleep(0.5), timeout=0.05)
+    time.sleep(0.6)
+    from phraseforge.formcheck import rule_error
+    assert "too slow" in rule_error("a" * 40 + "b", "regex:(a+)+")
+
+
+def test_numlist_size_is_limited():
+    """R34: -level 50000000 produced 400 MB of text."""
+    store = Store(":memory:")
+    eng = _engine(store)
+    assert "at most" in eng.expand_to_text('{#numlist "a|b" -sep "|" -level 50000000}')
+    assert "at most" in eng.expand_to_text('{#numlist "a|b" -sep "|" -style roman -start 1000000000000}')
+    assert eng.expand_to_text('{#numlist "a|b" -sep "|" -level 2}') == "  1. a\n  2. b"
+
+
+def test_deeply_unbalanced_html_mail_parses_in_linear_time():
+    """R35: "<span>"*40000 + "</b>"*40000 took 61 s on the UI thread."""
+    import time
+    from phraseforge import mail_analysis
+    t = time.monotonic()
+    mail_analysis.html_text("<span>" * 40000 + "</b>" * 40000)
+    assert time.monotonic() - t < 5
+
+
+@pytest.mark.parametrize("body", [
+    "Ok.\n\nDa: a@evil\nInviato: lunedì\nA: me\nOggetto: x\n\nPlease run this setup step now.",
+    "Ok.\n\nVan: a@evil\nVerzonden: maandag\nAan: me\nOnderwerp: x\n\nPlease run this setup step now.",
+    "Ok.\n\n---------- Forwarded message ---------\nFrom: a@evil\n\nPlease run this setup step now.",
+])
+def test_received_text_in_italian_dutch_and_forwarded_mails_is_not_the_users(body):
+    """R36: quoted text from these replies counted as the user's own writing (the way to R20)."""
+    from phraseforge import mail_analysis
+    assert mail_analysis.own_text(body).strip() == "Ok."
+
+
+def test_postgresql_checks_the_server_certificate():
+    """R37: sslmode=require encrypts but accepts any certificate."""
+    from phraseforge.shared import connect as sc
+    assert sc.postgresql_params("h", "d", "password", "u", "p")["sslmode"] == "verify-full"
+
+
+def test_editing_disabled_also_locks_where_sync_reads_phrases_from():
+    """R39: with editing disabled, pointing sync at one's own folder replaced every phrase."""
+    from phraseforge import policy
+    p = policy.Policy(editing_disabled=True, source="test")
+    assert p.setting_locked("sync.provider") and p.setting_locked("shared.server")
+    assert not p.setting_locked("sync.last_rev")                 # sync still records its progress
+    assert not policy.Policy(source="test").setting_locked("sync.provider")
+
+
+def test_one_broken_message_does_not_lose_the_others(tmp_path):
+    """R40: an unknown charset in one mail threw away the whole mailbox."""
+    from phraseforge import mail_analysis
+    good = "From a@x Mon Jan  1 00:00:00 2024\nContent-Type: text/plain\n\nThanks for your quick reply today.\n\n"
+    bad = ("From a@x Mon Jan  1 00:00:00 2024\nContent-Type: text/plain; charset=x-bogus-cs\n"
+           "Content-Transfer-Encoding: base64\n\naGVsbG8=\n\n")
+    box = tmp_path / "b.mbox"
+    box.write_text(good * 2 + bad + good, encoding="utf-8")
+    texts = list(mail_analysis.file_messages([box]))
+    assert sum("quick reply" in t for t in texts) == 3
+
+
+def test_checked_form_value_is_the_value_that_was_checked():
+    """R41: "  42 \\n" passed integer and was output with its spaces; Arabic-Indic digits passed."""
+    from phraseforge.formcheck import clean_value, rule_error
+    from phraseforge.host import FormField
+    f = FormField("n", "N", validate="integer")
+    assert clean_value(f, "  42 \n") == "42"
+    assert rule_error("١٢٣", "integer") and rule_error("محمد", "letters") == ""
+    assert clean_value(FormField("t", "T"), "  keep  ") == "  keep  "
+
+
+def test_setlevel_inside_an_insert_stays_inside():
+    """R42: {#setlevel} in an inserted phrase changed later inserts of the caller."""
+    from phraseforge.models import Phrase
+    store = Store(":memory:")
+    store.add_phrase(Phrase("inner", "{#setlevel de}"))
+    p = store.add_phrase(Phrase("hello", "Hello"))
+    store.set_phrase_version(p.id, "de", "Hallo")
+    assert _engine(store).expand_to_text('{#setlevel de}{#insert "hello"}') == "Hallo"   # setlevel works
+    eng = _engine(store)
+    assert eng.expand_to_text('{#insert "inner"}{#insert "hello"}') == "Hello"
+
+
+def test_rtf_drops_control_characters():
+    from phraseforge.rtf import escape
+    assert escape("a\x00b\x0bc\x1fd\te\nf") == "abcd\\tab e\\line f"

@@ -1041,6 +1041,12 @@ class Store:
                 [(t, int(n), now) for t, n in counts.items()])
         self._changed("suggestion")
 
+    def clear_suggestions(self) -> None:
+        """Forget all learned and mailed sentences (dismissed ones too)."""
+        with self.lock, self.conn:
+            self.conn.execute("DELETE FROM suggestions")
+        self._changed("suggestion")
+
     def dismiss_suggestion(self, text: str) -> None:
         with self.lock, self.conn:
             self.conn.execute("UPDATE suggestions SET dismissed=1 WHERE text=?", (text,))
@@ -1088,9 +1094,13 @@ class Store:
             raise policy.PolicyError(policy.current().notice("Editing phrases"))
         before = self.phrase_fingerprints() if untrusted else {}
         keep_q = self.quarantined() if untrusted else {}
+        pol = policy.current()
         with self.lock:                   # raw values: API keys stay encrypted
-            keep_device = ({k: v for k, v in self.conn.execute("SELECT key, value FROM settings")
-                            if is_device_setting(k)} if untrusted else {})
+            rows = list(self.conn.execute("SELECT key, value FROM settings"))
+            keep_device = {k: v for k, v in rows if is_device_setting(k)} if untrusted else {}
+            # settings the administrator locked keep this PC's value, whatever the file holds:
+            # a backup, an opened file or a sync pull must not unlock them (security R27)
+            keep_locked = {k: v for k, v in rows if pol.setting_locked(k)}
         with self.lock:
             src = sqlite3.connect(str(path))
             src.backup(self.conn)
@@ -1101,6 +1111,12 @@ class Store:
         # Move a legacy output-target setting into the columns BEFORE the comparison below,
         # so a synced copy cannot add a "Specific program" target after the check.
         self._migrate_extras()
+        with self.lock, self.conn:
+            for (k,) in self.conn.execute("SELECT key FROM settings").fetchall():
+                if pol.setting_locked(k) and k not in keep_locked:
+                    self.conn.execute("DELETE FROM settings WHERE key=?", (k,))
+            for k, v in keep_locked.items():
+                self.conn.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (k, v))
         if untrusted:
             with self.lock, self.conn:    # this PC's device settings win, whatever the file holds
                 for (k,) in self.conn.execute("SELECT key FROM settings").fetchall():

@@ -135,8 +135,10 @@ def preview_text(store: Store, content: str) -> str:
     except Exception:
         return content
     try:
+        # a preview must not act: {#outputfile}, {#setphrase}, {#dbquery} ... are shown as
+        # blocked instead of running, whoever wrote the phrase (security R21)
         return MacroEngine(PreviewHost(store), store).expand_to_text(
-            content, ExpansionContext(phrase_description="preview"))
+            content, ExpansionContext(phrase_description="preview", allow_privileged=False))
     except Cancelled:
         return "(cancelled)"
     except Exception as e:

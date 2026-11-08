@@ -262,13 +262,17 @@ def test_connection_strings():
     cs = sc.sqlserver_connection_string("db", "Phrases DB", "password", "ali", "p;w}d", trust_cert=True)
     assert "DATABASE={Phrases DB}" in cs and "UID=ali" in cs and "PWD={p;w}}d}" in cs
     assert "TrustServerCertificate=yes" in cs
-    old = sc.sqlserver_connection_string("db", "x", "windows", driver="SQL Server")
+    old = sc.sqlserver_connection_string("db", "x", "windows", encrypt=False, driver="SQL Server")
     assert "Encrypt" not in old
+    with pytest.raises(SharedError, match="cannot encrypt"):      # R37: never silently unencrypted
+        sc.sqlserver_connection_string("db", "x", "windows", driver="SQL Server")
     assert sc.pick_driver(["SQL Server", "ODBC Driver 17 for SQL Server"]) == "ODBC Driver 17 for SQL Server"
     with pytest.raises(SharedError, match="ODBC Driver 18"):
         sc.pick_driver([])
     pg = sc.postgresql_params("pg01", "phrases", "password", "ali", "secret", "5433")
-    assert pg["user"] == "ali" and pg["password"] == "secret" and pg["port"] == 5433 and pg["sslmode"] == "require"
+    assert pg["user"] == "ali" and pg["password"] == "secret" and pg["port"] == 5433
+    assert pg["sslmode"] == "verify-full"                           # R37: the certificate is checked
+    assert sc.postgresql_params("pg01", "p", "windows", trust_cert=True)["sslmode"] == "require"
     win = sc.postgresql_params("pg01", "phrases", "windows", encrypt=False)
     assert "password" not in win and win["user"] and win["sslmode"] == "prefer"
 

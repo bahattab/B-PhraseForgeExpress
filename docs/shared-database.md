@@ -33,21 +33,27 @@ CREATE USER  pf_user FOR LOGIN pf_user;
 ```
 
 Create the tables once from PhraseForge (**Create tables**), signed in as a user allowed
-to create tables (for example `db_owner`). Then give everyone else read and write access:
+to create tables (for example `db_owner`). Then give everyone else read and write access
+to the phrases, but **only read access to the permission table** `pf_acl`. Whoever may
+write `pf_acl` can make themselves administrator with any database tool, so only the
+PhraseForge administrators get that:
 
 ```sql
 GRANT SELECT, INSERT, UPDATE ON dbo.pf_meta    TO [CONTOSO\PhraseForge Users];
 GRANT SELECT, INSERT, UPDATE ON dbo.pf_rev     TO [CONTOSO\PhraseForge Users];
 GRANT SELECT, INSERT, UPDATE ON dbo.pf_folders TO [CONTOSO\PhraseForge Users];
 GRANT SELECT, INSERT, UPDATE ON dbo.pf_phrases TO [CONTOSO\PhraseForge Users];
-GRANT SELECT, INSERT, UPDATE ON dbo.pf_acl     TO [CONTOSO\PhraseForge Users];
+GRANT SELECT                 ON dbo.pf_acl     TO [CONTOSO\PhraseForge Users];
 GRANT SELECT, INSERT         ON dbo.pf_history TO [CONTOSO\PhraseForge Users];
+-- PhraseForge administrators (they change the folder permissions)
+GRANT SELECT, INSERT, UPDATE ON dbo.pf_acl     TO [CONTOSO\PhraseForge Admins];
 ```
 
-The client needs "ODBC Driver 18 for SQL Server" (or 17) from Microsoft; the old built-in
-"SQL Server" driver also works, but it cannot encrypt. The connection is encrypted by
-default. Tick "Trust the server certificate" only for a server with a self-signed
-certificate.
+The client needs "ODBC Driver 18 for SQL Server" (or 17) from Microsoft. The connection is
+encrypted by default and the server certificate is checked. The old built-in "SQL Server"
+driver cannot encrypt: PhraseForge refuses to use it while encryption is on, rather than
+connect unencrypted without saying so. Tick "Trust the server certificate" only for a
+server with a self-signed certificate.
 
 ## PostgreSQL
 
@@ -61,8 +67,19 @@ CREATE ROLE ali LOGIN PASSWORD 'change-me' IN ROLE pf_users;
 Sign in as `pf_admin`, click **Create tables**, then:
 
 ```sql
-GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA public TO pf_users;
+GRANT SELECT, INSERT, UPDATE ON pf_meta, pf_rev, pf_folders, pf_phrases TO pf_users;
+GRANT SELECT, INSERT         ON pf_history TO pf_users;
+GRANT SELECT                 ON pf_acl     TO pf_users;   -- only administrators change permissions
+GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO pf_users;
+CREATE ROLE pf_admins;                                    -- PhraseForge administrators
+GRANT SELECT, INSERT, UPDATE ON pf_acl TO pf_admins;
 ```
+
+With encryption on, PhraseForge checks the server certificate (`sslmode=verify-full`):
+put the certificate of the CA that signed the server's certificate in
+`%APPDATA%\postgresql\root.crt` on each PC. Tick "Trust the server certificate" for a
+self-signed certificate; the connection is then encrypted but not checked
+(`sslmode=require`), so someone in between could still read it.
 
 For Windows sign-in, add an `sspi` (Windows server) or `gss` (Kerberos) line for the
 PhraseForge users to `pg_hba.conf`, and create a role named after each Windows user.
@@ -74,6 +91,9 @@ PhraseForge users to `pg_hba.conf`, and create a role named after each Windows u
 write** or **no access** to one folder or to the whole database. For a folder, the
 nearest folder that has entries for you (the folder, then its parents, then the whole
 database) decides; within it, any matching entry with write access lets you write.
+Entries on the same folder add up: a "no access" entry for one user does not take away
+what a `*` or group entry on that folder gives. To shut one user out of a folder, give
+the folder entries for the groups that may use it instead of `*`.
 **Administrators** (set for the whole database) may do everything and are the only ones
 who can change permissions. The last administrator cannot be removed.
 
@@ -81,10 +101,13 @@ When the tables are created, whoever created them becomes administrator and `*` 
 and write on the whole database (so a stage-1 database keeps working after the upgrade).
 To limit access, remove the `*` entry and add your groups.
 
-> **Important:** these permissions are applied **by PhraseForge**. Anyone who can connect
-> to the database with another program (SQL Server Management Studio, psql ...) can
-> still read and change every table. For real protection, also use the database's own
-> permissions, for example a separate database per department.
+> **Important:** these permissions are applied **by PhraseForge**, not by the database.
+> Anyone who can connect with another program (SQL Server Management Studio, psql ...)
+> can still read every table, change phrases in folders PhraseForge would not let them
+> change, and read the history. Read-only `pf_acl` (above) stops users making
+> themselves administrator, but it does not protect individual folders. For folders
+> that must stay secret or unchangeable, use a separate database, with its own logins,
+> per group of users.
 
 PhraseForge receives only what you may read: a folder you may not read never reaches your
 PC, and when permissions change, the next sync removes copies you may no longer read. A
