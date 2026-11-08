@@ -1,6 +1,8 @@
 # Runtime dependencies of PhraseForge.
 PySide6>=6.6
 httpx>=0.27
+# Encryption of the phrase file at rest (AES-256-GCM, vault.py)
+cryptography>=42
 openpyxl>=3.1
 qtawesome>=1.3
 # Spell check in the phrase editor (pure-Python Hunspell; dictionaries are downloaded by the user)

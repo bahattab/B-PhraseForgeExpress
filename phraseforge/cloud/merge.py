@@ -80,9 +80,11 @@ def _trigger_rows(con, where: str, arg) -> str:
     return json.dumps([{k: r[k] for k in r.keys() if k not in TRIGGER_SKIP} for r in rows], sort_keys=True)
 
 
-def read_state(path: str | Path) -> State:
-    """Everything the merge compares, keyed by uid. Raises CannotMerge for copies without uids."""
-    con = sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True)
+def read_state(path: str | Path, key=None) -> State:
+    """Everything the merge compares, keyed by uid. Raises CannotMerge for copies without uids.
+    key: the vault key, for a copy encrypted like the phrase file (the saved base)."""
+    from phraseforge import vault
+    con = vault.connect(path, key)
     con.row_factory = sqlite3.Row
     try:
         tables = _tables(con)
