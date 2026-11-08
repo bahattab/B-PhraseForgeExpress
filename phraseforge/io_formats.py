@@ -211,7 +211,7 @@ def backup(store: Store, directory: str | Path | None = None) -> Path:
     while target.exists():
         i += 1
         target = d / f"phrases-{datetime.now():%Y%m%d-%H%M%S}-{i}.db"
-    store.backup_to(target)
+    store.backup_to(target, keep_encryption=True)      # an encrypted phrase file stays encrypted
     return target
 
 

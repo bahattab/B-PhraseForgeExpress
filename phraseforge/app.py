@@ -1910,7 +1910,20 @@ def main(argv: list[str] | None = None) -> int:
         log.info("PhraseForge is already running; handing over %s", argv_list[1:])
         instance.forward(argv_list[1:])
         return 0
-    store = Store(paths.db_path())
+    from phraseforge import vault
+    try:
+        store = Store(paths.db_path())
+    except vault.NeedPassphrase:          # encrypted with "ask for the passphrase at every start"
+        from phraseforge.ui.encryption_dialog import ask_passphrase
+        store = ask_passphrase(str(paths.db_path()))
+        if store is None:
+            instance.release()
+            return 1
+    except vault.VaultError as e:         # encrypted for another Windows account, or damaged
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.critical(None, "PhraseForge", f"{e}\n\n{paths.db_path()}")
+        instance.release()
+        return 1
     configure_logging(store)          # diagnostic mode from the start
     from phraseforge.ui.theme import apply_theme
     from phraseforge.ui import i18n
@@ -1945,4 +1958,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return qapp.exec()
     finally:
+        try:
+            store.flush()                 # an encrypted phrase file: save the last second's changes
+        except Exception as e:
+            log.error("could not save the encrypted phrase file: %s", e)
         instance.release()

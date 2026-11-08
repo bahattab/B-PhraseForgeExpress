@@ -1013,8 +1013,21 @@ class SettingsDialog(QDialog):
                                            lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths.data_dir())))),
                           stretch=False))
         lay.addWidget(g)
+        g, gl = _group("Encryption")
+        from phraseforge.ui.encryption_dialog import status_text
+        self.enc_status = _wrap_label(status_text(self.store))
+        enc = QPushButton("Encryption...")
+        enc.clicked.connect(self._encryption)
+        gl.addWidget(self.enc_status)
+        gl.addWidget(_row(enc, stretch=True))
+        lay.addWidget(g)
         lay.addStretch(1)
         return w
+
+    def _encryption(self) -> None:
+        from phraseforge.ui.encryption_dialog import EncryptionDialog, status_text
+        EncryptionDialog(self.store, self).exec()
+        self.enc_status.setText(status_text(self.store))
 
     def _pick_backup_dir(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "Backup file directory", self.backup_dir.text() or str(paths.backups_dir()))

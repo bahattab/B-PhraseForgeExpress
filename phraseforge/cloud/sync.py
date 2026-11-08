@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 import socket
@@ -36,6 +37,8 @@ from pathlib import Path
 from typing import Protocol
 
 from phraseforge.db import DEVICE_SETTING_PREFIXES, SECRET_SETTINGS, Store, is_device_setting  # noqa: F401
+
+log = logging.getLogger(__name__)
 
 SYNC_NAME = "phraseforge-sync.db"
 BACKUP_PREFIX = "backup-"
@@ -191,9 +194,13 @@ class CloudSync:
         bp = self.base_path
         if bp is None:
             return
-        tmp = bp.with_suffix(".part")
-        shutil.copyfile(path, tmp)
-        os.replace(tmp, bp)
+        if self.store.vault_key is not None:      # the phrase file is encrypted: so is its base
+            from phraseforge import vault
+            vault.write(bp, Path(path).read_bytes(), self.store.vault_key)
+        else:
+            tmp = bp.with_suffix(".part")
+            shutil.copyfile(path, tmp)
+            os.replace(tmp, bp)
         self.store.set_setting("sync.base_rev", str(rev))
 
     def _base(self) -> Path | None:
@@ -282,8 +289,9 @@ class CloudSync:
         out = None
         try:
             try:
-                b, loc, rem = mg.read_state(base), mg.read_state(mine), mg.read_state(theirs)
-            except mg.CannotMerge:
+                b, loc, rem = mg.read_state(base, self.store.vault_key), mg.read_state(mine), mg.read_state(theirs)
+            except Exception as e:     # an old copy without uids, a damaged or locked base
+                log.info("cannot merge, asking instead: %s", e)
                 return None
             m = mg.merge(b, loc, rem)
             ms = Store(mine)

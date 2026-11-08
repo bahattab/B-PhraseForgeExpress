@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
-from phraseforge import policy
+from phraseforge import policy, vault
 from phraseforge.models import (
     AutotextMode, ClipboardEntry, Folder, OutputMode, Phrase, Trigger, TriggerKind,
 )
@@ -276,14 +276,22 @@ def _editable(fn):
 
 
 class Store:
-    def __init__(self, path: str | Path = ":memory:"):
+    def __init__(self, path: str | Path = ":memory:", passphrase: str | None = None):
+        """passphrase: for a phrase file encrypted with one (vault.py). Opening an encrypted
+        file without it raises vault.NeedPassphrase when DPAPI cannot unlock it."""
         self.path = str(path)
         self.lock = threading.RLock()
         self._qlocal = threading.local()     # quarantine_writes() context, per thread
-        self.conn = sqlite3.connect(self.path, check_same_thread=False)
+        self.vault_key = None                # vault.Key while the file on disk is encrypted
+        self._flusher = None
+        if self.path != ":memory:" and vault.is_encrypted(self.path):
+            data, self.vault_key = vault.read(self.path, passphrase=passphrase)
+            self.conn = vault.memory_db(data)
+        else:
+            self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
-        if self.path != ":memory:":
+        if self.path != ":memory:" and self.vault_key is None:
             self.conn.execute("PRAGMA journal_mode = WAL")
         self._migrate_schema()       # before SCHEMA: old tables need columns its indexes may use
         self.conn.executescript(SCHEMA)
@@ -295,6 +303,102 @@ class Store:
         self._listeners: list = []
         self._migrate_extras()
         self._migrate_ocr_auto()
+        if self.vault_key is not None:
+            self._start_flusher()
+
+    # ------------------------------------------------------------ encryption at rest (vault.py)
+    FLUSH_SECONDS = 1.0
+
+    @property
+    def encrypted(self) -> bool:
+        return self.vault_key is not None
+
+    def _start_flusher(self) -> None:
+        self._saved_changes = -1
+        self._flush_stop = threading.Event()
+        self.flush()
+
+        def loop():
+            while not self._flush_stop.wait(self.FLUSH_SECONDS):
+                try:
+                    self.flush()
+                except Exception as e:   # keep trying; the next change retries the write
+                    log.warning("could not save the encrypted phrase file: %s", e)
+        self._flusher = threading.Thread(target=loop, name="vault-flush", daemon=True)
+        self._flusher.start()
+
+    def _stop_flusher(self) -> None:
+        if self._flusher is not None:
+            self._flush_stop.set()
+            self._flusher.join(timeout=5)
+            self._flusher = None
+
+    def flush(self) -> None:
+        """Write the in-memory database to the encrypted file if it changed since the last write."""
+        if self.vault_key is None:
+            return
+        with self.lock:
+            if self.conn.in_transaction or self.conn.total_changes == self._saved_changes:
+                return
+            data, n, key = self.conn.serialize(), self.conn.total_changes, self.vault_key
+            vault.write(self.path, data, key)
+            self._saved_changes = n
+
+    def enable_encryption(self, passphrase: str | None = None, use_dpapi: bool = True) -> None:
+        """Encrypt the phrase file on disk; from now on it is only written encrypted."""
+        if self.path == ":memory:":
+            raise vault.VaultError("This phrase file is not on disk.")
+        if self.vault_key is not None:
+            self.change_passphrase(passphrase, use_dpapi)
+            return
+        key = vault.Key.new(passphrase, use_dpapi)
+        with self.lock:
+            self.conn.commit()
+            self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            data = self.conn.serialize()
+            mem = vault.memory_db(data)
+            vault.write(self.path + ".enc", data, key)
+            old = self.conn
+            old.close()
+            for side in ("-wal", "-shm"):
+                vault.wipe(self.path + side)
+            vault.wipe(self.path)
+            os.replace(self.path + ".enc", self.path)
+            mem.row_factory = sqlite3.Row
+            mem.execute("PRAGMA foreign_keys = ON")
+            self.conn, self.vault_key = mem, key
+        self._start_flusher()
+        self._changed("setting")
+
+    def change_passphrase(self, passphrase: str | None, use_dpapi: bool = True) -> None:
+        """New passphrase (None = none), or ask for it on every start (use_dpapi=False)."""
+        if self.vault_key is None:
+            raise vault.VaultError("The phrase file is not encrypted.")
+        with self.lock:
+            self.vault_key.rewrap(passphrase, use_dpapi)
+            self._saved_changes = -1
+            self.flush()
+
+    def disable_encryption(self) -> None:
+        """Write the phrase file as a normal SQLite database again."""
+        if self.vault_key is None:
+            return
+        self._stop_flusher()
+        with self.lock:
+            self.conn.commit()
+            tmp = self.path + ".plain"
+            dst = sqlite3.connect(tmp)
+            with dst:
+                self.conn.backup(dst)
+            dst.close()
+            self.conn.close()
+            os.replace(tmp, self.path)
+            self.conn = sqlite3.connect(self.path, check_same_thread=False)
+            self.conn.row_factory = sqlite3.Row
+            self.conn.execute("PRAGMA foreign_keys = ON")
+            self.conn.execute("PRAGMA journal_mode = WAL")
+            self.vault_key = None
+        self._changed("setting")
 
     # ------------------------------------------------------------ migrations
     def _seal_plain_secrets(self) -> None:
@@ -424,6 +528,9 @@ class Store:
     closed = False
 
     def close(self) -> None:
+        self._stop_flusher()
+        if self.vault_key is not None:
+            self.flush()
         self.closed = True
         self.conn.close()
 
@@ -1107,9 +1214,14 @@ class Store:
             keep_device = ({k: v for k, v in self.conn.execute("SELECT key, value FROM settings")
                             if is_device_setting(k)} if untrusted else {})
         with self.lock:
-            src = sqlite3.connect(str(path))
-            src.backup(self.conn)
-            src.close()
+            src = vault.connect(path, self.vault_key) if vault.is_encrypted(path) else sqlite3.connect(str(path))
+            if self.vault_key is not None:        # in memory: load the image (a backup would copy WAL mode)
+                data = src.serialize()
+                src.close()
+                self.conn.deserialize(vault.no_wal(data))
+            else:
+                src.backup(self.conn)
+                src.close()
             self.conn.execute("PRAGMA foreign_keys = ON")
             self._migrate_schema()        # a backup/sync copy may come from an older version
             self.conn.executescript(SCHEMA)
@@ -1131,11 +1243,20 @@ class Store:
                     if origin:
                         self.conn.execute("INSERT INTO phrase_quarantine VALUES (?,?,?)", (pid, origin, _now()))
         self._seal_plain_secrets()        # an old backup may hold plain-text keys
+        if self.vault_key is not None:    # a backup copy may not count as a change: save now
+            self._saved_changes = -1
+            self.flush()
         for kind in ("folder", "phrase", "setting", "var", "clipboard", "sticky"):
             self._changed(kind)
 
-    def backup_to(self, path: str | Path) -> None:
+    def backup_to(self, path: str | Path, keep_encryption: bool = False) -> None:
+        """A copy of the database. keep_encryption: an encrypted phrase file's copy is encrypted
+        with the same key (local backups); otherwise the copy is a plain SQLite file."""
         with self.lock:
+            if keep_encryption and self.vault_key is not None:
+                self.conn.commit()
+                vault.write(path, self.conn.serialize(), self.vault_key)
+                return
             dst = sqlite3.connect(str(path))
             with dst:
                 self.conn.backup(dst)

@@ -148,6 +148,17 @@ changes" to be asked which copy to keep instead (also used for the very first sy
 that already has phrases, and for a cloud copy from a version before 0.7).
 Clipboard history and PC-specific settings are never uploaded.
 
+## Encrypting the phrase file
+
+Settings > Phrase File/Database > **Encryption...** encrypts the phrase file on disk (AES-256-GCM).
+PhraseForge then reads the phrases into memory, works there, and writes the file back encrypted a
+moment after every change. The key is random and protected by Windows for your account, so the
+file opens without a question on this PC. A passphrase is optional: it opens the file on another
+PC or after Windows was reinstalled. Or choose "Ask for the passphrase every time PhraseForge
+starts": then only the passphrase opens it. Write it down; nobody can recover it.
+Local backups are encrypted the same way. Not covered: the copy that Backup & Sync uploads (it is
+as readable as before), "Save As" database copies, and the learning statistics file.
+
 ## Arabic
 
 Settings > Display > User Interface Language > Arabic turns the whole interface right to left.
