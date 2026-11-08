@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import email
 import email.policy
+import logging
 import mailbox
 import re
 from collections import Counter
@@ -27,6 +28,7 @@ from typing import Callable, Iterable, Iterator
 
 MAIL_FILE_EXT = (".eml", ".mbox", ".mbx")
 MAX_BODY = 1_000_000          # characters; larger bodies are pasted logs or data, not writing
+log = logging.getLogger(__name__)
 MAX_SENTENCE = 300
 OL_FOLDERS = {"sent": 5, "inbox": 6}   # olFolderSentMail, olFolderInbox
 OL_MAIL = 43                           # olMail: MailItem, not meeting requests or reports
@@ -39,16 +41,20 @@ class MailSourceError(Exception):
 # ---------------------------------------------------------------- the user's own text
 _QUOTE_START = re.compile(
     r"^\s*(?:-{2,}\s*(?:Original Message|Ursprüngliche Nachricht|Message d'origine|Mensaje original|"
-    r"الرسالة الأصلية)\s*-{2,}"
+    r"Messaggio originale|Oorspronkelijk bericht|الرسالة الأصلية|"
+    r"Forwarded message|Weitergeleitete Nachricht|Message transféré|Mensaje reenviado|"   # forwards (Gmail ...)
+    r"Messaggio inoltrato|Doorgestuurd bericht|Begin forwarded message|رسالة معاد توجيهها)\s*:?\s*-{2,}"
+    r"|Begin forwarded message\s*:"                               # Apple Mail
     r"|_{10,}"                                                    # Outlook on the web separator
     r"|On\b.{0,200}\bwrote:"                                      # Gmail, Apple Mail, Thunderbird
     r"|Am\b.{0,200}\bschrieb\b.{0,100}:"
     r"|Le\b.{0,200}\ba écrit\s*:"
     r"|في\b.{0,200}كتب.{0,100}:"                                  # Gmail in Arabic
     r")\s*$", re.I)
-_HEADER = re.compile(r"^\s*\*?(From|De|Von|Da|من|المرسل)\s*\*?\s*:", re.I)
-_HEADER_NEXT = re.compile(r"^\s*\*?(Sent|Date|Subject|To|Gesendet|Betreff|Envoyé|Objet|Enviado|Asunto|"
-                          r"أرسل|تاريخ|التاريخ|الموضوع|إلى)[^:]{0,20}\*?\s*:", re.I)
+_HEADER = re.compile(r"^\s*\*?(From|De|Von|Da|Van|من|المرسل)\s*\*?\s*:", re.I)
+_HEADER_NEXT = re.compile(r"^\s*\*?(?:(?:Sent|Date|Subject|To|Gesendet|Datum|Betreff|Envoyé|Objet|Enviado|Asunto|"
+                          r"Para|Inviato|Data|Oggetto|Verzonden|Onderwerp|"
+                          r"أرسل|تاريخ|التاريخ|الموضوع|إلى)[^:]{0,20}|A|À|An|Aan)\*?\s*:", re.I)
 _SIGNATURE = re.compile(r"^--\s?$")
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?؟])\s+")
 _LETTER = re.compile(r"[^\W\d_]")
@@ -124,12 +130,14 @@ def analyze_into(store, bodies: Iterable[str], progress: Callable[[int], bool] |
 class _HtmlText(HTMLParser):
     """Text of an HTML mail, without quoted parts (<blockquote>, Gmail's gmail_quote)."""
     BLOCK = {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "table"}
+    MAX_DEPTH = 256
     VOID = {"br", "img", "hr", "meta", "link", "input", "col", "area", "base", "wbr", "source"}
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
         self.stack: list[tuple[str, bool]] = []      # (tag, starts a skipped part)
+        self.open: dict[str, int] = {}               # tag -> how often it is on the stack
         self.skip = 0
 
     def handle_starttag(self, tag, attrs):
@@ -140,16 +148,24 @@ class _HtmlText(HTMLParser):
         cls = " ".join(v or "" for k, v in attrs if k in ("class", "id"))
         quoted = tag in ("blockquote", "style", "script", "head", "title") or "gmail_quote" in cls \
             or "divRplyFwdMsg" in cls
+        if len(self.stack) >= self.MAX_DEPTH:      # nesting this deep is not a real mail: stop tracking,
+            if quoted:                             # but a quoted part still hides everything after it
+                self.skip += 1
+            return
         self.stack.append((tag, quoted))
+        self.open[tag] = self.open.get(tag, 0) + 1
         if quoted:
             self.skip += 1
 
     def handle_endtag(self, tag):
         if tag in self.BLOCK:
             self.parts.append("\n")
+        if not self.open.get(tag):                  # not open: nothing to search for (keeps this linear)
+            return
         for i in range(len(self.stack) - 1, -1, -1):
             if self.stack[i][0] == tag:
-                for _t, quoted in self.stack[i:]:
+                for t, quoted in self.stack[i:]:
+                    self.open[t] -= 1
                     if quoted:
                         self.skip -= 1
                 del self.stack[i:]
@@ -179,7 +195,12 @@ def message_text(msg) -> str:
         text = part.get_content()
     except Exception:
         payload = part.get_payload(decode=True) or b""
-        text = payload.decode(part.get_content_charset() or "utf-8", errors="replace")
+        try:
+            text = payload.decode(part.get_content_charset() or "utf-8", errors="replace")
+        except LookupError:                         # a charset Python does not know
+            text = payload.decode("latin-1")
+    if not isinstance(text, str) or len(text) > MAX_BODY:
+        return ""                                   # too big to be writing (and slow to parse)
     if part.get_content_subtype() == "html":
         text = html_text(text)
     return text
@@ -191,23 +212,39 @@ def file_messages(paths: Iterable[str | Path]) -> Iterator[str]:
     for path in paths:
         p = Path(path)
         ext = p.suffix.lower()
-        try:
-            if ext == ".eml":
-                yield message_text(email.message_from_bytes(p.read_bytes(), policy=pol))
-            elif ext in (".mbox", ".mbx") or (not ext and p.is_file()):
+        if ext == ".eml":
+            try:
+                data = p.read_bytes()
+            except OSError as e:
+                raise MailSourceError(f"{p.name}: {e}") from e
+            text = _one(lambda: message_text(email.message_from_bytes(data, policy=pol)), p.name)
+            if text is not None:
+                yield text
+        elif ext in (".mbox", ".mbx") or (not ext and p.is_file()):
+            try:
                 box = mailbox.mbox(str(p), factory=lambda f: email.message_from_binary_file(f, policy=pol),
                                    create=False)
-                try:
-                    for msg in box:
-                        yield message_text(msg)
-                finally:
-                    box.close()
-            else:
-                raise MailSourceError(f"not a mail file: {p.name}")
-        except MailSourceError:
-            raise
-        except Exception as e:
-            raise MailSourceError(f"{p.name}: {e}") from e
+                keys = list(box.iterkeys())
+            except Exception as e:
+                raise MailSourceError(f"{p.name}: {e}") from e
+            try:
+                for key in keys:                    # one broken message is skipped, not the whole file
+                    text = _one(lambda: message_text(box[key]), p.name)
+                    if text is not None:
+                        yield text
+            finally:
+                box.close()
+        else:
+            raise MailSourceError(f"not a mail file: {p.name}")
+
+
+def _one(read: Callable[[], str], name: str) -> str | None:
+    """Text of one message, or None (logged) when that message cannot be read."""
+    try:
+        return read()
+    except Exception as e:                          # bad charset, MIME nested too deep ...
+        log.warning("a message in %s was skipped: %s", name, type(e).__name__)
+        return None
 
 
 # ---------------------------------------------------------------- Outlook

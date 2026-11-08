@@ -53,6 +53,9 @@ def sqlserver_connection_string(server: str, database: str, auth: str, user: str
         parts.append("Trusted_Connection=yes")
     else:
         parts += ["UID=" + _odbc_value(user), "PWD=" + _odbc_value(password)]
+    if driver == "SQL Server" and encrypt:       # the old built-in driver drops Encrypt silently (R37)
+        raise SharedError("The old \"SQL Server\" ODBC driver cannot encrypt the connection. Install "
+                          "\"ODBC Driver 18 for SQL Server\" from Microsoft, or turn encryption off.")
     if driver != "SQL Server":                    # the old built-in driver knows neither keyword
         parts.append("Encrypt=" + ("yes" if encrypt else "no"))
         parts.append("TrustServerCertificate=" + ("yes" if trust_cert else "no"))
@@ -65,9 +68,14 @@ def windows_user() -> str:
 
 
 def postgresql_params(server: str, database: str, auth: str, user: str = "", password: str = "",
-                      port: str = "", encrypt: bool = True) -> dict:
+                      port: str = "", encrypt: bool = True, trust_cert: bool = False) -> dict:
+    """libpq parameters. Encrypted means verify-full: the server's certificate must be signed
+    by a CA this PC trusts (%APPDATA%\\postgresql\\root.crt) and name this host, so nobody in
+    between can read the password or the phrases (R37). trust_cert ("self-signed") only
+    encrypts (require), like TrustServerCertificate on SQL Server."""
+    mode = ("require" if trust_cert else "verify-full") if encrypt else "prefer"
     params = {"host": server, "dbname": database, "connect_timeout": 10, "application_name": "PhraseForge",
-              "sslmode": "require" if encrypt else "prefer"}
+              "sslmode": mode}
     if port:
         params["port"] = int(port)
     if auth == "windows":
@@ -107,7 +115,8 @@ def connect(setting: Callable[[str, str], str], connectors: dict | None = None) 
                 import psycopg  # type: ignore
             except ImportError as e:
                 raise SharedError("psycopg is not installed") from e
-            conn = psycopg.connect(**postgresql_params(server, database, auth, user, password, port, encrypt))
+            conn = psycopg.connect(**postgresql_params(server, database, auth, user, password, port, encrypt,
+                                                       setting("shared.trust_cert", "0") == "1"))
     except SharedError:
         raise
     except Exception as e:

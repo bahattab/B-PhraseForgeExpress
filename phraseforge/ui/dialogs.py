@@ -252,6 +252,7 @@ class FormDialog(QDialog):
         super().accept()
 
     def values(self) -> dict[str, Any]:
+        from phraseforge.formcheck import clean_value
         out: dict[str, Any] = {}
         for f in self.fields:
             w = self.widgets.get(f.name)
@@ -277,6 +278,8 @@ class FormDialog(QDialog):
             elif hasattr(w, "group"):
                 b = w.group.checkedButton()
                 out[f.name] = b.text() if b else ""
+            if f.name in out:
+                out[f.name] = clean_value(f, out[f.name])
         return out
 
 

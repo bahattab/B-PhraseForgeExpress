@@ -681,15 +681,18 @@ def _insert(rt, args, opts):
     key = _arg(args, 0)
     if key.lower() in rt.insert_stack or len(rt.insert_stack) >= MAX_INSERT_DEPTH:
         return ""   # cycle or too deep
-    found = None
-    if rt.level and rt.store is not None:            # {#setlevel}: that language version
-        p = rt.store.find_phrase(key) or (rt.store.get_phrase(int(key)) if key.isdigit() else None)
-        found = rt.store.phrase_text(p, rt.level) if p else None
-    if found is None:
-        found = rt.host.phrase_content(key)
-    if found is None and rt.store is not None:
-        p = rt.store.find_phrase(key) or (rt.store.get_phrase(int(key)) if key.isdigit() else None)
-        found = (p.content, p.content_format) if p else None
+    # Find the phrase ONCE and use that same phrase for its text, its lock and its
+    # quarantine check: looking it up twice in different orders let "1" run phrase id 1
+    # while checking the phrase described "1" (security R26). Id first, as the host does.
+    target = None
+    if rt.store is not None:
+        target = (rt.store.get_phrase(int(key)) if key.isdigit() else None) or rt.store.find_phrase(key)
+    if target is not None:
+        lang = rt.level or rt.setting("phrase.active_language", "")
+        found = rt.store.phrase_text(target, lang) if hasattr(rt.store, "phrase_text") \
+            else (target.content, target.content_format)
+    else:
+        found = rt.host.phrase_content(key)          # not in the store (tests, other hosts)
     if found is None:
         raise MacroError(f"phrase '{key}' not found")
     content, fmt = found
@@ -697,15 +700,12 @@ def _insert(rt, args, opts):
         content = html_to_text(content)
     # the inserted phrase keeps its own protection (security.py): a locked folder stays
     # locked, and an unapproved phrase cannot run privileged macros through {#insert}
-    allow_before = rt.ctx.allow_privileged
-    target = None
-    if rt.store is not None and hasattr(rt.store, "quarantine_origin"):
-        target = rt.store.find_phrase(key) or (rt.store.get_phrase(int(key)) if key.isdigit() else None)
+    allow_before, level_before = rt.ctx.allow_privileged, rt.level
     if target is not None:
         from phraseforge.security import LOCKS
         if LOCKS.is_locked(rt.store, target.folder_id):
             raise MacroError(f"phrase '{key}' is in a locked folder")
-        if rt.store.quarantine_origin(target.id):
+        if getattr(rt.store, "quarantine_origin", None) and rt.store.quarantine_origin(target.id):
             rt.ctx.allow_privileged = False
     rt.insert_stack.append(key.lower())
     try:
@@ -713,6 +713,7 @@ def _insert(rt, args, opts):
     finally:
         rt.insert_stack.pop()
         rt.ctx.allow_privileged = allow_before
+        rt.level = level_before                       # {#setlevel} inside stays inside (R42)
 
 
 # ====================================================================== text functions

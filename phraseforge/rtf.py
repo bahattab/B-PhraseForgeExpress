@@ -24,6 +24,8 @@ def escape(text: str) -> str:
             out.append("\\line ")
         elif ch == "\t":
             out.append("\\tab ")
+        elif o < 32 or o == 127:                # other control characters: strict readers choke
+            continue
         elif o < 128:
             out.append(ch)
         elif o < 0x10000:

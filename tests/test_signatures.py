@@ -146,7 +146,7 @@ def test_export_writes_htm_rtf_and_txt_for_outlook(store, tmp_path):
     sig.new_signature(store, "Work: Sales/EU", "Best regards,\n{#upper ali}")
     sig.new_signature(store, "عربي", AR_SIG)
     add(store, sig.FOOTERS, "Always here")
-    expand = lambda content, fmt: run(store, content, fmt=fmt)
+    expand = lambda content, fmt, trusted=False: run(store, content, fmt=fmt)
     written = sig.export_outlook(store, expand, tmp_path)
     assert sorted(p.name for p in written) == ["Work_ Sales_EU.htm", "عربي.htm"]
     htm = (tmp_path / "Work_ Sales_EU.htm").read_text(encoding="utf-8")
@@ -212,7 +212,7 @@ def test_dialog_lists_previews_exports_and_sets_outlook_default(app, store, tmp_
     from PySide6.QtWidgets import QInputDialog, QMessageBox
     from phraseforge.ui.signatures_dialog import SignaturesDialog
     edited = []
-    expand = lambda content, fmt: run(store, content, fmt=fmt)
+    expand = lambda content, fmt, trusted=False: run(store, content, fmt=fmt)
     d = SignaturesDialog(store, on_edit=edited.append, expand=expand)
     assert d.list.count() == 0
     monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("Work", True)))

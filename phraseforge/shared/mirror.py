@@ -221,10 +221,14 @@ class Mirror:
         return (f or self.store.add_folder(Folder(NOT_SAVED))).id
 
     def _keep_outside(self, p: Phrase) -> None:
-        """Copy a phrase the server would not take into the local Not saved folder."""
-        self.store.add_phrase(Phrase(p.description, p.content, folder_id=self._not_saved_folder(),
-                                     content_format=p.content_format,
-                                     triggers=[Trigger.from_dict(t) for t in _triggers_out(p)]))
+        """Copy a phrase the server would not take into the local Not saved folder. The copy
+        keeps the phrase's quarantine: its text may still be another user's (security R22)."""
+        origin = self.store.quarantine_origin(p.id) if hasattr(self.store, "quarantine_origin") else None
+        copy = self.store.add_phrase(Phrase(p.description, p.content, folder_id=self._not_saved_folder(),
+                                            content_format=p.content_format,
+                                            triggers=[Trigger.from_dict(t) for t in _triggers_out(p)]))
+        if origin:
+            self.store.quarantine(copy.id, origin)
 
     def _drop_unreadable(self, root: int, folder_ids: set[int], phrase_ids: set[int], res: SyncResult) -> None:
         """After a full read: remove local copies of what this login may no longer read."""

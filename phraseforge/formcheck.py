@@ -24,6 +24,9 @@ _PATTERNS = {
     "phone": r"\+?[\d\s()./-]{5,}",
 }
 
+_DIGIT_RULES = {"numbers", "integer", "date", "time", "phone"}
+REGEX_TIMEOUT_S = 0.3        # the check runs on the UI thread, on every key press
+
 _MESSAGES = {
     "email": "an e-mail address", "url": "a web address", "letters": "letters only",
     "numbers": "a number", "integer": "a whole number", "date": "a date", "time": "a time",
@@ -48,21 +51,35 @@ def rule_error(value: str, rule: str) -> str:
     if not rule or rule.lower() == "anything" or not v:
         return ""
     if rule.lower().startswith("regex:"):
+        from phraseforge import saferegex   # the pattern comes from the phrase (security R33)
         try:
-            return "" if re.fullmatch(rule[6:], v) else "text matching the required pattern"
-        except re.error:
-            return "a valid pattern in the phrase (the -validate regex is broken)"
+            ok = saferegex.run(rule[6:], 0, v, lambda rx, t: rx.fullmatch(t) is not None, REGEX_TIMEOUT_S)
+        except saferegex.RegexError:
+            return "a valid pattern in the phrase (the -validate regex is broken or too slow)"
+        return "" if ok else "text matching the required pattern"
     r = rule.lower()
     if r == "text":
         return ""
-    if r == "filepath":
-        return "" if os.path.isfile(v) else _MESSAGES[r]
-    if r == "folder":
-        return "" if os.path.isdir(v) else _MESSAGES[r]
+    if r in ("filepath", "folder"):
+        # checking \\host\share\x connects to that host and sends this user's Windows
+        # credentials; the check runs as the form opens, so it must not (security R25)
+        from phraseforge.security import is_network_path
+        if is_network_path(v):
+            return "a file or folder on this PC (network paths are not checked)"
+        return "" if (os.path.isfile(v) if r == "filepath" else os.path.isdir(v)) else _MESSAGES[r]
     pat = _PATTERNS.get(r)
     if pat is None:
         return ""          # unknown rule: do not block the user
-    return "" if re.fullmatch(pat, v) else _MESSAGES[r]
+    flags = re.ASCII if r in _DIGIT_RULES else 0      # \d is 0-9 there; letters may be Arabic
+    return "" if re.fullmatch(pat, v, flags) else _MESSAGES[r]
+
+
+def clean_value(f: FormField, value: Any) -> Any:
+    """The value a field outputs: a checked field gives the text that was checked, so
+    surrounding spaces and line breaks are removed (security R41)."""
+    if isinstance(value, str) and f.validate and f.validate.strip().lower() not in ("anything", "text"):
+        return value.strip()
+    return value
 
 
 def field_error(f: FormField, value: Any) -> str:

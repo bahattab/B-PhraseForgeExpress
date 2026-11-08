@@ -178,10 +178,10 @@ def find(store, name: str = "") -> Phrase | None:
 
 
 def compose(store, name: str = "", lang: str = "", today: date | None = None,
-            rng: random.Random | None = None) -> tuple[str, str] | None:
-    """(content, format) of a signature with its active footers and a random quote,
-    macros not yet run. None when there is no such signature."""
-    sig = find(store, name)
+            rng: random.Random | None = None, sig: Phrase | None = None) -> tuple[str, str] | None:
+    """(content, format) of a signature (by name, or the phrase `sig`) with its active
+    footers and a random quote, macros not yet run. None when there is no such signature."""
+    sig = sig or find(store, name)
     if sig is None:
         return None
     parts = [store.phrase_text(sig, lang)]
@@ -201,10 +201,30 @@ def outlook_dir() -> Path:
     return Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming") / "Microsoft" / "Signatures"
 
 
+_RESERVED = re.compile(r"(CON|PRN|AUX|NUL|COM[0-9¹²³]|LPT[0-9¹²³])(\..*)?", re.I)
+
+
 def file_name(name: str) -> str:
-    """A signature name Windows accepts as a file name."""
-    clean = _BAD_NAME.sub("_", name).strip().rstrip(".")
-    return clean[:80] or "Signature"
+    """A signature name Windows accepts as a file name (no extension added)."""
+    clean = _BAD_NAME.sub("_", name).strip().rstrip(". ")
+    clean = clean[:80].rstrip(". ") or "Signature"
+    return "_" + clean if _RESERVED.fullmatch(clean) else clean     # CON, NUL, COM1 ... are devices
+
+
+def outlook_names(store) -> dict[int, str]:
+    """{signature phrase id: file name without extension}, unique ignoring case: a second
+    "Sig" becomes "Sig (2)". The same names are used for the files and the registry."""
+    used: set[str] = set()
+    out = {}
+    for sig in sorted(signatures(store), key=lambda p: p.id):
+        base = name = file_name(sig.description)
+        n = 2
+        while name.casefold() in used:
+            name = f"{base} ({n})"
+            n += 1
+        used.add(name.casefold())
+        out[sig.id] = name
+    return out
 
 
 def html_document(body: str, title: str = "") -> str:
@@ -224,19 +244,29 @@ def export_outlook(store, expand: Callable[[str, str], str], target: str | Path 
     out_dir = Path(target) if target else outlook_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
     written = []
+    names = outlook_names(store)
     for sig in signatures(store):
         if ids is not None and sig.id not in ids:
             continue
-        content, fmt = compose(store, sig.description, today=today)
-        result = expand(content, fmt)
+        content, fmt = compose(store, today=today, sig=sig)
+        result = expand(content, fmt, signature_trusted(store, sig))
         body = result if fmt == "html" else _text_to_html(result)
         plain = html_to_text(result) if fmt == "html" else result
-        base = out_dir / file_name(sig.description)
-        base.with_suffix(".htm").write_text(html_document(body, sig.description), encoding="utf-8")
-        base.with_suffix(".rtf").write_text(rtf.html_to_rtf(body), encoding="ascii", errors="replace")
-        base.with_suffix(".txt").write_text(plain, encoding="utf-16")    # Outlook reads Unicode .txt
-        written.append(base.with_suffix(".htm"))
+        stem = names[sig.id]                       # not with_suffix(): "Mr. Smith" must stay whole
+        (out_dir / (stem + ".htm")).write_text(html_document(body, sig.description), encoding="utf-8")
+        (out_dir / (stem + ".rtf")).write_text(rtf.html_to_rtf(body), encoding="ascii", errors="replace")
+        (out_dir / (stem + ".txt")).write_text(plain, encoding="utf-16")    # Outlook reads Unicode .txt
+        written.append(out_dir / (stem + ".htm"))
     return written
+
+
+def signature_trusted(store, sig: Phrase) -> bool:
+    """False when the signature, a footer or a quote is an imported or synced phrase not yet
+    approved on this PC: its privileged macros ({#outputfile}, {#run} ...) must not run."""
+    origin = getattr(store, "quarantine_origin", None)
+    if origin is None:
+        return True
+    return not any(origin(p.id) for p in [sig] + footers(store) + quotes(store))
 
 
 OUTLOOK_MAIL_SETTINGS = r"Software\Microsoft\Office\16.0\Common\MailSettings"
@@ -244,7 +274,8 @@ OUTLOOK_MAIL_SETTINGS = r"Software\Microsoft\Office\16.0\Common\MailSettings"
 
 def set_outlook_default(name: str, new: bool = True, reply: bool = True, winreg=None) -> None:
     """Make an exported signature Outlook's default for new mail and/or replies
-    (HKCU MailSettings NewSignature / ReplySignature; Outlook 2016 and later)."""
+    (HKCU MailSettings NewSignature / ReplySignature; Outlook 2016 and later).
+    `name` is the file name export_outlook() used (outlook_names()), without extension."""
     if winreg is None:
         import winreg  # type: ignore
     key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, OUTLOOK_MAIL_SETTINGS)
@@ -256,16 +287,20 @@ def set_outlook_default(name: str, new: bool = True, reply: bool = True, winreg=
         winreg.CloseKey(key)
 
 
-def preview_expand(store) -> Callable[[str, str], str]:
-    """expand() for export: macros run without prompts (form fields keep their defaults)."""
-    from phraseforge.host import TextAction
+def preview_expand(store) -> Callable[..., str]:
+    """expand(content, format, trusted=False) for preview and export: macros run without
+    prompts (form fields keep their defaults). Privileged macros ({#outputfile}, {#run},
+    {#http} ...) run only for trusted=True, i.e. an export of signatures that are all
+    approved on this PC; a preview never runs them (security R21)."""
+    from phraseforge.host import ExpansionContext, TextAction
     from phraseforge.macros import MacroEngine
     from phraseforge.ui.main_window import PreviewHost
 
     engine = MacroEngine(PreviewHost(store), store)
 
-    def expand(content: str, fmt: str) -> str:
-        actions = engine.expand(content)
+    def expand(content: str, fmt: str, trusted: bool = False) -> str:
+        ctx = ExpansionContext(phrase_description="signature", allow_privileged=bool(trusted))
+        actions = engine.expand(content, ctx)
         return "".join(a.text for a in actions if isinstance(a, TextAction)) if fmt == "html" \
-            else engine.expand_to_text(content)
+            else engine.expand_to_text(content, ctx)
     return expand

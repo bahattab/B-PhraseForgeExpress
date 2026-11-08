@@ -13,7 +13,7 @@ Untrusted phrases
     changed, are put in quarantine (Store.quarantine_*). Their privileged macros
     (start programs, open files or web pages, network requests, send mail, write
     files, query databases, change phrases, Windows-key shortcuts, read a file
-    from a network share) do not run
+    from a network share, set variables that other phrases read) do not run
     until the user approves the phrase. A trigger that fires on its own (time,
     window focus, clipboard) never asks: the phrase is skipped and logged.
 """
@@ -34,14 +34,20 @@ PRIVILEGED: dict[str, str] = {
     "dbquery": "query databases",
     "setphrase": "create or change phrases",
     "key": "press Windows-key shortcuts",
+    # a value an unapproved phrase leaves behind could become a trusted phrase's
+    # {#run {#gettemp x}} argument (security R32); {#set -scope global} below likewise
+    "settemp": "change variables other phrases use",
 }
 
 # Macros that read the file named by their first argument. Reading a local file is
 # harmless, but on Windows opening \\host\share\file connects to that host over SMB
 # and sends this user's NTLM credentials, so a network path needs an approved phrase.
-FILE_READERS = frozenset({"textfile", "document", "csv", "image", "xls", "xlsfind", "sql", "pastefile"})
+FILE_READERS = frozenset({"textfile", "document", "csv", "image", "xls", "xlsfind", "sql", "pastefile",
+                          "sound"})
 NETWORK_READ = "read files from a network share"
 _NETWORK_PATH = re.compile(r"^[\\/]{2}")          # \\host\share, //host/share, \\?\UNC\...
+SCOPED_VARS = frozenset({"set", "unset"})          # -scope global (or any scope but local) is shared
+_SCOPE = re.compile(r'-scope\s+["\']?([^\s"\'{}]*)')
 _FIRST_ARG = re.compile(r'\s*("(?:[^"\\]|\\.)*"|\'[^\']*\'|[^\s"\']+)')
 
 
@@ -79,6 +85,8 @@ def privileged_reason(name: str, args: list[str], opts: dict[str, str]) -> str |
     """Why the call {#name args opts} needs an approved phrase, or None if it is harmless."""
     if name in FILE_READERS:
         return NETWORK_READ if args and is_network_path(str(args[0])) else None
+    if name in SCOPED_VARS:
+        return PRIVILEGED["settemp"] if opts.get("scope", "local") not in ("", "local") else None
     reason = PRIVILEGED.get(name)
     if reason is None:
         return None
@@ -106,6 +114,10 @@ def scan_privileged(content: str) -> list[str]:
         elif name == "mail":
             opts = {o: "" for o in re.findall(r"-(\w+)", rest)}
             reason = privileged_reason(name, [], opts)
+        elif name in SCOPED_VARS:
+            scope = _SCOPE.search(rest)
+            # a scope written as a macro ({#var s}) is only known at run time: ask anyway
+            reason = privileged_reason(name, [], {"scope": scope.group(1) or "?"} if scope else {})
         elif name in FILE_READERS:
             first = _FIRST_ARG.match(rest)
             reason = privileged_reason(name, [first.group(1)] if first else [], {})

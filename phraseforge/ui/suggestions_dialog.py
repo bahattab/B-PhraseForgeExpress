@@ -31,8 +31,12 @@ class SuggestionsDialog(QDialog):
         b1.clicked.connect(self._create)
         b2 = QPushButton(tr("Dismiss"))
         b2.clicked.connect(self._dismiss)
+        b3 = QPushButton(tr("Clear list"))
+        b3.setToolTip(tr("Forget every suggestion, dismissed ones included"))
+        b3.clicked.connect(self._clear)
         row.addWidget(b1)
         row.addWidget(b2)
+        row.addWidget(b3)
         row.addStretch()
         lay.addLayout(row)
         g = QHBoxLayout()
@@ -68,8 +72,11 @@ class SuggestionsDialog(QDialog):
         return self.store.add_folder(Folder("Learned")).id
 
     def create_phrase(self, text: str, abbreviation: str) -> Phrase:
+        """A suggestion is plain text someone typed or mailed, never macros: "{" is written
+        as "{{" so a mailed {#run ...} stays literal text in the new phrase (security R20)."""
         trig = [Trigger(TriggerKind.AUTOTEXT, abbreviation)] if abbreviation else []
-        p = self.store.add_phrase(Phrase(text[:60], text, folder_id=self._target_folder(), triggers=trig))
+        content = text.replace("{", "{{")
+        p = self.store.add_phrase(Phrase(text[:60], content, folder_id=self._target_folder(), triggers=trig))
         self.store.dismiss_suggestion(text)
         return p
 
@@ -82,6 +89,13 @@ class SuggestionsDialog(QDialog):
             return
         self.create_phrase(it.data(Qt.UserRole), abbr.strip())
         self.refresh()
+
+    def _clear(self) -> None:
+        if QMessageBox.question(self, tr("Suggestions"), tr(
+                "Forget every suggestion, dismissed ones included? Text you write often may be suggested again "
+                "later.")) == QMessageBox.Yes:
+            self.store.clear_suggestions()
+            self.refresh()
 
     def _dismiss(self) -> None:
         it = self.list.currentItem()

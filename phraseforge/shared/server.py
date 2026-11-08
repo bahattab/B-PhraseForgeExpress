@@ -339,8 +339,10 @@ class SharedServer:
                 cur.close()
                 self.conn.commit()
 
-    def _parents(self, cur) -> dict[int, int | None]:
-        self._exec(cur, "SELECT id, parent_id FROM pf_folders WHERE deleted = 0")
+    def _parents(self, cur, live_only: bool = False) -> dict[int, int | None]:
+        """{folder id: parent id}. Deleted folders are included unless live_only: a phrase in
+        a deleted folder is still protected by that folder's restricted parents (R31)."""
+        self._exec(cur, "SELECT id, parent_id FROM pf_folders" + (" WHERE deleted = 0" if live_only else ""))
         return {int(r[0]): None if r[1] is None else int(r[1]) for r in cur.fetchall()}
 
     def is_admin(self, cur=None, acl: list[AclEntry] | None = None) -> bool:
@@ -372,7 +374,8 @@ class SharedServer:
         cur = self.conn.cursor()
         try:
             acl, parents = self.acl(cur), self._parents(cur)
-            out = {fid: self.rights_for(fid, acl, parents) for fid in list(parents) + [None]}
+            live = self._parents(cur, live_only=True)
+            out = {fid: self.rights_for(fid, acl, parents) for fid in list(live) + [None]}
             return out, self.is_admin(acl=acl)
         finally:
             cur.close()
@@ -428,7 +431,10 @@ class SharedServer:
                             "WHERE rev > ? AND rev <= ? ORDER BY rev", (rev, top))
             folders = [RemoteFolder(int(r[0]), None if r[1] is None else int(r[1]), r[2] or "", int(r[3] or 0),
                                     int(r[4]), bool(r[5]), r[6] or "") for r in cur.fetchall()]
-            folders = [f for f in folders if f.deleted or f.id in readable]
+            # a deletion is sent to everyone (every PC must drop its copy), but only with
+            # the id: the name or text of what this login may not read stays on the server
+            folders = [f if f.id in readable else RemoteFolder(f.id, None, "", 0, f.rev, True, "")
+                       for f in folders if f.deleted or f.id in readable]
             self._exec(cur, "SELECT id, folder_id, description, content, content_format, triggers, rev, deleted, "
                             "modified_by FROM pf_phrases WHERE rev > ? AND rev <= ? ORDER BY rev", (rev, top))
             phrases = []
@@ -440,8 +446,10 @@ class SharedServer:
                 rp = RemotePhrase(int(r[0]), None if r[1] is None else int(r[1]), r[2] or "", r[3] or "",
                                   r[4] or "text", trig if isinstance(trig, list) else [], int(r[6]), bool(r[7]),
                                   r[8] or "")
-                if rp.deleted or rp.folder_id in readable:
+                if rp.folder_id in readable:
                     phrases.append(rp)
+                elif rp.deleted:
+                    phrases.append(RemotePhrase(rp.id, None, "", "", "text", [], rp.rev, True, ""))
             return folders, phrases, top
         finally:
             cur.close()
@@ -488,6 +496,7 @@ class SharedServer:
             if cur.rowcount != 1:
                 raise Conflict(f"folder {folder_id} changed on the server")
             self._history(cur, "folder", folder_id, rev, "delete", None, "")
+            acl, parents = self.acl(cur), self._parents(cur)
             todo, seen = [folder_id], {folder_id}
             while todo:
                 fid = todo.pop()
@@ -495,7 +504,9 @@ class SharedServer:
                                 "WHERE folder_id = ? AND deleted = 0", (rev, self.user(), _now(), fid))
                 self._exec(cur, "SELECT id FROM pf_folders WHERE parent_id = ? AND deleted = 0", (fid,))
                 children = [int(r[0]) for r in cur.fetchall() if int(r[0]) not in seen]
-                for c in children:
+                for c in children:          # a subfolder this login may not change stops the delete (R30)
+                    if not self.rights_for(c, acl, parents).write:
+                        raise PermissionDenied(f"{self.user()} may not delete folder {c} inside folder {folder_id}")
                     self._exec(cur, "UPDATE pf_folders SET deleted = 1, rev = ?, modified_by = ?, modified = ? "
                                     "WHERE id = ?", (rev, self.user(), _now(), c))
                 seen.update(children)
@@ -593,8 +604,15 @@ class SharedServer:
             self._exec(cur, "SELECT id, item_kind, item_id, rev, action, parent_id, name, content, content_format, "
                             "triggers, changed_by, changed FROM pf_history WHERE item_kind = ? AND item_id = ? "
                             "ORDER BY rev DESC, id DESC", (kind, item_id))
+            rows = cur.fetchall()                    # before acl() reuses the cursor
             out = []
-            for h in cur.fetchall():
+            acl, parents = self.acl(cur), self._parents(cur)
+            for h in rows:
+                # each version is checked where it was then: a phrase moved out of a secret
+                # folder must not show the versions it had in there (R31)
+                if kind == "phrase" and h[4] != "delete" and not self.rights_for(
+                        None if h[5] is None else int(h[5]), acl, parents).read:
+                    continue
                 try:
                     trig = json.loads(h[9] or "[]")
                 except ValueError:

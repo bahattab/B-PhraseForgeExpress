@@ -126,7 +126,7 @@ class SignaturesDialog(QDialog):
         p = self.selected()
         if p is None:
             return ""
-        content, fmt = signatures.compose(self.store, p.description)
+        content, fmt = signatures.compose(self.store, sig=p)
         try:
             out = self.expand(content, fmt)
         except Exception as e:                          # a macro that fails shows its error, not a crash
@@ -210,7 +210,7 @@ class SignaturesDialog(QDialog):
                 "Make \"{name}\" Outlook's default signature for new mail and replies?").format(name=d.description))
             if ans == QMessageBox.Yes:
                 try:
-                    signatures.set_outlook_default(d.description, winreg=winreg)
+                    signatures.set_outlook_default(signatures.outlook_names(self.store)[d.id], winreg=winreg)
                 except OSError as e:
                     QMessageBox.warning(self, tr("Signatures"), str(e))
         else:
