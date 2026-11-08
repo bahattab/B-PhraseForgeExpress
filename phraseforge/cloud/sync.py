@@ -8,9 +8,14 @@ Sync rule per run, with `last_rev`/`last_hash` remembered from the previous sync
     no remote copy                      -> push
     remote unchanged, local changed     -> push (rev + 1)
     remote changed, local unchanged     -> pull (replace local data)
-    both changed                        -> CONFLICT: nothing is overwritten; the local copy is
-                                           uploaded as a backup and the caller asks the user
-                                           to keep "this PC" or "cloud" (resolve()).
+    both changed                        -> MERGE (cloud/merge.py): a backup of this PC's copy is
+                                           uploaded, the two sets of edits are merged against the
+                                           copy both last agreed on ("base", kept next to the
+                                           database), the result is uploaded and then applied here
+                                           like a pull. Only when that is impossible (no base yet,
+                                           a cloud copy from an older version, sync.merge = 0):
+                                           CONFLICT, nothing is overwritten and the caller asks
+                                           the user to keep "this PC" or "cloud" (resolve()).
 
 What syncs: folders, phrases, triggers, tags, variables, history, statistics and
 shared settings. What never leaves this PC: clipboard history and device-only
@@ -137,10 +142,11 @@ class GDriveRemote:
 # ---------------------------------------------------------------- engine
 @dataclass
 class SyncResult:
-    action: str                 # pushed | pulled | unchanged | conflict
+    action: str                 # pushed | pulled | merged | unchanged | conflict
     message: str
-    pulled_file: Path | None = None   # for "pulled": apply with apply_pull() on the UI thread
+    pulled_file: Path | None = None   # for "pulled"/"merged": apply with apply_pull() on the UI thread
     remote_rev: int = 0
+    summary: dict = field(default_factory=dict)   # for "merged": added/removed/changed/conflicts
 
 
 def content_hash(store: Store) -> str:
@@ -170,15 +176,33 @@ class CloudSync:
         fd, name = tempfile.mkstemp(prefix="pf-snap-", suffix=".db")
         os.close(fd)
         self.store.backup_to(name)
-        con = sqlite3.connect(name)
-        with con:
-            con.execute("DELETE FROM clipboard")
-            for (k,) in con.execute("SELECT key FROM settings").fetchall():
-                if _is_local_key(k):
-                    con.execute("DELETE FROM settings WHERE key=?", (k,))
-        con.execute("VACUUM")
-        con.close()
+        _strip(Path(name))
         return Path(name)
+
+    # ---------------------------------------------------- base (the copy both sides agreed on)
+    @property
+    def base_path(self) -> Path | None:
+        if self.store.path == ":memory:":
+            return None
+        p = Path(self.store.path)
+        return p.with_name(p.stem + ".sync-base.db")
+
+    def _save_base(self, path: Path, rev: int) -> None:
+        bp = self.base_path
+        if bp is None:
+            return
+        tmp = bp.with_suffix(".part")
+        shutil.copyfile(path, tmp)
+        os.replace(tmp, bp)
+        self.store.set_setting("sync.base_rev", str(rev))
+
+    def _base(self) -> Path | None:
+        bp = self.base_path
+        if bp is None or not bp.is_file():
+            return None
+        if self.store.setting("sync.base_rev", "") != self.store.setting("sync.last_rev", "0"):
+            return None                       # saved for another revision: unsafe to merge against
+        return bp
 
     def _remember(self, rev: int, h: str) -> None:
         self.store.set_setting("sync.last_rev", str(rev))
@@ -240,15 +264,52 @@ class CloudSync:
                 self._remember(remote_rev, local_hash)
                 return SyncResult("unchanged", "Already in sync", remote_rev=remote_rev)
             self.backup_now(int(self.store.setting("backup.cloud_keep", "10") or 10))
+            merged = self._merge(remote, remote_rev)
+            if merged is not None:
+                return merged
             return SyncResult("conflict", f"Phrases changed on this PC and on {remote.props.get('device', 'another PC')}",
                               remote_rev=remote_rev)
         return SyncResult("unchanged", "Already in sync", remote_rev=remote_rev)
+
+    def _merge(self, remote: RemoteFile, remote_rev: int) -> SyncResult | None:
+        """Merge both sides' edits and upload the result; None = cannot merge, ask the user."""
+        from phraseforge.cloud import merge as mg
+        base = self._base()
+        if base is None or self.store.setting("sync.merge", "1") == "0":
+            return None
+        theirs = self.download(SYNC_NAME)
+        mine = self._snapshot()
+        out = None
+        try:
+            try:
+                b, loc, rem = mg.read_state(base), mg.read_state(mine), mg.read_state(theirs)
+            except mg.CannotMerge:
+                return None
+            m = mg.merge(b, loc, rem)
+            ms = Store(mine)
+            try:
+                mg.apply(ms, loc, rem, m)
+                h = content_hash(ms)
+            finally:
+                ms.close()
+            _strip(mine)
+            rev = remote_rev + 1
+            self.remote.put(mine, SYNC_NAME, {"rev": rev, "hash": h, "device": self.device,
+                                              "modified": datetime.now().isoformat(timespec="seconds")})
+            out, mine = mine, None
+            who = remote.props.get("device", "another PC")
+            return SyncResult("merged", f"Merged the changes from {who}", out, rev, m.summary)
+        finally:
+            theirs.unlink(missing_ok=True)
+            if mine is not None:
+                mine.unlink(missing_ok=True)
 
     def _push(self, rev: int, local_hash: str) -> SyncResult:
         snap = self._snapshot()
         try:
             self.remote.put(snap, SYNC_NAME, {"rev": rev, "hash": local_hash, "device": self.device,
                                               "modified": datetime.now().isoformat(timespec="seconds")})
+            self._save_base(snap, rev)
         finally:
             snap.unlink(missing_ok=True)
         self._remember(rev, local_hash)
@@ -267,6 +328,8 @@ class CloudSync:
         """Replace local data with a downloaded copy, keeping this PC's clipboard and device settings.
         Call on the UI thread (store change listeners update windows)."""
         _check_db(path)
+        if remote_rev is not None:
+            self._save_base(path, remote_rev)
         with self.store.lock:                 # raw values: API keys stay encrypted
             keep_settings = {k: v for k, v in self.store.conn.execute("SELECT key, value FROM settings")
                              if _is_local_key(k)}
@@ -283,6 +346,18 @@ class CloudSync:
         if remote_rev is not None:
             self._remember(remote_rev, content_hash(self.store))
         path.unlink(missing_ok=True)
+
+
+def _strip(path: Path) -> None:
+    """Remove what never leaves this PC: clipboard history and device-only settings."""
+    con = sqlite3.connect(str(path))
+    with con:
+        con.execute("DELETE FROM clipboard")
+        for (k,) in con.execute("SELECT key FROM settings").fetchall():
+            if _is_local_key(k):
+                con.execute("DELETE FROM settings WHERE key=?", (k,))
+    con.execute("VACUUM")
+    con.close()
 
 
 def _check_db(path: Path) -> None:

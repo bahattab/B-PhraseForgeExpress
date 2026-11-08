@@ -2059,6 +2059,7 @@ class MainWindow(QMainWindow):
             a = m.addAction("Show in phrase menu", lambda: self.toggle_popup(id_))
             a.setCheckable(True)
             a.setChecked(bool(f and f.show_in_popup))
+            m.addAction(icon("refresh"), "Dynamic folder...", lambda: self.dynamic_folder(id_))
         else:
             m.addSeparator()
         a = m.addAction(icon("sticky_notes"), "Pin to desktop", lambda: self.pin_to_desktop(id_))
@@ -2670,6 +2671,11 @@ class MainWindow(QMainWindow):
 
     def show_clipboard(self) -> None:
         self.panel.select("clipboard_cache", None)
+
+    def dynamic_folder(self, folder_id: int) -> None:
+        from phraseforge.ui.dynamic_dialog import DynamicFolderDialog
+        DynamicFolderDialog(self.store, folder_id, self).exec()
+        self.refresh_tree()
 
     def show_shared_history(self, phrase_id: int) -> None:
         from phraseforge.ui.shared_dialog import SharedHistoryDialog

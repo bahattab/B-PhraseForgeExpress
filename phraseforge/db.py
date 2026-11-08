@@ -47,6 +47,11 @@ TRIGGER_COLUMNS = ("phrase_id", "folder_id", "special", "kind", "value", "mode",
                    "word_start_only", "enabled", "word_pos", "exec_mode", "lead_delim", "trail_delim",
                    "remove_trailing", "window_scope")
 
+# Change-set sync (cloud/merge.py) recognizes the same folder, phrase or note on two PCs by
+# this id, which never changes and travels with the sync copy. Rows inserted without one get
+# one from the trigger, so no insert statement has to know about it.
+UID_TABLES = ("folders", "phrases", "sticky_notes")
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS folders (
@@ -55,14 +60,14 @@ CREATE TABLE IF NOT EXISTS folders (
   apps_include TEXT DEFAULT '', apps_exclude TEXT DEFAULT '',
   password_hash TEXT DEFAULT '', show_in_popup INTEGER DEFAULT 1, notes TEXT DEFAULT '',
   output_target TEXT DEFAULT 'current', output_target_arg TEXT DEFAULT '',
-  abbrev_prefix TEXT DEFAULT '');
+  abbrev_prefix TEXT DEFAULT '', uid TEXT);
 CREATE TABLE IF NOT EXISTS phrases (
   id INTEGER PRIMARY KEY, folder_id INTEGER REFERENCES folders(id) ON DELETE CASCADE,
   description TEXT NOT NULL, content TEXT DEFAULT '', content_format TEXT DEFAULT 'text',
   output_mode TEXT DEFAULT 'auto', apps_include TEXT DEFAULT '', apps_exclude TEXT DEFAULT '',
   enabled INTEGER DEFAULT 1, sort INTEGER DEFAULT 0, use_count INTEGER DEFAULT 0,
   last_used TEXT, created TEXT, modified TEXT, notes TEXT DEFAULT '',
-  output_target TEXT DEFAULT 'current', output_target_arg TEXT DEFAULT '');
+  output_target TEXT DEFAULT 'current', output_target_arg TEXT DEFAULT '', uid TEXT);
 """ + TRIGGERS_TABLE.format(name="triggers") + """
 CREATE INDEX IF NOT EXISTS ix_triggers_kind ON triggers(kind);
 CREATE TABLE IF NOT EXISTS tags (id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL);
@@ -90,8 +95,13 @@ CREATE TABLE IF NOT EXISTS phrase_quarantine (
 CREATE TABLE IF NOT EXISTS sticky_notes (
   id INTEGER PRIMARY KEY, text TEXT DEFAULT '', html TEXT DEFAULT '', color TEXT DEFAULT 'yellow',
   x INTEGER, y INTEGER, w INTEGER DEFAULT 300, h INTEGER DEFAULT 300,
-  visible INTEGER DEFAULT 1, on_top INTEGER DEFAULT 0, created TEXT, updated TEXT);
-"""
+  visible INTEGER DEFAULT 1, on_top INTEGER DEFAULT 0, created TEXT, updated TEXT, uid TEXT);
+""" + "".join(f"""
+CREATE UNIQUE INDEX IF NOT EXISTS ix_{t}_uid ON {t}(uid);
+UPDATE {t} SET uid=lower(hex(randomblob(16))) WHERE uid IS NULL OR uid='';
+CREATE TRIGGER IF NOT EXISTS {t}_uid AFTER INSERT ON {t} WHEN NEW.uid IS NULL OR NEW.uid='' BEGIN
+  UPDATE {t} SET uid=lower(hex(randomblob(16))) WHERE id=NEW.id; END;
+""" for t in UID_TABLES)
 
 DEFAULT_SETTINGS = {
     "autotext.delimiters": " \t\n.,;:!?)]}'\"",
@@ -131,6 +141,7 @@ DEFAULT_SETTINGS = {
     "ui.language": "en",
     "app.start_with_windows": "0",
     "app.first_run_done": "0",
+    "sync.merge": "1",                    # merge edits made on two PCs (cloud/merge.py)
 }
 
 
@@ -198,7 +209,7 @@ DEVICE_SETTING_PREFIXES = (
     "sync.", "gdrive.", "backup.cloud_", "backup.directory", "ocr.cli_path", "ocr.log_file",
     "app.start_with_windows", "app.first_run_done", "ui.item_colors", "ui.trigger_extras",
     "updates.last_check", "updates.notified_version", "net.", "onenote.exe",
-    "filesearch.actions", "filesearch.commands", "filesearch.roots", "sound.", "shared.",
+    "filesearch.actions", "filesearch.commands", "filesearch.roots", "sound.", "shared.", "dynamic.",
     *sorted(SECRET_SETTINGS))
 DEVICE_SETTING_SUFFIXES = ("_url", "_endpoint", "_path", "_file", ".file", ".exe", "_dir", "_directory")
 
@@ -325,6 +336,10 @@ class Store:
             c.execute("ALTER TABLE phrases ADD COLUMN output_target TEXT DEFAULT 'current'")
         if "output_target_arg" not in cols:
             c.execute("ALTER TABLE phrases ADD COLUMN output_target_arg TEXT DEFAULT ''")
+        for t in UID_TABLES:
+            tc = self._columns(t)
+            if tc and "uid" not in tc:
+                c.execute(f"ALTER TABLE {t} ADD COLUMN uid TEXT")     # SCHEMA fills it in
         tcols = self._columns("triggers")
         if tcols and "folder_id" not in tcols:
             # phrase_id was NOT NULL: SQLite can only relax that by rebuilding the table
