@@ -1031,16 +1031,18 @@ class PhraseForgeApp(QObject):
                     st.set_setting("backup.cloud_last", datetime.now().isoformat(timespec="seconds"))
                 if do_sync:
                     res = cs.sync()
-                    if manual and res.action not in ("pulled", "conflict"):
+                    if manual and res.action not in ("pulled", "merged", "conflict"):
                         msg = {"pushed": "Your phrases were sent to the cloud."}.get(
                             res.action, "Your phrases are up to date.")
                         self.poster.posted.emit(lambda m=msg: self.tray.notify("Send/Receive updates", m))
-                    if res.action in ("pulled", "conflict"):
+                    if res.action in ("pulled", "merged", "conflict"):
                         def on_ui(cs=cs, res=res):
-                            from phraseforge.ui.cloud_ui import handle_sync_result
+                            from phraseforge.ui.cloud_ui import handle_sync_result, merge_message
                             handle_sync_result(self.main_window, cs, res, quiet=True)
                             if res.action == "pulled":
                                 self.tray.notify("PhraseForge", "Phrases updated from the cloud.")
+                            elif res.action == "merged":
+                                self.tray.notify("PhraseForge", merge_message(res))
                         self.poster.posted.emit(on_ui)
             except Exception as e:
                 log.warning("cloud sync failed: %s", e)

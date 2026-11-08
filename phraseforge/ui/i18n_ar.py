@@ -601,6 +601,7 @@ AR_EXTRA = {
     "Back up and synchronize phrases": "النسخ الاحتياطي ومزامنة العبارات",
     "Back up to the cloud every": "النسخ الاحتياطي إلى السحابة كل",
     "Synchronize automatically every": "المزامنة تلقائيًا كل",
+    "When phrases changed on this PC and on another one, merge both sets of changes": "إذا تغيّرت العبارات على هذا الجهاز وعلى جهاز آخر، ادمج التعديلات من الجهازين",
     "minutes, at start and on exit": "دقيقة، وعند البدء والخروج",
     "Synchronize now": "مزامنة الآن",
     "Synchronizing...": "جارٍ المزامنة...",

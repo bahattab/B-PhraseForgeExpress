@@ -139,8 +139,13 @@ publish the app, then add the repository secrets `GOOGLE_CLIENT_ID` and `GOOGLE_
 (step "Built-in Google sign-in client" in `.github/workflows/windows-build.yml`) and users only click **Sign in with Google**. Google does not
 treat a Desktop app client secret as confidential.
 
-Sync runs at start, every N minutes and on exit. If phrases changed on two PCs, nothing
-is overwritten: this PC's copy is saved as a cloud backup and you choose which to keep.
+Sync runs at start, every N minutes and on exit. If phrases changed on two PCs, both sets of
+changes are merged: new phrases from both PCs are kept, and edits to different fields of one
+phrase are combined. When both PCs changed the same text, the newer edit wins and the other
+one stays in the phrase's history. A deleted phrase stays deleted unless the other PC edited
+it. This PC's copy is saved as a cloud backup before every merge. Turn off "merge both sets of
+changes" to be asked which copy to keep instead (also used for the very first sync of a PC
+that already has phrases, and for a cloud copy from a version before 0.7).
 Clipboard history and PC-specific settings are never uploaded.
 
 ## Arabic
