@@ -107,6 +107,7 @@ def test_conflict_keeps_both_and_resolves(tmp_path, remote_factory):
     a.add_phrase(Phrase("Base", "x"))
     sa.sync()
     apply(sb, sb.sync())
+    b.set_setting("sync.merge", "0")          # merging off: ask (tests/test_change_sync.py merges)
     a.add_phrase(Phrase("From A", "a"))
     b.add_phrase(Phrase("From B", "b"))
     assert sa.sync().action == "pushed"

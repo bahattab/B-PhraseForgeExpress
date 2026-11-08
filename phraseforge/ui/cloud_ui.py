@@ -36,12 +36,26 @@ def run_with_wait(parent: QWidget | None, text: str, fn: Callable[[], Any]) -> t
     return ("error" not in box), box.get("value", box.get("error"))
 
 
+def merge_message(res) -> str:
+    """'Merged the changes from PC-2: 2 added, 1 changed. 1 phrase was edited on both PCs ...'"""
+    if res.action != "merged":
+        return res.message
+    s = res.summary or {}
+    parts = [f"{s[k]} {label}" for k, label in (("added", "added"), ("changed", "changed"), ("removed", "removed"))
+             if s.get(k)]
+    text = res.message + (": " + ", ".join(parts) if parts else "") + "."
+    if s.get("conflicts"):
+        text += (f" {s['conflicts']} phrase(s) were edited on both PCs: the newer edit was kept and the "
+                 "other one is in the phrase's history.")
+    return text
+
+
 def handle_sync_result(parent: QWidget | None, cs, res, quiet: bool = False) -> None:
     """Apply a pull, or ask the user how to settle a conflict. Must run on the UI thread."""
-    if res.action == "pulled":
+    if res.action in ("pulled", "merged"):
         cs.apply_pull(res.pulled_file, res.remote_rev)
         if not quiet:
-            QMessageBox.information(parent, "Backup & Sync", res.message)
+            QMessageBox.information(parent, "Backup & Sync", merge_message(res))
     elif res.action == "conflict":
         box = QMessageBox(parent)
         box.setWindowTitle("Backup & Sync")
