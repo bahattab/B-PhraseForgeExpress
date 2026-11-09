@@ -194,6 +194,12 @@ class SignaturesDialog(QDialog):
         self.refresh_preview()
 
     def export_outlook(self, target=None, winreg=None) -> list:
+        from phraseforge import paths
+        if target is None and paths.is_portable():
+            QMessageBox.information(self, tr("Signatures"), tr(
+                "Exporting to Outlook is not available in portable mode: Outlook's signature folder is in "
+                "this PC's user profile. Copy the signature text instead."))
+            return []
         if not signatures.signatures(self.store):
             QMessageBox.information(self, tr("Signatures"), tr("There are no signatures yet."))
             return []

@@ -807,6 +807,10 @@ class SettingsDialog(QDialog):
         g, gl = _group("Startup")
         self.start_with_windows = self.bind("app.start_with_windows", QCheckBox(f"Start {APP} with Windows"))
         gl.addWidget(self.start_with_windows)
+        if paths.is_portable():                  # it would write this PC's registry
+            self.start_with_windows.setEnabled(False)
+            self.start_with_windows.setToolTip("Not available in portable mode: it would write to this PC's "
+                                               "registry. Start PhraseForge from the stick instead.")
         gl.addWidget(self.bind("app.diagnostic_mode", QCheckBox("Diagnostic mode")))
         gl.addWidget(self.bind("updates.auto_check",
                                QCheckBox(f"Check GitHub for new versions of {APP} automatically (once a day)")))

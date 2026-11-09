@@ -239,6 +239,9 @@ def export_outlook(store, expand: Callable[[str, str], str], target: str | Path 
                    ids: list[int] | None = None, today: date | None = None) -> list[Path]:
     """Write each signature (macros run by expand(content, format) -> text or HTML) as
     <name>.htm, .rtf and .txt into Outlook's signature folder. Returns the .htm paths."""
+    if target is None:                       # Outlook's own folder is in %APPDATA%
+        from phraseforge.paths import refuse_in_portable
+        refuse_in_portable("Exporting signatures to Outlook")
     from phraseforge import rtf
     from phraseforge.macros.engine import html_to_text
     out_dir = Path(target) if target else outlook_dir()
@@ -276,6 +279,9 @@ def set_outlook_default(name: str, new: bool = True, reply: bool = True, winreg=
     """Make an exported signature Outlook's default for new mail and/or replies
     (HKCU MailSettings NewSignature / ReplySignature; Outlook 2016 and later).
     `name` is the file name export_outlook() used (outlook_names()), without extension."""
+    if winreg is None:                       # the real registry (tests pass a stand-in)
+        from phraseforge.paths import refuse_in_portable
+        refuse_in_portable("Setting Outlook's default signature")
     if winreg is None:
         import winreg  # type: ignore
     key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, OUTLOOK_MAIL_SETTINGS)

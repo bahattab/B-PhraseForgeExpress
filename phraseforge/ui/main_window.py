@@ -433,7 +433,8 @@ class MainWindow(QMainWindow):
         self.on_test_phrase = on_test_phrase
         self.on_command = on_command        # app-level commands (OneNote, OCR, Search files)
         from phraseforge import __version__
-        self.setWindowTitle(f"PhraseForge v{__version__}")
+        from phraseforge import paths
+        self.setWindowTitle(f"PhraseForge v{__version__}" + (" " + tr("(portable)") if paths.is_portable() else ""))
         try:
             from phraseforge.ui.icons import app_icon
             self.setWindowIcon(app_icon())
@@ -771,6 +772,7 @@ class MainWindow(QMainWindow):
         mig = big_submenu(m, [("Save settings and phrases into migration file", "save_as", self.migration_save, True),
                               ("Restore settings and phrases from migration file", "restore", self.migration_restore, True)])
         m.add("Migration Assistant", "migration", mig)
+        m.add("Maintenance", "settings", self.show_maintenance)
         m.addSeparator()
         m.add("Exit", "exit", self.close)
         self.file_menu = m
@@ -1735,6 +1737,14 @@ class MainWindow(QMainWindow):
         else:
             lib = mgr.library_of_folder(id_)
         return lib is not None and not lib.writable
+
+    def show_maintenance(self) -> None:
+        from phraseforge.ui.maintenance_dialog import MaintenanceDialog
+        self.save_current()
+        dlg = MaintenanceDialog(self.store, self, self.store.setting("backup.directory", "") or None)
+        dlg.show_phrase.connect(lambda pid: (self.refresh_tree(), self.select_phrase(pid)))
+        dlg.exec()
+        self.refresh_tree()
 
     def show_libraries(self) -> None:
         from phraseforge.ui.libraries_dialog import LibrariesDialog

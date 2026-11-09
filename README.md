@@ -14,6 +14,13 @@ Download from the repository's **Releases** page (or the latest *Windows build* 
   optional desktop shortcut and "start with Windows". Uninstall from Windows Settings > Apps.
   Your phrases in `%APPDATA%\PhraseForge` are kept when you uninstall.
 - `B-PhraseForgeExpress-portable.exe`: single file, no install. Starts a little slower.
+  It is **portable**: all its data (phrases, settings, backups, dictionaries, logs) goes into a
+  `PhraseForgeData` folder next to the EXE, so it can run from a USB stick, and it writes
+  nothing to `%APPDATA%` or the registry. For that reason "Start with Windows" and "Export
+  signatures to Outlook" are switched off there. Any copy becomes portable with a file
+  `portable.ini` next to it or the `--portable` switch; `--home <folder>` uses any data folder.
+  On another PC, keys saved under Windows' protection (AI keys, an encrypted phrase file
+  without a passphrase) cannot be opened: give an encrypted portable phrase file a passphrase.
 - `B-PhraseForgeExpress-<version>-win64.zip`: the same program as a folder.
 
 Windows SmartScreen may warn because the files are not code-signed: click
@@ -194,6 +201,16 @@ history and the log. "Save As" database copies ask whether to stay encrypted.
 Settings > Display > User Interface Language > Arabic turns the whole interface right to left.
 The Arabic user guide is [docs/USER_GUIDE.ar.md](docs/USER_GUIDE.ar.md) (also under Help in the program).
 Phrases can hold one version per language; dates can be Hijri with Arabic digits.
+
+## Maintenance
+
+File > **Maintenance** has three tabs:
+- **Duplicates:** phrases with the same text in any folder, and abbreviations used by more than
+  one phrase. Select the extra ones and move them to the Trash.
+- **Compare with backup:** what was added, removed or changed since a backup (or between two
+  backup files, encrypted ones included). "Bring back the backup's version" adds the old phrase
+  again next to the current one (it needs approval again before privileged macros run).
+- **Database:** check the phrase file for damage, and compact it.
 
 ## Phrase libraries
 
