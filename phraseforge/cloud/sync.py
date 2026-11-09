@@ -195,6 +195,21 @@ class CloudSync:
         self.device = device or store.setting("sync.device", "") or socket.gethostname()
 
     # ---------------------------------------------------- snapshots
+    def _discard(self, path: Path | None) -> None:
+        """Remove a plain temp copy and its -wal/-shm files. While the phrase file is encrypted,
+        the copy is overwritten first, so the phrases are not left in %TEMP% (R66, R75)."""
+        if path is None:
+            return
+        from phraseforge import vault
+        for f in (Path(path), Path(str(path) + "-wal"), Path(str(path) + "-shm"), Path(str(path) + "-journal")):
+            try:
+                if self.store.vault_key is not None and not vault.is_encrypted(f):
+                    vault.wipe(f)
+                else:
+                    f.unlink(missing_ok=True)
+            except OSError as e:
+                log.warning("could not remove %s: %s", f, e)
+
     def _snapshot(self) -> Path:
         """Copy of the database without clipboard history and device-only settings."""
         fd, name = tempfile.mkstemp(prefix="pf-snap-", suffix=".db")
@@ -288,7 +303,7 @@ class CloudSync:
             name = f"{BACKUP_PREFIX}{stamp}-{safe_dev}.db"
             self._upload(snap, name, {"kind": "backup", "device": self.device, "created": stamp})
         finally:
-            snap.unlink(missing_ok=True)
+            self._discard(snap)
         backups = sorted((f for f in self.remote.list() if f.name.startswith(BACKUP_PREFIX)),
                          key=lambda f: f.name, reverse=True)
         for old in backups[max(1, keep):]:
@@ -321,7 +336,7 @@ class CloudSync:
                                 "not used. Upload this PC's phrases to replace it, or turn encryption off.")
             _check_db(path)
         except BaseException:
-            path.unlink(missing_ok=True)
+            self._discard(path)
             raise
         return path
 
@@ -405,9 +420,9 @@ class CloudSync:
             who = remote.props.get("device", "another PC")
             return SyncResult("merged", f"Merged the changes from {who}", out, rev, m.summary)
         finally:
-            theirs.unlink(missing_ok=True)
+            self._discard(theirs)
             if mine is not None:
-                mine.unlink(missing_ok=True)
+                self._discard(mine)
 
     def _push(self, rev: int, local_hash: str) -> SyncResult:
         snap = self._snapshot()
@@ -416,7 +431,7 @@ class CloudSync:
                                               "modified": datetime.now().isoformat(timespec="seconds")})
             self._save_base(snap, rev)
         finally:
-            snap.unlink(missing_ok=True)
+            self._discard(snap)
         self._remember(rev, local_hash)
         return SyncResult("pushed", f"Uploaded to {self.remote.label}", remote_rev=rev)
 
@@ -463,7 +478,7 @@ class CloudSync:
                 self.store.conn.execute("INSERT INTO clipboard (text,created,source_app,pinned) VALUES (?,?,?,?)", row)
         if remote_rev is not None:
             self._remember(remote_rev, content_hash(self.store))
-        path.unlink(missing_ok=True)
+        self._discard(path)
 
 
 def _strip(path: Path) -> None:

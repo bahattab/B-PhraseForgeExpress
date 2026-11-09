@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
-    QDialog, QDialogButtonBox, QFormLayout, QInputDialog, QLabel, QLineEdit, QMessageBox, QRadioButton,
+    QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QInputDialog, QLabel, QLineEdit, QMessageBox, QRadioButton,
     QVBoxLayout, QWidget,
 )
 
@@ -32,8 +32,17 @@ class EncryptionDialog(QDialog):
         intro = QLabel(tr("Encryption keeps your phrases unreadable if someone copies the phrase file or "
                           "takes the disk. PhraseForge works on the phrases in memory and saves them "
                           "encrypted (AES-256). Backups made on this PC are encrypted too."))
+        # what this does not cover, said where the choice is made (R66, R73)
+        cloud = (tr("What Backup & Sync uploads is encrypted with the sync passphrase.")
+                 if store.setting("sync.encrypt", "0") == "1" else
+                 tr("What Backup & Sync uploads is NOT encrypted: turn on \"Encrypt what is uploaded\" "
+                    "in Settings > Backup & Sync."))
+        self.scope = QLabel(cloud + " " + tr("Not encrypted: the learned words, imported images (the assets "
+                                              "folder), the file search history and the log."))
+        self.scope.setWordWrap(True)
         intro.setWordWrap(True)
         lay.addWidget(intro)
+        lay.addWidget(self.scope)
         self.status = QLabel(status_text(store))
         self.status.setWordWrap(True)
         lay.addWidget(self.status)
@@ -47,13 +56,20 @@ class EncryptionDialog(QDialog):
         lay.addWidget(self.auto)
         lay.addWidget(self.ask)
         form = QFormLayout()
+        self.has_pass = bool(k is not None and k.has_passphrase)
+        self.current = QLineEdit()           # changing or removing a passphrase needs it (R69)
         self.pass1 = QLineEdit()
         self.pass2 = QLineEdit()
-        for e in (self.pass1, self.pass2):
+        for e in (self.current, self.pass1, self.pass2):
             e.setEchoMode(QLineEdit.Password)
-        form.addRow(tr("Passphrase:"), self.pass1)
+        if self.has_pass:
+            form.addRow(tr("Current passphrase:"), self.current)
+        form.addRow(tr("New passphrase:") if self.has_pass else tr("Passphrase:"), self.pass1)
         form.addRow(tr("Repeat it:"), self.pass2)
         lay.addLayout(form)
+        self.remove_pass = QCheckBox(tr("Remove the passphrase (the file then opens only for my Windows account)"))
+        self.remove_pass.setVisible(self.has_pass)
+        lay.addWidget(self.remove_pass)
         self.hint = QLabel("")
         self.hint.setWordWrap(True)
         lay.addWidget(self.hint)
@@ -75,14 +91,37 @@ class EncryptionDialog(QDialog):
         self._update_hint()
 
     def _update_hint(self) -> None:
+        self.remove_pass.setEnabled(self.auto.isChecked())
+        if self.has_pass:
+            self.hint.setText(tr("Leave the new passphrase empty to keep the current one."))
+            return
         self.hint.setText(tr("Optional: a passphrase also opens the file on another PC.") if self.auto.isChecked()
                           else tr("Required: at least {n} characters.").format(n=MIN_PASSPHRASE))
 
+    def _removing(self) -> bool:
+        return self.has_pass and self.auto.isChecked() and self.remove_pass.isChecked()
+
+    def new_passphrase(self) -> str | None:
+        """What the file is wrapped with: the new one, else the current one is kept, unless
+        "Remove the passphrase" is ticked. Empty fields never drop it silently (R69)."""
+        if self.pass1.text():
+            return self.pass1.text()
+        if self.has_pass and not self._removing():
+            return self.current.text()
+        return None
+
+    def _current_ok(self) -> bool:
+        return not self.has_pass or self.store.check_passphrase(self.current.text())
+
     def problem(self) -> str:
         p1, p2 = self.pass1.text(), self.pass2.text()
+        if not self._current_ok():
+            return tr("The current passphrase is wrong.")
         if p1 != p2:
             return tr("The two passphrases are not the same.")
-        if (self.ask.isChecked() or p1) and len(p1) < MIN_PASSPHRASE:
+        if p1 and len(p1) < MIN_PASSPHRASE:
+            return tr("The passphrase needs at least {n} characters.").format(n=MIN_PASSPHRASE)
+        if self.ask.isChecked() and not self.new_passphrase():
             return tr("The passphrase needs at least {n} characters.").format(n=MIN_PASSPHRASE)
         return ""
 
@@ -91,15 +130,27 @@ class EncryptionDialog(QDialog):
         if err:
             QMessageBox.warning(self, self.windowTitle(), err)
             return False
+        if self._removing() and QMessageBox.question(
+                self, self.windowTitle(), tr("Remove the passphrase? The phrase file then opens only for your "
+                                             "Windows account on this PC.")) != QMessageBox.Yes:
+            return False
         try:
-            self.store.enable_encryption(self.pass1.text() or None, use_dpapi=self.auto.isChecked())
+            left = self.store.enable_encryption(self.new_passphrase(), use_dpapi=self.auto.isChecked())
         except Exception as e:
             QMessageBox.warning(self, self.windowTitle(), str(e))
             return False
+        if left:                              # older copies under a passphrase this PC no longer knows
+            QMessageBox.information(self, self.windowTitle(), tr(
+                "{n} older backups could not be re-encrypted and still open with their old passphrase. "
+                "Delete them if that passphrase is no longer safe:").format(n=len(left))
+                + "\n" + "\n".join(str(f) for f in left[:10]))
         self.accept()
         return True
 
     def turn_off(self) -> None:
+        if not self._current_ok():
+            QMessageBox.warning(self, self.windowTitle(), tr("The current passphrase is wrong."))
+            return
         if QMessageBox.question(self, self.windowTitle(),
                                 tr("Save the phrase file without encryption again?")) != QMessageBox.Yes:
             return
@@ -123,4 +174,14 @@ def ask_passphrase(path: str, parent: QWidget | None = None, attempts: int = 3):
             return Store(path, passphrase=text)
         except vault.WrongPassphrase:
             msg = tr("Wrong passphrase. Try again:")
+        except vault.VaultError as e:        # a damaged file: say so instead of crashing (R68)
+            QMessageBox.critical(parent, "PhraseForge", f"{tr(str(e))}\n\n{path}")
+            return None
     return None
+
+
+def ask_copy_passphrase(parent: QWidget | None = None) -> str | None:
+    """The passphrase of an encrypted backup made under an earlier key (R72)."""
+    text, ok = QInputDialog.getText(parent, "PhraseForge", tr("This backup is encrypted. Enter its passphrase:"),
+                                    QLineEdit.Password)
+    return text if ok else None
