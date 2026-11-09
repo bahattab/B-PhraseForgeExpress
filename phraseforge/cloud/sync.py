@@ -243,11 +243,22 @@ class CloudSync:
                             "(Settings > Backup & Sync).")
         return pw
 
+    HASH_KEY_SALT = b"PhraseForge.sync.prophash.v1"   # fixed: every PC must get the same key
+
     def _prop_hash(self, h: str) -> str:
         """The content hash shown in the cloud's file properties; keyed when encrypted, so the
-        hash of a guessed phrase list cannot be checked against it."""
+        hash of a guessed phrase list cannot be checked against it. The key comes from the
+        passphrase through scrypt (slow on purpose), never from a fast hash of it."""
         pw = self.passphrase
-        return hashlib.sha256(f"{pw}|{h}".encode("utf-8")).hexdigest() if pw else h
+        if not pw:
+            return h
+        import hmac
+        if getattr(self, "_hash_key_for", None) != pw:
+            from phraseforge import vault
+            self._hash_key = hashlib.scrypt(pw.encode("utf-8"), salt=self.HASH_KEY_SALT, n=vault.SCRYPT_N,
+                                            r=vault.SCRYPT_R, p=vault.SCRYPT_P, maxmem=256 * 1024 * 1024, dklen=32)
+            self._hash_key_for = pw
+        return hmac.new(self._hash_key, h.encode("utf-8"), hashlib.sha256).hexdigest()
 
     def _upload(self, local: Path, name: str, props: dict) -> None:
         pw = self.passphrase
