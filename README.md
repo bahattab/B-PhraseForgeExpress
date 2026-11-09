@@ -162,8 +162,12 @@ moment after every change. The key is random and protected by Windows for your a
 file opens without a question on this PC. A passphrase is optional: it opens the file on another
 PC or after Windows was reinstalled. Or choose "Ask for the passphrase every time PhraseForge
 starts": then only the passphrase opens it. Write it down; nobody can recover it.
-Local backups are encrypted the same way. Not covered: the copy that Backup & Sync uploads (it is
-as readable as before), "Save As" database copies, and the learning statistics file.
+Local backups are encrypted the same way, including those made before encryption was turned on.
+Changing the passphrase, or switching to "ask every time", gives the file a new key and
+re-encrypts the local backups with it, so an old copy no longer opens the current file.
+The Backup & Sync copies are encrypted only with "Encrypt what is uploaded" (Settings > Backup &
+Sync). Not covered: the learned words, imported images (the `assets` folder), the file search
+history and the log. "Save As" database copies ask whether to stay encrypted.
 
 ## Arabic
 

@@ -2231,10 +2231,27 @@ class MainWindow(QMainWindow):
             if QMessageBox.question(self, "Open", "Replace all current phrases with this phrase file?") \
                     != QMessageBox.Yes:
                 return
-            self.store.restore_from(path, untrusted="imported")
+            try:
+                self._restore(path, untrusted="imported")
+            except Exception as e:
+                QMessageBox.warning(self, "Open", str(e))
             self.refresh_tree()
         else:
             self._import_path(path)
+
+    def _restore(self, path, untrusted: str | None = None) -> bool:
+        """restore_from, asking for the passphrase of a copy encrypted under an earlier key (R72)."""
+        from phraseforge import vault
+        try:
+            self.store.restore_from(path, untrusted=untrusted)
+            return True
+        except vault.NeedPassphrase:
+            from phraseforge.ui.encryption_dialog import ask_copy_passphrase
+            pw = ask_copy_passphrase(self)
+            if pw is None:
+                return False
+            self.store.restore_from(path, untrusted=untrusted, passphrase=pw)
+            return True
 
     def save_as(self) -> None:
         self.save_current()
@@ -2244,7 +2261,11 @@ class MainWindow(QMainWindow):
             return
         try:
             if path.lower().endswith(".db"):
-                self.store.backup_to(path)
+                # an encrypted phrase file's copy stays encrypted unless the user says otherwise (R71)
+                keep = self.store.encrypted and QMessageBox.question(
+                    self, "Save As", tr("The phrase file is encrypted. Save the copy encrypted too? "
+                                        "(No saves it unencrypted.)")) == QMessageBox.Yes
+                self.store.backup_to(path, keep_encryption=keep)
             else:
                 from phraseforge import io_formats
                 io_formats.export_json(self.store, path)
@@ -2300,7 +2321,8 @@ class MainWindow(QMainWindow):
                                 "Replace all current phrases with the selected backup?") != QMessageBox.Yes:
             return
         try:
-            self.store.restore_from(dlg.selected())
+            if not self._restore(dlg.selected()):
+                return
             self._set_selection("", None)
             self.editor_stack.setCurrentWidget(self.blank)
             self.refresh_tree()

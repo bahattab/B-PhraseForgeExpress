@@ -1048,7 +1048,8 @@ def test_encrypting_wipes_the_plain_sync_base(tmp_path):
         store.enable_encryption(passphrase="pw", use_dpapi=False)
     except vault.VaultError as e:
         pytest.skip(f"encryption not available here: {e}")
-    assert not base.exists()
+    # since 0.6.9 the base is encrypted in place (R64), so the next merge can still use it
+    assert vault.is_encrypted(base) and b"victim text" not in base.read_bytes()
     store.close()
 
 
@@ -1230,3 +1231,294 @@ def test_an_empty_read_keeps_the_dynamic_phrases(tmp_path):
     with pytest.raises(dynamic.DynamicError):
         dynamic.refresh(store, fid)
     assert len(store.phrases(fid)) == 2
+
+
+# ---------------------------------------------------------------- 0.6.9: review of #38 (R63–R75)
+@pytest.fixture
+def vault_env(monkeypatch):
+    from phraseforge import vault
+    monkeypatch.setattr(vault, "FAKE_DPAPI_FOR_TESTS", True)
+    monkeypatch.setattr(Store, "FLUSH_SECONDS", 0.05)
+    return vault
+
+
+SECRET69 = "R63 secret phrase text"
+
+
+def _enc_store(tmp_path, vault, passphrase="old-passphrase", use_dpapi=True):
+    from phraseforge.models import Phrase
+    s = Store(tmp_path / "phrases.db")
+    s.add_phrase(Phrase("Secret", SECRET69))
+    s.enable_encryption(passphrase, use_dpapi=use_dpapi)
+    return s
+
+
+def test_changing_the_passphrase_gives_the_file_a_new_key(tmp_path, vault_env):
+    """R63: the data key never changed, so a copy taken before (old passphrase or DPAPI entry)
+    still unlocked the current file, and "ask every start" could be bypassed."""
+    vault = vault_env
+    s = _enc_store(tmp_path, vault)
+    stolen = tmp_path / "stolen-copy.db"
+    stolen.write_bytes((tmp_path / "phrases.db").read_bytes())
+    s.change_passphrase("new-passphrase", use_dpapi=False)
+    s.close()
+    old_key = vault.unlock(vault.header_of(stolen))            # the old copy's DPAPI entry
+    with pytest.raises(vault.VaultError):
+        vault.decrypt((tmp_path / "phrases.db").read_bytes(), old_key)
+    old_pass = vault.unlock(vault.header_of(stolen), "old-passphrase")
+    with pytest.raises(vault.VaultError):
+        vault.decrypt((tmp_path / "phrases.db").read_bytes(), old_pass)
+
+
+def test_changing_the_passphrase_reencrypts_the_local_backups(tmp_path, vault_env):
+    """R63: a backup kept its DPAPI entry after the switch to "ask every start"."""
+    from phraseforge import io_formats
+    vault = vault_env
+    s = _enc_store(tmp_path, vault)
+    b = io_formats.backup(s, tmp_path / "backups")
+    assert vault.header_of(b)["wraps"].keys() == {"dpapi", "pass"}
+    s.change_passphrase("new-passphrase", use_dpapi=False)
+    assert set(vault.header_of(b)["wraps"]) == {"pass"}
+    with pytest.raises(vault.NeedPassphrase):
+        vault.unlock(vault.header_of(b))
+    assert vault.connect(b, passphrase="new-passphrase").execute("SELECT count(*) FROM phrases").fetchone()[0] == 1
+    s.close()
+
+
+def test_turning_encryption_on_encrypts_older_plain_backups(tmp_path, vault_env):
+    """R64: backups made before encryption stayed plain although the dialog said they were encrypted."""
+    from phraseforge import io_formats
+    from phraseforge.models import Phrase
+    vault = vault_env
+    s = Store(tmp_path / "phrases.db")
+    s.add_phrase(Phrase("Secret", SECRET69))
+    b = io_formats.backup(s, tmp_path / "backups")
+    assert SECRET69.encode() in b.read_bytes()
+    s.enable_encryption("old-passphrase")
+    assert vault.is_encrypted(b) and SECRET69.encode() not in b.read_bytes()
+    assert not list((tmp_path / "backups").glob("*.plain-old"))
+    s.close()
+
+
+def test_a_crash_while_encrypting_does_not_open_an_empty_file(tmp_path, vault_env):
+    """R65: a crash after the plain file was wiped left only phrases.db.enc; the next start
+    created a new, empty phrase file."""
+    from phraseforge.models import Phrase
+    vault = vault_env
+    s = Store(tmp_path / "x.db")
+    s.add_phrase(Phrase("Secret", SECRET69))
+    data = s.conn.serialize()
+    s.close()
+    db = tmp_path / "phrases.db"
+    vault.write(str(db) + ".enc", data, vault.Key.new("old-passphrase"))   # what the crash left
+    s2 = Store(db)
+    assert [p.content for p in s2.phrases()] == [SECRET69]
+    s2.close()
+
+
+def test_a_failed_switch_to_encryption_keeps_the_store_usable(tmp_path, vault_env, monkeypatch):
+    """R65: a failure in the middle (antivirus lock) left a closed store and no phrase file."""
+    import os as _os
+    s = Store(tmp_path / "phrases.db")
+    from phraseforge.models import Phrase
+    s.add_phrase(Phrase("Secret", SECRET69))
+    real = _os.replace
+
+    def flaky(a, b):
+        if str(a).endswith(".enc"):
+            raise PermissionError("locked by another program")
+        return real(a, b)
+    monkeypatch.setattr("phraseforge.db.os.replace", flaky)
+    with pytest.raises(OSError):
+        s.enable_encryption("old-passphrase")
+    monkeypatch.setattr("phraseforge.db.os.replace", real)
+    assert [p.content for p in s.phrases()] == [SECRET69]
+    s.close()
+    assert [p.content for p in Store(tmp_path / "phrases.db").phrases()] == [SECRET69]
+
+
+def test_plain_sync_temp_copies_are_overwritten_when_encrypted(tmp_path, vault_env, monkeypatch):
+    """R66: the plain snapshot uploaded by Backup & Sync was only unlinked in %TEMP%."""
+    from phraseforge.cloud.sync import CloudSync, FolderRemote
+    vault = vault_env
+    s = _enc_store(tmp_path, vault)
+    wiped = []
+    real = vault.wipe
+    monkeypatch.setattr(vault, "wipe", lambda p: (wiped.append(str(p)), real(p)))
+    CloudSync(s, FolderRemote(tmp_path / "cloud")).backup_now()
+    assert any("pf-snap-" in w for w in wiped)
+    s.close()
+
+
+def test_the_decrypted_database_keeps_temp_data_in_memory(tmp_path, vault_env):
+    """R67: sorts and VACUUM of the in-memory database spilled plain pages to %TEMP%."""
+    vault = vault_env
+    s = _enc_store(tmp_path, vault)
+    assert s.conn.execute("PRAGMA temp_store").fetchone()[0] == 2
+    s.close()
+
+
+@pytest.mark.parametrize("header", [b"[]", b'{"wraps": []}',
+                                    b'{"wraps": {"pass": {"n": 16384, "r": 8, "p": 64}}}',
+                                    b'{"wraps": {"pass": {"n": 1048576, "r": 8, "p": 1, "salt": "", "nonce": "", "ct": ""}}}'])
+def test_a_damaged_header_gives_a_vault_error(tmp_path, vault_env, header):
+    """R68: a malformed header crashed the start (AttributeError/KeyError); p was unbounded."""
+    import struct
+    vault = vault_env
+    f = tmp_path / "bad.db"
+    f.write_bytes(vault.MAGIC + struct.pack(">I", len(header)) + header + bytes(40))
+    with pytest.raises(vault.VaultError):
+        vault.read(f, passphrase="whatever-pass")
+
+
+def test_change_with_empty_fields_keeps_the_passphrase(tmp_path, vault_env):
+    """R69: "Change" with the passphrase fields empty silently removed the recovery passphrase,
+    and the current passphrase was never asked for."""
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from phraseforge.ui.encryption_dialog import EncryptionDialog
+    vault = vault_env
+    s = _enc_store(tmp_path, vault)
+    dlg = EncryptionDialog(s)
+    assert dlg.problem()                        # the current passphrase is required
+    dlg.current.setText("old-passphrase")
+    assert dlg.apply()
+    assert s.vault_key.has_passphrase
+    assert s.check_passphrase("old-passphrase")
+    s.close()
+
+
+def test_a_plain_file_put_back_is_reported(tmp_path, vault_env):
+    """R70: a plain copy restored in place of the encrypted file opened silently."""
+    from phraseforge.models import Phrase
+    s = Store(tmp_path / "phrases.db")
+    s.add_phrase(Phrase("Secret", SECRET69))
+    plain = tmp_path / "old.db"
+    s.backup_to(plain)
+    s.enable_encryption("old-passphrase")
+    s.close()
+    (tmp_path / "phrases.db").write_bytes(plain.read_bytes())
+    s2 = Store(tmp_path / "phrases.db")
+    assert not s2.encrypted and s2.vault_warning
+    s2.close()
+
+
+def test_an_older_copy_cannot_undo_ask_every_start(tmp_path, vault_env):
+    """R70: an older file with a DPAPI entry opened without the passphrase in "ask" mode."""
+    vault = vault_env
+    s = _enc_store(tmp_path, vault)
+    older = (tmp_path / "phrases.db").read_bytes()
+    s.change_passphrase("new-passphrase", use_dpapi=False)
+    s.close()
+    (tmp_path / "phrases.db").write_bytes(older)
+    s2 = Store(tmp_path / "phrases.db")
+    assert s2.vault_warning
+    s2.flush()
+    assert "dpapi" not in vault.header_of(tmp_path / "phrases.db")["wraps"]
+    s2.close()
+
+
+def test_save_as_database_copy_keeps_encryption(tmp_path, vault_env, monkeypatch):
+    """R71: File > Save As "Database copy" wrote every phrase in plain text."""
+    from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
+    QApplication.instance() or QApplication([])
+    from phraseforge.ui.main_window import MainWindow
+    vault = vault_env
+    s = _enc_store(tmp_path, vault)
+    out = tmp_path / "copy.db"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(out), "")))
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+    w = MainWindow(s)
+    w.save_as()
+    w.close()
+    assert vault.is_encrypted(out) and SECRET69.encode() not in out.read_bytes()
+    s.close()
+
+
+def test_an_older_encrypted_backup_can_be_restored(tmp_path, vault_env):
+    """R72: after encryption was turned off and on, older encrypted backups failed to restore."""
+    from phraseforge import io_formats
+    vault = vault_env
+    s = _enc_store(tmp_path, vault)
+    b = tmp_path / "keep" / "phrases-old.db"
+    b.parent.mkdir()
+    s.backup_to(b, keep_encryption=True)
+    s.disable_encryption()
+    s.enable_encryption("other-passphrase")
+    s.restore_from(b)
+    assert [p.content for p in s.phrases()] == [SECRET69]
+    s.close()
+    assert io_formats is not None
+
+
+def test_skipped_phrases_are_logged_without_their_name(tmp_path, caplog):
+    """R73: the log (never encrypted) held phrase names."""
+    from phraseforge.models import Phrase
+    s = Store(tmp_path / "phrases.db")
+    p = s.add_phrase(Phrase("Salary of Ahmed", "x"))
+    with caplog.at_level("INFO"):
+        appmod._skipped_phrase(_App(s), p, "not approved")
+    assert "Salary of Ahmed" not in caplog.text
+    s.close()
+
+
+def test_passphrases_are_unicode_normalised_and_scrypt_is_stronger(tmp_path, vault_env):
+    """R74: a passphrase typed with combining marks did not match; N was 2^15."""
+    import unicodedata
+    vault = vault_env
+    nfc = unicodedata.normalize("NFC", "مُحَمَّد-café-2026")
+    nfd = unicodedata.normalize("NFD", nfc)
+    assert nfc != nfd
+    k = vault.Key.new(nfc, use_dpapi=False)
+    assert k.wraps["pass"]["n"] >= 2 ** 17
+    assert vault.unlock({"wraps": k.wraps}, nfd).dek == k.dek
+
+
+def test_the_key_is_not_printed_and_save_failures_are_reported(tmp_path, vault_env, monkeypatch):
+    """R75: repr(Key) printed the data key; a failing save was only logged."""
+    vault = vault_env
+    k = vault.Key.new("old-passphrase")
+    assert repr(k.dek) not in repr(k)
+    s = _enc_store(tmp_path, vault)
+    errors = []
+    s.on_flush_error = errors.append
+    monkeypatch.setattr(vault, "write", lambda *a, **kw: (_ for _ in ()).throw(OSError("disk full")))
+    from phraseforge.models import Phrase
+    s.add_phrase(Phrase("Later", "y"))
+    import time as _t
+    _t.sleep(0.4)
+    assert errors and "disk full" in errors[0] and len(errors) == 1
+    monkeypatch.undo()
+    s._stop_flusher()
+
+
+def test_a_plain_sync_base_part_is_wiped_on_encrypt(tmp_path, vault_env):
+    """R75: a plain .sync-base.part left by a crash stayed next to the encrypted file."""
+    from phraseforge.models import Phrase
+    s = Store(tmp_path / "phrases.db")
+    s.add_phrase(Phrase("Secret", SECRET69))
+    part = tmp_path / "phrases.sync-base.part"
+    s.backup_to(part)
+    s.enable_encryption("old-passphrase")
+    assert not part.exists()
+    s.close()
+
+
+def test_recovery_never_deletes_an_encrypted_leftover(tmp_path, vault_env):
+    """R65: an older version may already have made a new, empty file next to the only copy."""
+    vault = vault_env
+    s = Store(tmp_path / "x.db")
+    from phraseforge.models import Phrase
+    s.add_phrase(Phrase("Secret", SECRET69))
+    data = s.conn.serialize()
+    s.close()
+    db = tmp_path / "phrases.db"
+    vault.write(str(db) + ".enc", data, vault.Key.new("old-passphrase"))
+    import sqlite3 as _sq                   # the empty file an older start created
+    c = _sq.connect(db)
+    c.execute("CREATE TABLE t (x)")
+    c.commit()
+    c.close()
+    Store(db).close()
+    kept = tmp_path / "phrases.db.enc.recovered"
+    assert kept.exists() and vault.is_encrypted(kept)
