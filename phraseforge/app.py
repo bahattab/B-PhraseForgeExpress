@@ -1774,8 +1774,18 @@ class PhraseForgeApp(QObject):
             from phraseforge.platform.windows import focused_is_password
         except Exception:
             focused_is_password = None
+
+        def skip_key() -> bool:
+            """Keys not to record: a password field, or any PhraseForge window (its folder
+            password prompt, the editor), whose text is not something to replay (R50)."""
+            try:
+                if user32 and _is_own_window(user32.GetForegroundWindow()):
+                    return True
+            except Exception:
+                pass
+            return bool(focused_is_password and focused_is_password())
         self._recording = RecordingController(self.store, self._recorded, post=self.poster.posted.emit,
-                                              triggers=self.triggers, password_check=focused_is_password)
+                                              triggers=self.triggers, password_check=skip_key)
         self._recording.start()
 
     def _recorded(self, text: str):

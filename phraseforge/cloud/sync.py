@@ -293,13 +293,17 @@ class CloudSync:
             except Exception as e:     # an old copy without uids, a damaged or locked base
                 log.info("cannot merge, asking instead: %s", e)
                 return None
-            m = mg.merge(b, loc, rem)
-            ms = Store(mine)
             try:
-                mg.apply(ms, loc, rem, m)
-                h = content_hash(ms)
-            finally:
-                ms.close()
+                m = mg.merge(b, loc, rem)
+                ms = Store(mine)
+                try:
+                    mg.apply(ms, loc, rem, m)
+                    h = content_hash(ms)
+                finally:
+                    ms.close()
+            except Exception as e:     # bad values in the other copy must not block every sync (R52)
+                log.warning("cannot merge, asking instead: %s", e)
+                return None
             _strip(mine)
             rev = remote_rev + 1
             self.remote.put(mine, SYNC_NAME, {"rev": rev, "hash": h, "device": self.device,
@@ -332,10 +336,23 @@ class CloudSync:
         path = self.download(SYNC_NAME)
         return SyncResult("pulled", "Replaced with the cloud copy", path, rev)
 
+    def _local_backup(self) -> None:
+        """A copy of this PC's phrases next to the phrase file, made before a pull replaces them:
+        the cloud backups sit where the other copy came from, so a pull that deletes everything
+        must have a way back that the cloud cannot touch (R56)."""
+        if self.store.path == ":memory:":
+            return
+        p = Path(self.store.path)
+        try:
+            self.store.backup_to(p.with_name(p.stem + ".before-sync.db"), keep_encryption=True)
+        except Exception as e:                    # never block the pull over this
+            log.warning("local backup before the pull failed: %s", e)
+
     def apply_pull(self, path: Path, remote_rev: int | None = None) -> None:
         """Replace local data with a downloaded copy, keeping this PC's clipboard and device settings.
         Call on the UI thread (store change listeners update windows)."""
         _check_db(path)
+        self._local_backup()
         if remote_rev is not None:
             self._save_base(path, remote_rev)
         with self.store.lock:                 # raw values: API keys stay encrypted

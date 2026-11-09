@@ -104,7 +104,7 @@ class DynamicFolderDialog(QDialog):
         st = dynamic.status(self.store, self.folder_id)
         text = tr("{n} phrases from the source.").format(n=st["items"])
         if not dynamic.approved(self.store, self.folder_id):
-            text += " " + tr("This source has not been approved on this PC yet: save to approve it.")
+            text += " " + tr("This source came from another PC or file and has not been approved on this PC.")
         if st["error"]:
             text += " " + tr("Last update failed:") + " " + st["error"]
         self.status.setText(text)
@@ -132,6 +132,19 @@ class DynamicFolderDialog(QDialog):
         if not cfg.path:
             QMessageBox.warning(self, tr("Dynamic folder"), tr("Choose the source first."))
             return False
+        stored = dynamic.config(self.store, self.folder_id)
+        if stored is not None and not dynamic.approved(self.store, self.folder_id, stored):
+            # the settings in this dialog came from the phrase file (a sync, a shared or opened
+            # file), not from this user: say so before this PC reads anything (security R45)
+            where = cfg.path if cfg.source != "odbc" else tr("(connection string entered on this PC)")
+            text = tr("This dynamic folder was set up on another PC or in a file you opened. Approving it "
+                      "lets PhraseForge on this PC read the source below and turn it into phrases, which "
+                      "your sync may then upload.") + "\n\n" + tr("Source:") + f" {cfg.source}\n" + \
+                tr("Path:") + f" {where}" + (f"\n{tr('Query:')} {cfg.query}" if cfg.query else "") + \
+                "\n\n" + tr("Approve this source on this PC?")
+            if QMessageBox.warning(self, tr("Approve this source?"), text,
+                                   QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                return False
         try:
             dynamic.set_config(self.store, self.folder_id, cfg)
         except Exception as e:

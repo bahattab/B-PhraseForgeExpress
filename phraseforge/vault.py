@@ -221,8 +221,11 @@ def memory_db(data: bytes) -> sqlite3.Connection:
 def connect(path: str | Path, key: Key | None = None, passphrase: str | None = None) -> sqlite3.Connection:
     """A connection to an in-memory copy of any phrase file, encrypted or not (read only use)."""
     if is_encrypted(path):
-        return memory_db(read(path, key, passphrase)[0])
-    return sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True)
+        con = memory_db(read(path, key, passphrase)[0])
+    else:
+        con = sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True)
+    con.execute("PRAGMA trusted_schema = OFF")   # a file from elsewhere: its views/triggers call nothing unsafe
+    return con
 
 
 def wipe(path: str | Path) -> None:

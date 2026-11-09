@@ -34,6 +34,9 @@ PRIVILEGED: dict[str, str] = {
     "dbquery": "query databases",
     "setphrase": "create or change phrases",
     "key": "press Windows-key shortcuts",
+    # a click on the Start button or a dialog's "Run"/"Allow", then typed text and Enter,
+    # starts programs just like Win+R (security R43)
+    "mouse": "click, move or scroll the mouse in other programs",
     # a value an unapproved phrase leaves behind could become a trusted phrase's
     # {#run {#gettemp x}} argument (security R32); {#set -scope global} below likewise
     "settemp": "change variables other phrases use",

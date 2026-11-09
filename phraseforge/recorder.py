@@ -148,27 +148,17 @@ def to_macro(events: Iterable, min_pause_ms: int = 300, max_pause_ms: int = 2000
         elif isinstance(ev, RecWheel):
             pause(ev.t)
             flush_run()
-            out.append(f"{{#mouse wheel -delta {ev.delta}}}")
+            delta = ev.delta                    # neighbouring notches the same way: one scroll
+            while (i + 1 < len(evs) and isinstance(evs[i + 1], RecWheel)
+                   and (evs[i + 1].delta > 0) == (delta > 0)
+                   and (evs[i + 1].t - evs[i].t) * 1000 < min_pause_ms):
+                i += 1
+                delta += evs[i].delta
+                last_t = evs[i].t
+            out.append(f"{{#mouse wheel -delta {delta}}}")
         i += 1
     flush_run()
-    return _merge_wheels("".join(out))
-
-
-def _merge_wheels(text: str) -> str:
-    """Neighbouring wheel notches in the same direction become one scroll."""
-    import re
-    pat = re.compile(r"(\{#mouse wheel -delta (-?\d+)\})+")
-
-    def merge(m):
-        deltas = [int(d) for d in re.findall(r"-delta (-?\d+)", m.group(0))]
-        groups: list[int] = []
-        for d in deltas:
-            if groups and (groups[-1] > 0) == (d > 0):
-                groups[-1] += d
-            else:
-                groups.append(d)
-        return "".join(f"{{#mouse wheel -delta {g}}}" for g in groups)
-    return pat.sub(merge, text)
+    return "".join(out)
 
 
 class Recorder:
@@ -205,8 +195,10 @@ class Recorder:
                 return int(self.setting(k))
             except ValueError:
                 return int(DEFAULTS[k])
-        return to_macro(self.events, num("recorder.min_pause_ms"), num("recorder.max_pause_ms"),
-                        self.setting("recorder.window_relative") == "1")
+        min_ms = max(0, min(num("recorder.min_pause_ms"), 60000))
+        max_ms = num("recorder.max_pause_ms")
+        max_ms = 60000 if max_ms <= 0 else min(max_ms, 60000)   # never replay hours of idle time (R57)
+        return to_macro(self.events, min_ms, max_ms, self.setting("recorder.window_relative") == "1")
 
     # ---- called by the hooks; True = the event was the stop hotkey (swallow it)
     def key(self, vk: int, char: str | None, mods: set[str]) -> bool:
@@ -225,6 +217,8 @@ class Recorder:
         return False
 
     def click(self, button: str, x: int, y: int, rel: tuple[int, int] | None = None) -> None:
+        if button not in ("left", "right"):
+            return                                  # a middle click would replay as a left click
         if self.recording and self.setting("recorder.record_mouse") == "1":
             self.events.append(RecClick(self.clock(), button, x, y, *(rel or (None, None))))
 
