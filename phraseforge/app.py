@@ -503,8 +503,10 @@ class QtHost:
 
 # ------------------------------------------------------------------ application
 class PhraseForgeApp(QObject):
-    def __init__(self, qapp: QApplication, store: Store):
+    def __init__(self, qapp: QApplication, store: Store, options=None):
         super().__init__()
+        from phraseforge import cli
+        self.options = options if options is not None else cli.Options()   # command-line switches
         self.qapp = qapp
         self.store = store
         self.host = QtHost(self)
@@ -817,7 +819,8 @@ class PhraseForgeApp(QObject):
         self.tray.app_enabled.connect(self._set_app_enabled)
         self._last_app = None
         self._start_app_tracker()
-        self.tray.show()
+        if not self.options.has("hidden"):           # --hidden: no tray icon either
+            self.tray.show()
 
     def _build_triggers(self):
         from phraseforge.clipboard_history import ClipboardHistory
@@ -847,8 +850,10 @@ class PhraseForgeApp(QObject):
                              ev.vk, ev.char, ev.modifiers, ev.injected, r, self.triggers._active())
                 return r
             self.triggers._on_key = spy
-        self.triggers.start()
-        self.clip_history.start()
+        if not self.options.has("no-hook"):          # --no-hook: no keyboard watching at all
+            self.triggers.start()
+        if not self.options.has("no-clipboard"):
+            self.clip_history.start()
         log.info("triggers ready")   # tools/e2e_notepad.py waits for this line
 
     # ---------------------------------------------------------- cloud backup & sync
@@ -1979,11 +1984,26 @@ def quiet_http_loggers() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     argv = paths.apply_command_line(list(argv if argv is not None else sys.argv))   # --portable, --home
-    if "--self-test" in argv:
+    from phraseforge import cli
+    try:
+        options = cli.parse(argv[1:])
+    except cli.UsageError as e:
+        print(f"PhraseForge: {e}", file=sys.stderr)
+        return 2
+    if options.has("self-test"):
         from phraseforge.selftest import run
         return run()
-    logging.basicConfig(filename=str(paths.data_dir() / "phraseforge.log"), level=logging.INFO,
-                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    if options.has("register-url") or options.has("unregister-url"):
+        try:
+            (cli.register_url_protocol if options.has("register-url") else cli.unregister_url_protocol)()
+        except Exception as e:
+            print(f"PhraseForge: {e}", file=sys.stderr)
+            return 1
+        return 0
+    cli.configure_logging(options, str(paths.data_dir() / "phraseforge.log"))
+    if options.has("readonly"):           # like the administrator's editing_disabled, for this run
+        import dataclasses
+        policy.set_current(dataclasses.replace(policy.current(), editing_disabled=True))
     quiet_http_loggers()
     sys.excepthook = lambda *a: log.error("".join(traceback.format_exception(*a)))
     # Qt 6 sets per-monitor DPI awareness itself; setting it here first made Qt warn.
@@ -2001,8 +2021,12 @@ def main(argv: list[str] | None = None) -> int:
             wait_for_exit(int(pid))
     instance = SingleInstance(instance_name(str(paths.data_dir().resolve())))
     if not instance.acquire():
-        log.info("PhraseForge is already running; handing over %s", argv_list[1:])
-        instance.forward(argv_list[1:])
+        handover = cli.forwarded(options)
+        log.info("PhraseForge is already running; handing over %s", handover)
+        instance.forward(handover)
+        return 0
+    if options.has("shutdown"):           # nothing is running: nothing to shut down
+        instance.release()
         return 0
     from phraseforge import vault
     try:
@@ -2026,7 +2050,7 @@ def main(argv: list[str] | None = None) -> int:
     from phraseforge.ui.theme import apply_theme
     from phraseforge.ui import i18n
     apply_theme(qapp, store.setting("ui.theme", "system"), i18n.resolve_language(store.setting("ui.language", "auto")))
-    app = PhraseForgeApp(qapp, store)
+    app = PhraseForgeApp(qapp, store, options)
     # a failed save of the encrypted phrase file is shown, not only logged (R75)
     store.on_flush_error = lambda err: app.poster.posted.emit(lambda: app.tray.notify(
         i18n.tr("Phrases not saved"), i18n.tr("The encrypted phrase file could not be saved: {err}").format(err=err)))
@@ -2056,9 +2080,23 @@ def main(argv: list[str] | None = None) -> int:
         from phraseforge.ui.wizard import FirstRunWizard
         FirstRunWizard(store).exec()
     # a second launch (e.g. the Start-menu shortcut) brings this window to the front
-    instance.message.connect(lambda args: None if "--minimized" in args else app.show_main())
-    if "--minimized" not in argv_list:
+    def _from_later_launch(args):
+        try:
+            later = cli.parse(list(args))
+        except cli.UsageError as e:
+            app.tray.notify("PhraseForge", str(e))
+            return
+        if later.actions:
+            for problem in cli.run_actions(app, later):
+                app.tray.notify("PhraseForge", problem)
+        elif not (later.has("minimized") or later.has("hidden")):
+            app.show_main()
+    instance.message.connect(_from_later_launch)
+    if not (options.has("minimized") or options.has("hidden")) and not options.actions:
         app.show_main()
+    if options.actions:
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, lambda: [app.tray.notify("PhraseForge", m) for m in cli.run_actions(app, options)])
     try:
         return qapp.exec()
     finally:
