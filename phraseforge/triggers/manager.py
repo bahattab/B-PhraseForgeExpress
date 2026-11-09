@@ -33,6 +33,7 @@ ExpansionRequest that erases the typed characters.
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import queue
 import re
@@ -45,6 +46,7 @@ from typing import Callable
 from phraseforge.host import ExpansionContext, ExpansionRequest
 from phraseforge.models import Trigger, TriggerKind
 from phraseforge.platform import keys as K
+from phraseforge.triggers import schedule
 from phraseforge.triggers.autotext import (AutotextMatcher, Match, apply_global_prefix, apply_group_prefixes, folder_prefixes,
                                            typed_len)
 from phraseforge.triggers.hotkeys import HotkeyMatcher
@@ -93,17 +95,15 @@ HTML_TAG = re.compile(r"<[^>]+>")
 
 
 def parse_time_trigger(value: str) -> tuple[str, int]:
-    """'08:30' -> ('daily', 510); 'every:15' -> ('every', 15). Raises ValueError."""
-    v = value.strip().lower()
-    if v.startswith("every:"):
-        n = int(v.split(":", 1)[1])
-        if n <= 0:
-            raise ValueError("interval must be positive")
-        return "every", n
-    m = re.fullmatch(r"(\d{1,2}):(\d{2})", v)
-    if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
-        raise ValueError(f"bad time trigger {value!r}")
-    return "daily", int(m.group(1)) * 60 + int(m.group(2))
+    """'08:30' -> ('daily', 510); 'every:15' -> ('every', 15). Options after the time
+    (days=, from=, to=, once, random=; triggers/schedule.py) are checked too. Raises ValueError."""
+    sch = schedule.parse(value)
+    return sch.kind, sch.minutes
+
+
+def schedule_key(t: Trigger) -> str:
+    """Identifies one time trigger across restarts; changing its value starts it afresh."""
+    return f"{t.phrase_id}|{t.value}"
 
 
 def clipboard_trigger_hit(t: Trigger, text: str) -> tuple[bool, tuple[str, ...]]:
@@ -203,7 +203,7 @@ class TriggerManager:
         self._last_hwnd = None
         self._last_focus = ("", "")
         self._focus_state: dict = {}
-        self._time_state: dict[int, object] = {}
+        self._schedule = schedule.Runner()
 
         self._pending: dict | None = None      # "pause"/"continue" execution in progress
         self._pending_seq = 0
@@ -324,11 +324,14 @@ class TriggerManager:
         tt = []
         for t in st.triggers(TriggerKind.TIME):
             try:
-                kind, n = parse_time_trigger(t.value)
-                tt.append((t, kind, n))
+                tt.append((t, schedule.parse(t.value)))
             except ValueError:
                 log.warning("ignoring bad time trigger %r", t.value)
         self._time_triggers = tt
+        try:
+            self._schedule.done = set(json.loads(s("schedule.done", "") or "[]"))
+        except (ValueError, TypeError):
+            self._schedule.done = set()
         self._focus_triggers = st.triggers(TriggerKind.APP_FOCUS)
         smart = []
         from phraseforge.security import protected
@@ -806,21 +809,12 @@ class TriggerManager:
     # ------------------------------------------------------------ time + focus
     def check_time(self, now: datetime) -> list[int]:
         """Fire due time triggers; returns phrase ids fired (testable)."""
-        fired = []
-        minute_of_day = now.hour * 60 + now.minute
-        for t, kind, n in self._time_triggers:
-            key = t.id if t.id is not None else id(t)
-            if kind == "daily":
-                if minute_of_day == n and self._time_state.get(key) != now.date():
-                    self._time_state[key] = now.date()
-                    fired.append(t.phrase_id)
-            else:
-                last = self._time_state.get(key)
-                if last is None:
-                    self._time_state[key] = now
-                elif (now - last).total_seconds() >= n * 60:
-                    self._time_state[key] = now
-                    fired.append(t.phrase_id)
+        fired, was_done = [], set(self._schedule.done)
+        for t, sch in self._time_triggers:
+            if self._schedule.due(schedule_key(t), sch, now):
+                fired.append(t.phrase_id)
+        if self._schedule.done != was_done:            # a "once" schedule ran: never again, also after a restart
+            self.store.set_setting("schedule.done", json.dumps(sorted(self._schedule.done)))
         return fired
 
     def check_focus(self, exe: str, title: str) -> list[int]:
