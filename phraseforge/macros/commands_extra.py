@@ -269,6 +269,11 @@ def _resolve_insert(rt, args, opts) -> str:
     """Phrase key for {#insert}: description, -autotext abbreviation, or a pick from -folder."""
     key = _arg(args, 0)
     store = rt.store
+    if opts.get("uid") and store is not None and hasattr(store, "phrase_by_uid"):    # a phrase link
+        p = store.phrase_by_uid(opts["uid"])
+        if p is None:
+            raise MacroError("the linked phrase was deleted")
+        return str(p.id)
     if opts.get("autotext") and store is not None:
         from phraseforge.models import TriggerKind
         t = next((t for t in store.triggers(TriggerKind.AUTOTEXT) if t.value == opts["autotext"]), None)
@@ -307,8 +312,9 @@ def _insert_ex(rt, args, opts):
     return _insert(rt, [key], {})
 
 
-register("insert", "Phrases", '{#insert "Phrase description" -autotext abbr -folder "A/B" -pick manual|random|N -same}',
-         "Insert another phrase (its macros run too): by description, by its autotext, or picked from a folder.",
+register("insert", "Phrases", '{#insert "Phrase description" -autotext abbr -folder "A/B" -pick manual|random|N -same -uid id}',
+         "Insert another phrase (its macros run too): by description, by its autotext, picked from a folder, "
+         "or by its id (-uid, what a phrase link uses).",
          '{#insert "Phrase description"}', fn=_insert_ex)
 
 

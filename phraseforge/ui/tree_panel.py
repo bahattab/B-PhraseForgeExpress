@@ -215,12 +215,18 @@ class TreePanel(QWidget):
 
     def make_phrase_item(self, p: Phrase, colors: dict | None = None) -> QTreeWidgetItem:
         it = QTreeWidgetItem([phrase_label(p)])
-        it.setIcon(0, icon("phrase_rich" if p.content_format == "html" else "phrase"))
+        from phraseforge.db import link_uid
+        linked = link_uid(p.content)
+        it.setIcon(0, icon("phrase_link" if linked else "phrase_rich" if p.content_format == "html" else "phrase"))
         it.setData(0, ROLE_KIND, "phrase")
         it.setData(0, ROLE_ID, p.id)
         it.setFlags((it.flags() | Qt.ItemIsEditable) & ~Qt.ItemIsDropEnabled)
         tips = [t.value for t in p.triggers if t.enabled]
-        it.setToolTip(0, f"{p.description}\n" + ("Trigger: " + ", ".join(tips) if tips else ""))
+        tip = f"{p.description}\n" + ("Trigger: " + ", ".join(tips) if tips else "")
+        if linked:
+            target = self.store.phrase_by_uid(linked)
+            tip += ("\n" if tips else "") + (f'Link to "{target.description}"' if target else "Link to a deleted phrase")
+        it.setToolTip(0, tip)
         if not p.enabled:
             it.setForeground(0, QBrush(QColor("#9a9a9a")))
         self._apply_color(it, "phrase", p.id, colors if colors is not None else item_colors(self.store))

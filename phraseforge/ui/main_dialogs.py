@@ -45,9 +45,19 @@ class FolderDialog(QDialog):
         self.pw.setPlaceholderText("leave empty to keep" if folder.password_hash else "no password")
         self.clear_pw = QCheckBox("Remove password")
         self.clear_pw.setVisible(bool(folder.password_hash))
+        # text put before / after every phrase in this folder (and its subfolders); macros work
+        self.before = QPlainTextEdit(folder.text_before)
+        self.after = QPlainTextEdit(folder.text_after)
+        for w, tip in ((self.before, "e.g. a greeting: Hello {#input Name},{#key enter}"),
+                       (self.after, "e.g. a closing: {#key enter}Best regards")):
+            w.setMaximumHeight(56)
+            w.setPlaceholderText(tip)
+            w.setToolTip("Added to every phrase of this folder and its subfolders when it is inserted "
+                         "(macros work). Outer folders' text goes around inner folders' text.")
         for label, w in (("Name:", self.name), ("", self.enabled), ("", self.popup),
                          ("Only in programs:", self.inc), ("Not in programs:", self.exc),
-                         ("Password:", self.pw), ("", self.clear_pw)):
+                         ("Password:", self.pw), ("", self.clear_pw),
+                         ("Text before each phrase:", self.before), ("Text after each phrase:", self.after)):
             f.addRow(label, w) if label else f.addRow(w)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.accepted.connect(self.accept)
@@ -61,11 +71,51 @@ class FolderDialog(QDialog):
         f.show_in_popup = self.popup.isChecked()
         f.apps_include = self.inc.text().strip()
         f.apps_exclude = self.exc.text().strip()
+        f.text_before = self.before.toPlainText()
+        f.text_after = self.after.toPlainText()
         if self.clear_pw.isChecked():
             f.password_hash = ""
         elif self.pw.text():
             f.password_hash = hash_password(self.pw.text())
         return f
+
+
+class SortTwoDialog(QDialog):
+    """Sort a folder's phrases by one field, then by a second one for equal values."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        from phraseforge.bulk_edit import SORT_KEYS
+        self.setWindowTitle(tr("Sort by two fields"))
+        f = QFormLayout(self)
+        self.rows = []
+        for n, default in enumerate(("description", "modified")):
+            combo = QComboBox()
+            for key, (title, _fn) in SORT_KEYS.items():
+                combo.addItem(tr(title), key)
+            combo.setCurrentIndex(max(0, combo.findData(default)))
+            order = QComboBox()
+            order.addItem(tr("Ascending"), False)
+            order.addItem(tr("Descending"), True)
+            row = QWidget()
+            hl = QHBoxLayout(row)
+            hl.setContentsMargins(0, 0, 0, 0)
+            hl.addWidget(combo, 1)
+            hl.addWidget(order)
+            f.addRow(tr("Sort by:") if n == 0 else tr("Then by:"), row)
+            self.rows.append((combo, order))
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        f.addRow(bb)
+
+    def keys(self) -> list[tuple[str, bool]]:
+        out = []
+        for combo, order in self.rows:
+            k = combo.currentData()
+            if k not in (x for x, _ in out):
+                out.append((k, bool(order.currentData())))
+        return out
 
 
 class PhrasePropertiesDialog(QDialog):

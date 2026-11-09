@@ -1738,6 +1738,17 @@ class MainWindow(QMainWindow):
         self.select_phrase(p.id)
         self._focus_description()
 
+    def create_link(self, phrase_id: int) -> None:
+        """A new phrase in the same folder that always inserts this phrase's current text."""
+        self.save_current()
+        src = self.store.get_phrase(phrase_id)
+        if src is None:
+            return
+        p = self.store.create_link(phrase_id, src.folder_id)
+        self.refresh_tree()
+        self.select_phrase(p.id)
+        self._focus_description()
+
     def toggle_template(self, folder_id: int) -> None:
         f = self.store.get_folder(folder_id)
         if f is None:
@@ -2111,6 +2122,7 @@ class MainWindow(QMainWindow):
         a = m.addAction(icon("sticky_notes"), "Pin to desktop", lambda: self.pin_to_desktop(id_))
         a.setEnabled(kind == "phrase")
         if kind == "phrase":
+            m.addAction(icon("phrase_link"), "Create link to this phrase", lambda: self.create_link(id_))
             n = self.store.comment_counts().get(id_, 0)
             m.addAction(tr("Comments...") + (f" ({n})" if n else ""), lambda: self.show_comments(id_))
         m.addSeparator()
@@ -2137,6 +2149,7 @@ class MainWindow(QMainWindow):
                     sub.addSeparator()
                 sub.addAction(op_title, lambda t=target, o=op: self.bulk_text(fid, t, o))
         bulk.addSeparator()
+        bulk.addAction("Sort by two fields...", lambda: self.bulk_sort_two(fid))
         bulk.addAction("Enable all phrases", lambda: self.bulk_enable(fid, True))
         bulk.addAction("Disable all phrases", lambda: self.bulk_enable(fid, False))
         bulk.addAction("Sort phrases alphabetically", lambda: self.bulk_sort(fid))
@@ -2173,6 +2186,16 @@ class MainWindow(QMainWindow):
     def bulk_sort_by(self, folder_id: int | None, key: str) -> int:
         from phraseforge import bulk_edit
         n = bulk_edit.sort_phrases(self.store, folder_id, key, descending=key in ("times_used", "last_used"))
+        self.refresh_tree()
+        return n
+
+    def bulk_sort_two(self, folder_id: int | None) -> int:
+        from phraseforge import bulk_edit
+        from phraseforge.ui.main_dialogs import SortTwoDialog
+        dlg = SortTwoDialog(self)
+        if dlg.exec() != QDialog.Accepted:
+            return 0
+        n = bulk_edit.sort_phrases_by(self.store, folder_id, dlg.keys())
         self.refresh_tree()
         return n
 

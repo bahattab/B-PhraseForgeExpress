@@ -39,7 +39,7 @@ from phraseforge.models import Folder, OutputMode, Phrase, Trigger
 
 FOLDER_FIELDS = ("name", "parent", "sort", "enabled", "apps_include", "apps_exclude", "password_hash",
                  "show_in_popup", "notes", "output_target", "output_target_arg", "abbrev_prefix", "is_template",
-                 "triggers")
+                 "text_before", "text_after", "triggers")
 PHRASE_FIELDS = ("description", "content", "folder", "output_mode", "apps_include", "apps_exclude",
                  "enabled", "sort", "notes", "output_target", "output_target_arg", "triggers", "tags",
                  "versions")
@@ -113,6 +113,8 @@ def read_state(path: str | Path, key=None) -> State:
                 "output_target": r["output_target"] or "current", "output_target_arg": r["output_target_arg"] or "",
                 "abbrev_prefix": r["abbrev_prefix"] or "",
                 "is_template": int(r["is_template"] or 0) if "is_template" in r.keys() else 0,
+                "text_before": (r["text_before"] or "") if "text_before" in r.keys() else "",
+                "text_after": (r["text_after"] or "") if "text_after" in r.keys() else "",
                 "triggers": _trigger_rows(con, "folder_id", r["id"])}
         has_versions = "phrase_versions" in tables
         puid: dict[int, str] = {}
@@ -359,7 +361,8 @@ def apply(store: Store, local: State, remote: State, m: Merged) -> None:
                        apps_exclude=rec["apps_exclude"], password_hash=rec["password_hash"],
                        show_in_popup=bool(rec["show_in_popup"]), notes=rec["notes"],
                        output_target=rec["output_target"], output_target_arg=rec["output_target_arg"],
-                       abbrev_prefix=rec["abbrev_prefix"], is_template=bool(rec.get("is_template")))
+                       abbrev_prefix=rec["abbrev_prefix"], is_template=bool(rec.get("is_template")),
+                       text_before=rec.get("text_before", ""), text_after=rec.get("text_after", ""))
             old = local.folders.get(u)
             if old is None:
                 store.add_folder(f)

@@ -20,7 +20,8 @@ from phraseforge.db import Store, json_dumps, untrusted_import
 from phraseforge.models import AutotextMode, Folder, OutputMode, Phrase, Trigger, TriggerKind
 
 _FOLDER_FIELDS = ("name", "parent_id", "sort", "enabled", "apps_include", "apps_exclude", "password_hash",
-                  "show_in_popup", "notes", "output_target", "output_target_arg", "abbrev_prefix", "is_template")
+                  "show_in_popup", "notes", "output_target", "output_target_arg", "abbrev_prefix", "is_template",
+                  "text_before", "text_after")
 _PHRASE_FIELDS = ("description", "content", "content_format", "output_mode", "apps_include", "apps_exclude",
                   "enabled", "sort", "notes", "use_count", "last_used", "created",
                   "output_target", "output_target_arg")
