@@ -575,6 +575,7 @@ class PhraseForgeApp(QObject):
         reg("record_macro", lambda arg, hwnd: post(self.record_macro))
         reg("clear_clipboard_cache", lambda arg, hwnd: self.store.clear_clipboard(keep_pinned=True))
         reg("pause", lambda arg, hwnd: post(self._pause_cmd))
+        reg("elevated", lambda arg, hwnd: post(lambda: self._elevated_notice(arg)))
         reg("sound", lambda arg, hwnd: self._play(arg))   # "sound:<event>" from other layers
         reg("popup_search", lambda arg, hwnd: post(lambda: self._show_popup(hwnd, search=True)))
         # trigger-layer events (triggers/manager.py)
@@ -1237,7 +1238,8 @@ class PhraseForgeApp(QObject):
             self._busy.set()
             try:
                 if kind == "expand":
-                    self._expand(payload, hwnd)
+                    if not self._target_elevated(hwnd):
+                        self._expand(payload, hwnd)
                 elif kind == "ocr":
                     self._ocr_to_clipboard(payload or "")
                 elif kind == "text":
@@ -1260,6 +1262,36 @@ class PhraseForgeApp(QObject):
                 self.poster.posted.emit(lambda e=e: self.tray.notify("PhraseForge error", str(e)))
             finally:
                 self._busy.clear()
+
+    # ---------------------------------------------------------- windows that run as administrator
+    def _target_elevated(self, hwnd) -> bool:
+        """FR-INP-04: Windows blocks the keys we would type into a program that runs as
+        administrator, so a half-typed phrase would be left behind. Skip and explain."""
+        try:
+            from phraseforge.platform import session
+            if not hwnd or not session.window_elevated(hwnd):
+                return False
+            exe = self._exe_of(hwnd) or "?"
+        except Exception:
+            return False
+        log.info("expansion skipped: %s runs as administrator", exe)
+        self.poster.posted.emit(lambda: self._elevated_notice(exe))
+        return True
+
+    def _elevated_notice(self, exe: str) -> None:
+        """Tray message for an elevated window; clicking it restarts PhraseForge as administrator."""
+        from phraseforge.ui.i18n import tr
+        text = tr("{exe} runs as administrator, so PhraseForge cannot type into it. "
+                  "Click here to restart PhraseForge as administrator.").replace("{exe}", exe or "?")
+        self.tray.notify(tr("Cannot type into an administrator window"), text, ms=8000,
+                         on_click=self._restart_as_admin)
+
+    def _restart_as_admin(self) -> None:
+        from phraseforge.platform import session
+        if session.running_as_admin():
+            return
+        if session.restart_as_admin():      # the user agreed in the Windows prompt
+            self.quit()
 
     def _undo_last_expansion(self, payload: str, hwnd: int) -> None:
         """Detect unwanted text replacements: put back what the user typed.
@@ -1915,6 +1947,13 @@ def main(argv: list[str] | None = None) -> int:
     qapp.setQuitOnLastWindowClosed(False)
     from phraseforge.single_instance import SingleInstance, instance_name
     argv_list = list(argv if argv is not None else sys.argv)
+    if "--after-exit" in argv_list:       # "restart as administrator": let the old copy close first
+        i = argv_list.index("--after-exit")
+        pid = argv_list[i + 1] if i + 1 < len(argv_list) else ""
+        del argv_list[i:i + 2]
+        if pid.isdigit():
+            from phraseforge.platform.session import wait_for_exit
+            wait_for_exit(int(pid))
     instance = SingleInstance(instance_name(str(paths.data_dir().resolve())))
     if not instance.acquire():
         log.info("PhraseForge is already running; handing over %s", argv_list[1:])

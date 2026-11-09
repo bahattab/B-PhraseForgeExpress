@@ -32,6 +32,10 @@ class KeyEvent:
     injected: bool
     modifiers: set[str] = field(default_factory=set)   # {"ctrl","alt","shift","win"}
     extended: bool = False
+    # Native hook only (native_hook.py): the key already reached the program because Python
+    # did not answer in time (late), or the hook swallowed it from its rule table (native).
+    late: bool = False
+    native: bool = False
 
     @property
     def altgr(self) -> bool:
@@ -75,7 +79,11 @@ def translate_vk(vk: int, scan: int, mods: set[str]) -> str | None:
     n = user32.ToUnicodeEx(vk, scan, state, buf, 8, TOUNICODE_NO_STATE_CHANGE, hkl)
     if n <= 0:
         return None
-    text = buf.value[:n]
+    return finish_char(vk, buf.value[:n])
+
+
+def finish_char(vk: int, text: str) -> str | None:
+    """The text ToUnicodeEx gave for a key, as the trigger layer wants it."""
     if not text:
         return None
     if vk == K.VK_RETURN:

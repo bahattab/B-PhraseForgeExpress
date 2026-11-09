@@ -1524,4 +1524,6 @@ AR_EXTRA = {
     'Approve this source on this PC?': 'هل تعتمد هذا المصدر على هذا الجهاز؟',
     'Approve this source?': 'اعتماد هذا المصدر؟',
     '(connection string entered on this PC)': '(سلسلة الاتصال المُدخلة على هذا الجهاز)',
+    'Cannot type into an administrator window': 'لا يمكن الكتابة في نافذة تعمل كمسؤول',
+    '{exe} runs as administrator, so PhraseForge cannot type into it. Click here to restart PhraseForge as administrator.': 'البرنامج {exe} يعمل كمسؤول، لذلك لا يستطيع PhraseForge الكتابة فيه. انقر هنا لإعادة تشغيل PhraseForge كمسؤول.',
 }

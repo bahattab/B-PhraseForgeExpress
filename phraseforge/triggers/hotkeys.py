@@ -94,5 +94,10 @@ class HotkeyMatcher:
             return True
         return False
 
+    def chords(self) -> list[tuple[int, frozenset[str]]]:
+        """(vk, modifiers) of every registered hotkey, for the native hook's rule table."""
+        with self._lock:
+            return [(hk.vk, hk.modifiers) for hk in self._map]
+
     def __len__(self) -> int:
         return len(self._map)
