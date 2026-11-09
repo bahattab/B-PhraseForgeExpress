@@ -165,6 +165,18 @@ Settings > Display > User Interface Language > Arabic turns the whole interface 
 The Arabic user guide is [docs/USER_GUIDE.ar.md](docs/USER_GUIDE.ar.md) (also under Help in the program).
 Phrases can hold one version per language; dates can be Hijri with Arabic digits.
 
+## Trash, templates and comments
+
+- **Trash:** Delete moves a phrase or folder (with everything in it) to Phrases > **Trash**.
+  Restore puts it back in its folder, with its abbreviations, tags, language versions, comments,
+  history and approval state. Entries older than 30 days are removed at start
+  (setting `trash.days`, 0 = keep). The trash stays on this PC and is not synced.
+- **Template folders:** right-click a folder > **Template folder**. Its phrases are never expanded
+  and are not in the phrase menu. New > **Phrase from template...** copies one (text, format,
+  tags, notes and language versions; not its abbreviation).
+- **Comments:** right-click a phrase > **Comments...** to leave notes for yourself or your team
+  (author, time, resolved). They sync and merge between PCs.
+
 ## Import and export
 
 - Phrases > Import: PhraseForge JSON, CSV, folder of .txt files; PhraseExpress CSV export;

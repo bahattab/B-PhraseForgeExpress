@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS folders (
   apps_include TEXT DEFAULT '', apps_exclude TEXT DEFAULT '',
   password_hash TEXT DEFAULT '', show_in_popup INTEGER DEFAULT 1, notes TEXT DEFAULT '',
   output_target TEXT DEFAULT 'current', output_target_arg TEXT DEFAULT '',
-  abbrev_prefix TEXT DEFAULT '', uid TEXT);
+  abbrev_prefix TEXT DEFAULT '', uid TEXT, is_template INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS phrases (
   id INTEGER PRIMARY KEY, folder_id INTEGER REFERENCES folders(id) ON DELETE CASCADE,
   description TEXT NOT NULL, content TEXT DEFAULT '', content_format TEXT DEFAULT 'text',
@@ -92,6 +92,13 @@ CREATE TABLE IF NOT EXISTS phrase_versions (
 CREATE TABLE IF NOT EXISTS phrase_quarantine (
   phrase_id INTEGER PRIMARY KEY REFERENCES phrases(id) ON DELETE CASCADE,
   origin TEXT DEFAULT 'imported', added TEXT);
+CREATE TABLE IF NOT EXISTS trash (
+  id INTEGER PRIMARY KEY, kind TEXT NOT NULL, name TEXT, deleted_at TEXT NOT NULL,
+  parent_uid TEXT, parent_name TEXT, data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS phrase_comments (
+  id INTEGER PRIMARY KEY, phrase_id INTEGER NOT NULL REFERENCES phrases(id) ON DELETE CASCADE,
+  author TEXT DEFAULT '', created TEXT, text TEXT NOT NULL, resolved INTEGER DEFAULT 0);
+CREATE INDEX IF NOT EXISTS ix_comments_phrase ON phrase_comments(phrase_id);
 CREATE TABLE IF NOT EXISTS sticky_notes (
   id INTEGER PRIMARY KEY, text TEXT DEFAULT '', html TEXT DEFAULT '', color TEXT DEFAULT 'yellow',
   x INTEGER, y INTEGER, w INTEGER DEFAULT 300, h INTEGER DEFAULT 300,
@@ -464,6 +471,8 @@ class Store:
             c.execute("ALTER TABLE folders ADD COLUMN output_target_arg TEXT DEFAULT ''")
         if "abbrev_prefix" not in fcols:
             c.execute("ALTER TABLE folders ADD COLUMN abbrev_prefix TEXT DEFAULT ''")
+        if "is_template" not in fcols:
+            c.execute("ALTER TABLE folders ADD COLUMN is_template INTEGER DEFAULT 0")
         cols = self._columns("phrases")
         if "output_target" not in cols:
             c.execute("ALTER TABLE phrases ADD COLUMN output_target TEXT DEFAULT 'current'")
@@ -569,10 +578,11 @@ class Store:
         with self.lock, self.conn:
             cur = self.conn.execute(
                 "INSERT INTO folders (parent_id,name,sort,enabled,apps_include,apps_exclude,password_hash,"
-                "show_in_popup,notes,output_target,output_target_arg,abbrev_prefix) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "show_in_popup,notes,output_target,output_target_arg,abbrev_prefix,is_template) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (f.parent_id, f.name, f.sort, int(f.enabled), f.apps_include, f.apps_exclude,
                  f.password_hash, int(f.show_in_popup), f.notes, f.output_target or "current",
-                 f.output_target_arg or "", f.abbrev_prefix or ""))
+                 f.output_target_arg or "", f.abbrev_prefix or "", int(bool(f.is_template))))
             f.id = cur.lastrowid
             if f.triggers:
                 self._write_owner_triggers("folder_id", f.id, f.triggers)
@@ -584,11 +594,11 @@ class Store:
         with self.lock, self.conn:
             self.conn.execute(
                 "UPDATE folders SET parent_id=?,name=?,sort=?,enabled=?,apps_include=?,apps_exclude=?,"
-                "password_hash=?,show_in_popup=?,notes=?,output_target=?,output_target_arg=?,abbrev_prefix=? "
-                "WHERE id=?",
+                "password_hash=?,show_in_popup=?,notes=?,output_target=?,output_target_arg=?,abbrev_prefix=?,"
+                "is_template=? WHERE id=?",
                 (f.parent_id, f.name, f.sort, int(f.enabled), f.apps_include, f.apps_exclude,
                  f.password_hash, int(f.show_in_popup), f.notes, f.output_target or "current",
-                 f.output_target_arg or "", f.abbrev_prefix or "", f.id))
+                 f.output_target_arg or "", f.abbrev_prefix or "", int(bool(f.is_template)), f.id))
         self._changed("folder", f.id)
 
     # folder / special-folder triggers (a folder trigger opens that folder's popup menu)
@@ -629,7 +639,8 @@ class Store:
                       notes=(r["notes"] or "") if "notes" in keys else "",
                       output_target=(r["output_target"] or "current") if "output_target" in keys else "current",
                       output_target_arg=(r["output_target_arg"] or "") if "output_target_arg" in keys else "",
-                      abbrev_prefix=(r["abbrev_prefix"] or "") if "abbrev_prefix" in keys else "")
+                      abbrev_prefix=(r["abbrev_prefix"] or "") if "abbrev_prefix" in keys else "",
+                      is_template=bool(r["is_template"]) if "is_template" in keys else False)
 
     def get_folder(self, folder_id: int) -> Folder | None:
         with self.lock:
@@ -909,7 +920,7 @@ class Store:
             r = self.conn.execute("SELECT folder_id FROM phrases WHERE id=?", (phrase_id,)).fetchone()
         if not r:
             return False
-        return all(f.enabled for f in self.folder_chain(r["folder_id"]))
+        return all(f.enabled and not f.is_template for f in self.folder_chain(r["folder_id"]))
 
     def phrase_allowed_in_app(self, phrase_id: int, exe: str) -> bool:
         """Apply phrase + folder include/exclude lists and global exclusions."""
@@ -1203,6 +1214,252 @@ class Store:
             self.conn.execute("UPDATE suggestions SET dismissed=1 WHERE text=?", (text,))
         self._changed("suggestion")
 
+    # ------------------------------------------------------------ trash (FR-DAT-02)
+    # A deleted phrase or folder (with everything in it) is kept here as a snapshot and can be
+    # put back with its id, triggers, tags, language versions, comments, history and approval
+    # state. The trash belongs to this PC: it is not synced and a sync pull keeps it.
+    TRASH_DAYS = 30
+
+    def _uid(self, table: str, row_id) -> str | None:
+        if row_id is None:
+            return None
+        r = self.conn.execute(f"SELECT uid FROM {table} WHERE id=?", (row_id,)).fetchone()
+        return r[0] if r else None
+
+    def _phrase_snapshot(self, pid: int) -> dict:
+        p = self.get_phrase(pid)
+        d = {k: v for k, v in vars(p).items() if k not in ("triggers", "id", "folder_id")}
+        d["output_mode"] = OutputMode(p.output_mode).value
+        d["triggers"] = [t.to_dict() for t in p.triggers]
+        d["versions"] = {k: list(v) for k, v in self.phrase_versions(pid).items()}
+        d["uid"] = self._uid("phrases", pid)
+        d["quarantine"] = self.quarantine_origin(pid)
+        d["comments"] = [dict(r) for r in self.conn.execute(
+            "SELECT author, created, text, resolved FROM phrase_comments WHERE phrase_id=? ORDER BY id", (pid,))]
+        d["history"] = [dict(r) for r in self.conn.execute(
+            "SELECT saved, description, content FROM phrase_history WHERE phrase_id=? ORDER BY id", (pid,))]
+        return d
+
+    def _folder_snapshot(self, fid: int) -> dict:
+        f = self.get_folder(fid)
+        d = {k: v for k, v in vars(f).items() if k not in ("triggers", "id", "parent_id")}
+        d["triggers"] = [t.to_dict() for t in self.folder_triggers(fid)]
+        d["uid"] = self._uid("folders", fid)
+        d["phrases"] = [self._phrase_snapshot(p.id) for p in self.phrases(fid)]
+        d["folders"] = [self._folder_snapshot(c.id) for c in self.folders(fid)]
+        return d
+
+    @_editable
+    def trash_phrase(self, phrase_id: int) -> int:
+        """Delete a phrase into the trash; returns the trash entry's id."""
+        with self.lock:
+            p = self.get_phrase(phrase_id)
+            if p is None:
+                raise KeyError(phrase_id)
+            parent = self.get_folder(p.folder_id) if p.folder_id is not None else None
+            snap = self._phrase_snapshot(phrase_id)
+            with self.conn:
+                cur = self.conn.execute(
+                    "INSERT INTO trash (kind,name,deleted_at,parent_uid,parent_name,data) VALUES (?,?,?,?,?,?)",
+                    ("phrase", p.description, _now(), self._uid("folders", p.folder_id),
+                     parent.name if parent else "", json.dumps(snap, ensure_ascii=False)))
+                self.conn.execute("DELETE FROM phrases WHERE id=?", (phrase_id,))
+        self._changed("phrase", phrase_id)
+        return cur.lastrowid
+
+    @_editable
+    def trash_folder(self, folder_id: int) -> int:
+        """Delete a folder with all its subfolders and phrases into the trash."""
+        with self.lock:
+            f = self.get_folder(folder_id)
+            if f is None:
+                raise KeyError(folder_id)
+            parent = self.get_folder(f.parent_id) if f.parent_id is not None else None
+            snap = self._folder_snapshot(folder_id)
+            with self.conn:
+                cur = self.conn.execute(
+                    "INSERT INTO trash (kind,name,deleted_at,parent_uid,parent_name,data) VALUES (?,?,?,?,?,?)",
+                    ("folder", f.name, _now(), self._uid("folders", f.parent_id),
+                     parent.name if parent else "", json.dumps(snap, ensure_ascii=False)))
+                self.conn.execute("DELETE FROM folders WHERE id=?", (folder_id,))
+        self._changed("folder", folder_id)
+        return cur.lastrowid
+
+    def trash_items(self) -> list[dict]:
+        """Newest first: id, kind, name, deleted_at, parent_name, count (phrases inside)."""
+        with self.lock:
+            rows = [dict(r) for r in self.conn.execute(
+                "SELECT id, kind, name, deleted_at, parent_uid, parent_name, data FROM trash "
+                "ORDER BY deleted_at DESC, id DESC")]
+
+        def count(d):
+            return len(d.get("phrases", [])) + sum(count(c) for c in d.get("folders", []))
+        for r in rows:
+            r["count"] = 1 if r["kind"] == "phrase" else count(json.loads(r.pop("data")))
+            r.pop("data", None)
+        return rows
+
+    def _restore_phrase(self, d: dict, folder_id) -> int:
+        p = Phrase(description=d["description"], content=d.get("content", ""), folder_id=folder_id,
+                   content_format=d.get("content_format", "text"), output_mode=OutputMode(d.get("output_mode", "auto")),
+                   apps_include=d.get("apps_include", ""), apps_exclude=d.get("apps_exclude", ""),
+                   enabled=bool(d.get("enabled", True)), sort=d.get("sort", 0), tags=list(d.get("tags", [])),
+                   triggers=[Trigger.from_dict(t) for t in d.get("triggers", [])],
+                   use_count=d.get("use_count", 0), last_used=d.get("last_used"), created=d.get("created"),
+                   notes=d.get("notes", ""), output_target=d.get("output_target", "current"),
+                   output_target_arg=d.get("output_target_arg", ""))
+        self.add_phrase(p)
+        with self.lock, self.conn:
+            uid = d.get("uid")
+            if uid and not self.conn.execute("SELECT 1 FROM phrases WHERE uid=?", (uid,)).fetchone():
+                self.conn.execute("UPDATE phrases SET uid=? WHERE id=?", (uid, p.id))
+            self.conn.execute("UPDATE phrases SET modified=? WHERE id=?", (d.get("modified") or _now(), p.id))
+            for lang, (c, cf) in (d.get("versions") or {}).items():
+                self.conn.execute("INSERT OR REPLACE INTO phrase_versions VALUES (?,?,?,?,?)",
+                                  (p.id, lang, c, cf, _now()))
+            for c in d.get("comments", []):
+                self.conn.execute("INSERT INTO phrase_comments (phrase_id,author,created,text,resolved) "
+                                  "VALUES (?,?,?,?,?)", (p.id, c["author"], c["created"], c["text"], c["resolved"]))
+            for h in d.get("history", []):
+                self.conn.execute("INSERT INTO phrase_history (phrase_id,saved,description,content) VALUES (?,?,?,?)",
+                                  (p.id, h["saved"], h["description"], h["content"]))
+            # what was waiting for approval before it was deleted still waits
+            self.conn.execute("DELETE FROM phrase_quarantine WHERE phrase_id=?", (p.id,))
+            if d.get("quarantine"):
+                self.conn.execute("INSERT INTO phrase_quarantine VALUES (?,?,?)", (p.id, d["quarantine"], _now()))
+        return p.id
+
+    def _restore_folder(self, d: dict, parent_id) -> int:
+        f = Folder(name=d["name"], parent_id=parent_id,
+                   **{k: d[k] for k in ("sort", "enabled", "apps_include", "apps_exclude", "password_hash",
+                                        "show_in_popup", "notes", "output_target", "output_target_arg",
+                                        "abbrev_prefix", "is_template") if k in d})
+        self.add_folder(f)
+        with self.lock, self.conn:
+            uid = d.get("uid")
+            if uid and not self.conn.execute("SELECT 1 FROM folders WHERE uid=?", (uid,)).fetchone():
+                self.conn.execute("UPDATE folders SET uid=? WHERE id=?", (uid, f.id))
+        if d.get("triggers"):
+            self.set_folder_triggers(f.id, [Trigger.from_dict(t) for t in d["triggers"]])
+        for c in d.get("folders", []):
+            self._restore_folder(c, f.id)
+        for p in d.get("phrases", []):
+            self._restore_phrase(p, f.id)
+        return f.id
+
+    @_editable
+    def restore_trash(self, trash_id: int) -> tuple[str, int]:
+        """Put an item back into its folder (or the top level if that folder is gone).
+        Returns (kind, new id)."""
+        with self.lock:
+            r = self.conn.execute("SELECT kind, parent_uid, data FROM trash WHERE id=?", (trash_id,)).fetchone()
+            if r is None:
+                raise KeyError(trash_id)
+            parent = None
+            if r["parent_uid"]:
+                row = self.conn.execute("SELECT id FROM folders WHERE uid=?", (r["parent_uid"],)).fetchone()
+                parent = row[0] if row else None
+            d = json.loads(r["data"])
+            new_id = self._restore_folder(d, parent) if r["kind"] == "folder" else self._restore_phrase(d, parent)
+            with self.conn:
+                self.conn.execute("DELETE FROM trash WHERE id=?", (trash_id,))
+        self._changed(r["kind"], new_id)
+        return r["kind"], new_id
+
+    def delete_trash(self, trash_id: int | None = None) -> None:
+        """Delete one trash entry for good, or empty the trash (None)."""
+        with self.lock, self.conn:
+            if trash_id is None:
+                self.conn.execute("DELETE FROM trash")
+            else:
+                self.conn.execute("DELETE FROM trash WHERE id=?", (trash_id,))
+        self._changed("trash")
+
+    def purge_trash(self, days: int | None = None) -> int:
+        """Delete trash entries older than `days` (setting trash.days, default 30; 0 = keep)."""
+        if days is None:
+            try:
+                days = int(self.setting("trash.days", str(self.TRASH_DAYS)) or self.TRASH_DAYS)
+            except ValueError:
+                days = self.TRASH_DAYS
+        if days <= 0:
+            return 0
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+        with self.lock, self.conn:
+            n = self.conn.execute("DELETE FROM trash WHERE deleted_at < ?", (cutoff,)).rowcount
+        return n
+
+    # ------------------------------------------------------------ comments (FR-DAT-03)
+    def comments(self, phrase_id: int) -> list[dict]:
+        with self.lock:
+            return [dict(r) for r in self.conn.execute(
+                "SELECT id, author, created, text, resolved FROM phrase_comments WHERE phrase_id=? ORDER BY id",
+                (phrase_id,))]
+
+    def comment_counts(self) -> dict[int, int]:
+        """phrase id -> number of open (unresolved) comments."""
+        with self.lock:
+            return {r[0]: r[1] for r in self.conn.execute(
+                "SELECT phrase_id, count(*) FROM phrase_comments WHERE resolved=0 GROUP BY phrase_id")}
+
+    @_editable
+    def add_comment(self, phrase_id: int, text: str, author: str | None = None) -> int:
+        text = (text or "").strip()
+        if not text:
+            raise ValueError("A comment needs some text.")
+        if author is None:
+            import getpass
+            try:
+                author = getpass.getuser()
+            except Exception:
+                author = ""
+        with self.lock, self.conn:
+            cur = self.conn.execute("INSERT INTO phrase_comments (phrase_id,author,created,text) VALUES (?,?,?,?)",
+                                    (phrase_id, author, _now(), text))
+        self._changed("phrase", phrase_id)
+        return cur.lastrowid
+
+    @_editable
+    def resolve_comment(self, comment_id: int, resolved: bool = True) -> None:
+        with self.lock, self.conn:
+            r = self.conn.execute("SELECT phrase_id FROM phrase_comments WHERE id=?", (comment_id,)).fetchone()
+            self.conn.execute("UPDATE phrase_comments SET resolved=? WHERE id=?", (int(resolved), comment_id))
+        self._changed("phrase", r[0] if r else None)
+
+    @_editable
+    def delete_comment(self, comment_id: int) -> None:
+        with self.lock, self.conn:
+            r = self.conn.execute("SELECT phrase_id FROM phrase_comments WHERE id=?", (comment_id,)).fetchone()
+            self.conn.execute("DELETE FROM phrase_comments WHERE id=?", (comment_id,))
+        self._changed("phrase", r[0] if r else None)
+
+    # ------------------------------------------------------------ templates (FR-DAT-04)
+    def template_phrases(self) -> list[Phrase]:
+        """Phrases inside template folders (at any depth)."""
+        out = []
+        for p in self.phrases():
+            if p.folder_id is not None and any(f.is_template for f in self.folder_chain(p.folder_id)):
+                out.append(p)
+        return sorted(out, key=lambda p: p.description.lower())
+
+    def new_from_template(self, template_id: int, folder_id: int | None) -> Phrase:
+        """A new phrase with the template's text, format, output options, tags, notes and language
+        versions (not its triggers: an abbreviation should not be shared by two phrases)."""
+        t = self.get_phrase(template_id)
+        if t is None:
+            raise KeyError(template_id)
+        p = Phrase(description=t.description, content=t.content, folder_id=folder_id,
+                   content_format=t.content_format, output_mode=t.output_mode, apps_include=t.apps_include,
+                   apps_exclude=t.apps_exclude, tags=list(t.tags), notes=t.notes,
+                   output_target=t.output_target, output_target_arg=t.output_target_arg)
+        self.add_phrase(p)
+        for lang, (c, cf) in self.phrase_versions(template_id).items():
+            self.set_phrase_version(p.id, lang, c, cf)
+        if self.quarantine_origin(template_id):             # a template that waits for approval
+            self.quarantine(p.id, self.quarantine_origin(template_id))
+        return p
+
     # ------------------------------------------------------------ bulk
     def export_dict(self) -> dict:
         """Full portable snapshot (used by io_formats and backups)."""
@@ -1249,6 +1506,10 @@ class Store:
         with self.lock:                   # raw values: API keys stay encrypted
             rows = list(self.conn.execute("SELECT key, value FROM settings"))
             keep_device = {k: v for k, v in rows if is_device_setting(k)} if untrusted else {}
+            # this PC's trash stays (it is not synced, and an item in it must not arrive from elsewhere)
+            keep_trash = ([tuple(r) for r in self.conn.execute(
+                "SELECT id, kind, name, deleted_at, parent_uid, parent_name, data FROM trash")]
+                if untrusted else None)
             # settings the administrator locked keep this PC's value, whatever the file holds:
             # a backup, an opened file or a sync pull must not unlock them (security R27)
             keep_locked = {k: v for k, v in rows if pol.setting_locked(k)}
@@ -1286,6 +1547,8 @@ class Store:
                         self.conn.execute("DELETE FROM settings WHERE key=?", (k,))
                 for k, v in keep_device.items():
                     self.conn.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (k, v))
+                self.conn.execute("DELETE FROM trash")
+                self.conn.executemany("INSERT INTO trash VALUES (?,?,?,?,?,?,?)", keep_trash or [])
                 for u, h in keep_pw.items():
                     self.conn.execute("UPDATE folders SET password_hash=? WHERE uid=?", (h, u))
             after = self.phrase_fingerprints()

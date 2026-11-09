@@ -120,6 +120,9 @@ class Folder:
     # TextExpander "Group prefix": typed before every abbreviation in this folder
     # (and its subfolders, unless one sets its own prefix)
     abbrev_prefix: str = ""
+    # Template folder: its phrases never expand and are not in the phrase menu; "New phrase
+    # from template" copies one of them
+    is_template: bool = False
 
 
 @dataclass

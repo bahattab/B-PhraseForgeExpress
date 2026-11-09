@@ -159,6 +159,9 @@ def content_hash(store: Store) -> str:
     for p in d.get("phrases", []):           # usage counters change on every expansion
         for k in ("use_count", "last_used"):
             p.pop(k, None)
+    with store.lock:                         # comments are synced too, so a new one counts as a change
+        d["comments"] = [list(r) for r in store.conn.execute(
+            "SELECT phrase_id, author, created, text, resolved FROM phrase_comments ORDER BY id")]
     blob = json.dumps(d, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()
 
@@ -374,10 +377,12 @@ class CloudSync:
 
 
 def _strip(path: Path) -> None:
-    """Remove what never leaves this PC: clipboard history and device-only settings."""
+    """Remove what never leaves this PC: clipboard history, the trash and device-only settings."""
     con = sqlite3.connect(str(path))
     with con:
         con.execute("DELETE FROM clipboard")
+        if con.execute("SELECT 1 FROM sqlite_master WHERE name='trash'").fetchone():
+            con.execute("DELETE FROM trash")              # the trash belongs to this PC
         for (k,) in con.execute("SELECT key FROM settings").fetchall():
             if _is_local_key(k):
                 con.execute("DELETE FROM settings WHERE key=?", (k,))

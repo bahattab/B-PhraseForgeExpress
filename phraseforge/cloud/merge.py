@@ -38,7 +38,8 @@ from phraseforge.db import Store, is_device_setting
 from phraseforge.models import Folder, OutputMode, Phrase, Trigger
 
 FOLDER_FIELDS = ("name", "parent", "sort", "enabled", "apps_include", "apps_exclude", "password_hash",
-                 "show_in_popup", "notes", "output_target", "output_target_arg", "abbrev_prefix", "triggers")
+                 "show_in_popup", "notes", "output_target", "output_target_arg", "abbrev_prefix", "is_template",
+                 "triggers")
 PHRASE_FIELDS = ("description", "content", "folder", "output_mode", "apps_include", "apps_exclude",
                  "enabled", "sort", "notes", "output_target", "output_target_arg", "triggers", "tags",
                  "versions")
@@ -65,6 +66,7 @@ class State:
     suggestions: dict = field(default_factory=dict)  # text -> count
     history: dict = field(default_factory=dict)      # phrase uid -> {(saved, description, content)}
     dynamic: dict = field(default_factory=dict)      # folder uid -> config (json text)
+    comments: dict = field(default_factory=dict)     # phrase uid -> {(author, created, text): resolved}
 
 
 
@@ -109,7 +111,9 @@ def read_state(path: str | Path, key=None) -> State:
                 "apps_exclude": r["apps_exclude"] or "", "password_hash": r["password_hash"] or "",
                 "show_in_popup": int(r["show_in_popup"]), "notes": r["notes"] or "",
                 "output_target": r["output_target"] or "current", "output_target_arg": r["output_target_arg"] or "",
-                "abbrev_prefix": r["abbrev_prefix"] or "", "triggers": _trigger_rows(con, "folder_id", r["id"])}
+                "abbrev_prefix": r["abbrev_prefix"] or "",
+                "is_template": int(r["is_template"] or 0) if "is_template" in r.keys() else 0,
+                "triggers": _trigger_rows(con, "folder_id", r["id"])}
         has_versions = "phrase_versions" in tables
         puid: dict[int, str] = {}
         for r in con.execute("SELECT * FROM phrases ORDER BY id"):
@@ -166,6 +170,11 @@ def read_state(path: str | Path, key=None) -> State:
             st.special[s] = _trigger_rows(con, "special", s)
         if "suggestions" in tables:
             st.suggestions = {r[0]: r[1] for r in con.execute("SELECT text, count FROM suggestions")}
+        if "phrase_comments" in tables:
+            for pid, a, c, t, res in con.execute(
+                    "SELECT phrase_id, author, created, text, resolved FROM phrase_comments"):
+                if pid in puid:
+                    st.comments.setdefault(puid[pid], {})[(a, c, t)] = int(res or 0)
         if "phrase_history" in tables:
             for pid, saved, d, c in con.execute("SELECT phrase_id, saved, description, content FROM phrase_history"):
                 if pid in puid:
@@ -350,7 +359,7 @@ def apply(store: Store, local: State, remote: State, m: Merged) -> None:
                        apps_exclude=rec["apps_exclude"], password_hash=rec["password_hash"],
                        show_in_popup=bool(rec["show_in_popup"]), notes=rec["notes"],
                        output_target=rec["output_target"], output_target_arg=rec["output_target_arg"],
-                       abbrev_prefix=rec["abbrev_prefix"])
+                       abbrev_prefix=rec["abbrev_prefix"], is_template=bool(rec.get("is_template")))
             old = local.folders.get(u)
             if old is None:
                 store.add_folder(f)
@@ -415,6 +424,18 @@ def apply(store: Store, local: State, remote: State, m: Merged) -> None:
                     for row in rows - local.history.get(u, set()):
                         conn.execute("INSERT INTO phrase_history (phrase_id,saved,description,content) "
                                      "VALUES (?,?,?,?)", (pid[u], *row))
+        with store.lock, conn:                                       # comments: both PCs' comments
+            for u, rows in remote.comments.items():
+                if u not in pid:
+                    continue
+                mine = local.comments.get(u, {})
+                for (a, c, t), res in rows.items():
+                    if (a, c, t) not in mine:
+                        conn.execute("INSERT INTO phrase_comments (phrase_id,author,created,text,resolved) "
+                                     "VALUES (?,?,?,?,?)", (pid[u], a, c, t, res))
+                    elif res and not mine[(a, c, t)]:                # resolved on the other PC
+                        conn.execute("UPDATE phrase_comments SET resolved=1 WHERE phrase_id=? AND author IS ? "
+                                     "AND created IS ? AND text=?", (pid[u], a, c, t))
         for u in local.phrases:
             if u not in m.phrases:
                 store.delete_phrase(local.ids[("phrase", u)])
