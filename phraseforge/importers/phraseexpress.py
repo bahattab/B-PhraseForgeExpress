@@ -74,6 +74,18 @@ class ExchangeReport:
     kept_as_text: dict[str, int] = field(default_factory=dict)
 
 
+def _pe_macros(content: str, rep: ExchangeReport) -> str:
+    """PhraseExpress macro syntax -> PhraseForge (macros/pe_compat.py), counted in the report."""
+    if "{#" not in content:
+        return content
+    from phraseforge.macros.pe_compat import translate
+    new, warnings = translate(content)
+    for w in warnings:                    # the macros PhraseForge does not have; renames are silent
+        if ("not supported" in w or "not understood" in w) and w not in rep.notes and len(rep.notes) < 50:
+            rep.notes.append(w)
+    return new
+
+
 # ------------------------------------------------------------------ detection
 def byte_entropy(data: bytes) -> float:
     if not data:
@@ -172,7 +184,8 @@ def import_csv(store: Store, path: str | Path, folder_name: str | None = None) -
         fid = ensure_folder_path(store, folder, top.id) if folder else top.id
         fmt = rec.get("format", "").strip().lower()
         fmt = fmt if fmt in ("text", "html", "rtf") else ("html" if re.search(r"</?(p|b|i|br|div|span)\b", content, re.I) else "text")
-        store.add_phrase(Phrase(desc, content, folder_id=fid, triggers=triggers, content_format=fmt))
+        store.add_phrase(Phrase(desc, _pe_macros(content, rep), folder_id=fid, triggers=triggers,
+                                content_format=fmt))
         rep.imported += 1
     return rep
 
@@ -235,7 +248,8 @@ def import_xml(store: Store, path: str | Path, folder_name: str | None = None) -
         if hk:
             triggers.append(Trigger(TriggerKind.HOTKEY, hk))
         fmt = "html" if re.search(r"(?i)</?(p|b|i|br|div|span)\b", content) else "text"
-        store.add_phrase(Phrase(desc, content, folder_id=fid, triggers=triggers, content_format=fmt))
+        store.add_phrase(Phrase(desc, _pe_macros(content, rep), folder_id=fid, triggers=triggers,
+                                content_format=fmt))
         rep.imported += 1
 
     def walk(el, fid, depth=0) -> None:
@@ -418,7 +432,7 @@ def import_text_files(store: Store, paths, folder_id: int | None = None) -> Exch
             rep.skipped += 1
             continue
         fmt = "html" if re.search(r"</?(p|b|i|br|div|span)\b", text, re.I) else "text"
-        store.add_phrase(Phrase(Path(f).stem, text, folder_id=rep.folder_id, content_format=fmt))
+        store.add_phrase(Phrase(Path(f).stem, _pe_macros(text, rep), folder_id=rep.folder_id, content_format=fmt))
         rep.imported += 1
     return rep
 

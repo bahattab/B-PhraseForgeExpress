@@ -2491,6 +2491,7 @@ class MainWindow(QMainWindow):
                         more = import_any(self.store, q)
                         rep.imported += more.imported
                         rep.skipped += more.skipped
+                        rep.notes += [n for n in more.notes if n not in rep.notes]
             else:
                 rep = import_any(self.store, path)
         except Exception as e:
@@ -2502,6 +2503,10 @@ class MainWindow(QMainWindow):
             self.select_folder(rep.folder_id)
         self.last_import_summary = f"Imported {rep.imported} phrase(s)." + (
             f" Skipped {rep.skipped} empty row(s)." if rep.skipped else "")
+        unsupported = [n for n in rep.notes if "not supported" in n or "not understood" in n]
+        if unsupported:
+            self.last_import_summary += ("\n\nThese PhraseExpress macros have no PhraseForge equivalent; they show "
+                                         "a marker when the phrase runs:\n" + "\n".join(unsupported[:15]))
         if show_message:
             QMessageBox.information(self, "Import from PhraseExpress", self.last_import_summary)
         return rep
