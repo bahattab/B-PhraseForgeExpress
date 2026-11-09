@@ -28,6 +28,9 @@ pushing a tag such as `v0.6.6` also publishes a GitHub Release. To build locally
 ```
 python -m pip install -r requirements-build.txt
 python packaging\make_icon.py
+rem native keyboard hook, from an "x64 Native Tools Command Prompt for VS"
+mkdir native\pfhook\build
+cl /nologo /O2 /W4 /LD native\pfhook\pfhook.c /Fonative\pfhook\build\ /Fephraseforge\platform\pfhook.dll /link user32.lib
 pyinstaller --noconfirm packaging\phraseforge.spec          # dist\B-PhraseForgeExpress\B-PhraseForgeExpress.exe
 set PF_ONEFILE=1 && pyinstaller --noconfirm packaging\phraseforge.spec   # dist\B-PhraseForgeExpress-portable.exe
 "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" /DAppVersion=0.6.6 packaging\installer.iss
@@ -52,6 +55,23 @@ C:\venvs\phraseforge\Scripts\python -m phraseforge             # main window + t
 C:\venvs\phraseforge\Scripts\python -m phraseforge --minimized # tray only
 C:\venvs\phraseforge\Scripts\python -m pytest -p no:cacheprovider  # full test suite
 ```
+
+### Keyboard hook
+
+Builds from GitHub include `pfhook.dll`, a small native keyboard hook
+([native/pfhook/pfhook.c](native/pfhook/pfhook.c)). Keys never wait on Python for more
+than 40 ms: if PhraseForge is busy, keys pass straight to the program (hotkeys are still
+caught), so typing elsewhere never lags and Windows does not remove the hook. Without the
+DLL (running from source without building it) PhraseForge uses its older Python hook.
+To force that one, set `PHRASEFORGE_HOOK=python` or the setting `input.native_hook` to `0`.
+
+PhraseForge also:
+
+- stops listening while the PC is locked or a Remote Desktop session is disconnected,
+  and starts again when you are back;
+- shows a message when a program that runs as administrator comes to the front: Windows
+  does not let a normal program read or type keys there. Click the message to restart
+  PhraseForge as administrator. Phrases are not half-typed into such a window.
 
 ## Screen OCR and sticky notes
 

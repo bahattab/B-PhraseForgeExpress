@@ -194,6 +194,20 @@ def run() -> int:
         lines.append("      built-in Google client: " + ("yes" if builtin_client_file().is_file() else "no"))
     check("Google sign-in", google_signin)
 
+    def native_hook() -> None:
+        # pfhook.dll is bundled and can install the keyboard hook (PRD FR-INP-01).
+        from phraseforge.platform import native_hook as nh
+        lib = nh.load_library()
+        assert lib is not None, nh.library_error()
+        hook = nh.NativeKeyboardHook(lambda ev: False, lib=lib)
+        hook.start()
+        try:
+            assert hook.running
+            lines.append(f"      native keyboard hook: {hook.stats()}")
+        finally:
+            hook.stop()
+    check("native keyboard hook (pfhook.dll)", native_hook)
+
     lines.append("RESULT: " + ("FAIL" if failed else "PASS"))
     (paths.data_dir() / "selftest.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return 1 if failed else 0

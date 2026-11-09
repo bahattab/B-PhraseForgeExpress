@@ -74,9 +74,16 @@ excludes = [
     "PySide6.QtTextToSpeech", "PySide6.QtNfc", "PySide6.QtSpatialAudio",
 ]
 
+# Native keyboard hook (native/pfhook, built by the workflow before PyInstaller runs).
+PFHOOK = ROOT / "phraseforge" / "platform" / "pfhook.dll"
+if not PFHOOK.is_file() and os.environ.get("PF_REQUIRE_PFHOOK") == "1":
+    raise SystemExit(f"{PFHOOK} is missing: build native/pfhook first")
+binaries = [(str(PFHOOK), "phraseforge/platform")] if PFHOOK.is_file() else []
+
 a = Analysis(
     [str(ROOT / "phraseforge" / "__main__.py")],
     pathex=[str(ROOT)],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     excludes=excludes,

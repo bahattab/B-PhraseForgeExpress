@@ -29,5 +29,10 @@ reference/
 *.prof
 *.out
 
+# Native keyboard hook, built by the workflow from native/pfhook/pfhook.c
+phraseforge/platform/pfhook.dll
+phraseforge/platform/pfhook.lib
+phraseforge/platform/pfhook.exp
+
 # Built-in Google sign-in client, written at build time from repository secrets
 phraseforge/cloud/google_client.json

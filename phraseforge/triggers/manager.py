@@ -152,7 +152,8 @@ class TriggerManager:
                  on_command: Callable[[str], None], *, learner=None, word_learner=None,
                  hook_factory=None, watcher_factory=None, foreground_app=None,
                  foreground_hwnd=None, vk_from_char=None, poll_interval_s: float = 0.5,
-                 clock: Callable[[], float] = time.monotonic, timer_factory=None):
+                 clock: Callable[[], float] = time.monotonic, timer_factory=None,
+                 session_state=None, window_elevated=None):
         self.store = store
         self.on_expand = on_expand
         self.on_command = on_command
@@ -169,6 +170,12 @@ class TriggerManager:
         self._clock = clock
         self._double_ctrl = None       # filesearch.DoubleTap, set in reload()
         self._timer_factory = timer_factory or threading.Timer
+        self._session_state = session_state        # () -> "active" | "locked" | "disconnected"
+        self._window_elevated = window_elevated    # (hwnd) -> True when the program runs as administrator
+        self._session = "active"
+        self._poll_hwnd = None
+        self._elevated_seen: set[str] = set()      # programs we already warned about
+        self._late = False                         # the key being handled already reached the program
 
         self.matcher = AutotextMatcher()
         self.hotkeys = HotkeyMatcher(vk_from_char)
@@ -325,18 +332,63 @@ class TriggerManager:
         self._smart = smart
         if self.hotkeys.errors:
             log.warning("hotkey errors: %s", self.hotkeys.errors)
+        self._push_native_rules()
+
+    def native_rules(self) -> list[tuple[int, frozenset[str], int]]:
+        """Keys the native hook swallows without asking Python: Caps Lock when it is disabled
+        (always), and every hotkey chord while Python is late (so it never leaks into the program)."""
+        from phraseforge.platform.native_hook import WHEN_ALWAYS, WHEN_DEGRADED
+        rules = [(vk, mods, WHEN_DEGRADED) for vk, mods in self.hotkeys.chords()]
+        if self._opt.get("disable_capslock"):
+            rules.append((VK_CAPITAL, frozenset(), WHEN_ALWAYS))
+        return rules
+
+    def _push_native_rules(self) -> None:
+        hook = self._hook
+        if hook is not None and hasattr(hook, "set_rules"):
+            try:
+                hook.set_rules(self.native_rules())
+            except Exception:
+                log.exception("native hook rules not set")
+
+    def _default_hook(self, on_key):
+        from phraseforge.platform.native_hook import make_keyboard_hook
+        native = self.store.setting("input.native_hook", "1") == "1"
+        return make_keyboard_hook(on_key, prefer_native=native)
+
+    def _start_hook(self) -> None:
+        self._hook = self._hook_factory(self._on_key)
+        try:
+            self._hook.start()
+        except OSError as e:
+            if not getattr(self._hook, "native", False):
+                raise
+            log.warning("native keyboard hook failed (%s); using the Python hook", e)
+            from phraseforge.platform.keyboard_hook import KeyboardHook
+            self._hook = KeyboardHook(self._on_key)
+            self._hook.start()
+        self._push_native_rules()
+
+    @property
+    def hook_kind(self) -> str:
+        """"native", "python" or "" (not started), for Help > Diagnostics."""
+        if self._hook is None:
+            return ""
+        return "native" if getattr(self._hook, "native", False) else "python"
+
+    def hook_stats(self) -> dict:
+        fn = getattr(self._hook, "stats", None)
+        return fn() if callable(fn) else {}
 
     def start(self) -> None:
         self._stop.clear()
         self.reload()
         if self._hook_factory is None:
-            from phraseforge.platform.keyboard_hook import KeyboardHook
-            self._hook_factory = KeyboardHook
+            self._hook_factory = self._default_hook
         if self._watcher_factory is None:
             from phraseforge.platform.clipboard import ClipboardWatcher
             self._watcher_factory = ClipboardWatcher
-        self._hook = self._hook_factory(self._on_key)
-        self._hook.start()
+        self._start_hook()
         self._watcher = self._watcher_factory(self._on_clipboard)
         self._watcher.start()
         for target, name in ((self._dispatch_loop, "pf-trigger-dispatch"), (self._poll_loop, "pf-trigger-poll")):
@@ -424,7 +476,12 @@ class TriggerManager:
 
     # ------------------------------------------------------------ keyboard
     def _on_key(self, ev) -> bool:
-        """Runs on the hook thread: must return quickly. True = swallow the key."""
+        """Runs on the hook thread: must return quickly. True = swallow the key.
+
+        ev.late (native hook): Python answered too slowly, so the key has already reached the
+        program and cannot be swallowed any more. Actions then erase one more character
+        (the key itself) instead of relying on the swallow."""
+        self._late = bool(getattr(ev, "late", False))
         if ev.vk == VK_CAPITAL and self._opt.get("disable_capslock"):
             return True                                   # Caps Lock disabled (down and up)
         if self._double_ctrl is not None and self._double_ctrl.feed(ev.vk, ev.down) and self._active():
@@ -444,6 +501,10 @@ class TriggerManager:
         # a visible SmartComplete / AutoComplete tip: Tab/Enter accept, Esc dismisses
         if self._suggest is not None and plain:
             if ev.vk in (VK_TAB, VK_RETURN):
+                if self._late:            # the Tab/Enter is already in the text: just close the tip
+                    self._hide_suggestion()
+                    self.matcher.reset()
+                    return False
                 self.accept_suggestion()
                 return True
             if ev.vk == VK_ESCAPE:
@@ -452,7 +513,7 @@ class TriggerManager:
 
         # Backspace right after an expansion: undo it (Settings > Features)
         last, self._last_exp = self._last_exp, None
-        if (last is not None and ev.vk == K.VK_BACK and plain and self._opt.get("undo")
+        if (last is not None and ev.vk == K.VK_BACK and plain and self._opt.get("undo") and not self._late
                 and self._clock() - last["time"] <= UNDO_WINDOW_S):
             self._emit(self.on_command, f"undo_expansion:{last['pid']}:{last['typed']}")
             self._emit(self.on_command, "sound:unwanted_detected")
@@ -473,7 +534,8 @@ class TriggerManager:
                 and self._clock() <= pending["deadline"]:
             m: Match = pending["match"]
             trail = "" if m.trigger.remove_trailing else m.trailing_delimiter
-            self._fire(m, erase=typed_len(m), trailing=trail + char, exe=pending["exe"], title=pending["title"])
+            self._fire(m, erase=typed_len(m) + (1 if self._late else 0), trailing=trail + char,
+                       exe=pending["exe"], title=pending["title"])
             return True
 
         if self.learner:
@@ -545,6 +607,11 @@ class TriggerManager:
         return None, "f-key"
 
     # ------------------------------------------------------------ matches
+    def _late_erase(self, m: Match) -> int:
+        """Characters to erase for a match whose completing key is normally swallowed; when the
+        key came late it is already on screen (typed_len)."""
+        return typed_len(m) if self._late else m.erase_chars
+
     def _handle_match(self, m: Match) -> bool:
         t = m.trigger
         exe, title = self._fg()
@@ -552,7 +619,7 @@ class TriggerManager:
             return False
         if t.phrase_id is None:                           # a folder's own trigger
             owner = t.folder_id if t.folder_id is not None else t.special
-            self._emit(self.on_command, f"folder_popup:{owner}:{m.erase_chars}")
+            self._emit(self.on_command, f"folder_popup:{owner}:{self._late_erase(m)}")
             return True
         # several phrases share this abbreviation: keep those allowed in this program
         allowed = []
@@ -567,7 +634,7 @@ class TriggerManager:
         if len(allowed) > 1:                              # PhraseExpress multiple-choice autotext
             ids = ",".join(str(c.phrase_id) for c in allowed)
             delim = str(ord(m.trailing_delimiter)) if m.trailing_delimiter else ""
-            self._emit(self.on_command, f"choose:{ids}:{m.erase_chars}:{delim}")
+            self._emit(self.on_command, f"choose:{ids}:{self._late_erase(m)}:{delim}")
             return True
         if allowed[0] is not t:                           # only another phrase is allowed here
             m = replace(m, trigger=allowed[0], alternatives=())
@@ -588,7 +655,7 @@ class TriggerManager:
                 timer.start()
             return False      # the completing key is typed normally; erase typed_len later
         trail = "" if t.remove_trailing else m.trailing_delimiter
-        self._fire(m, erase=m.erase_chars, trailing=trail, exe=exe, title=title)
+        self._fire(m, erase=self._late_erase(m), trailing=trail, exe=exe, title=title)
         return True
 
     def _fire(self, m: Match, erase: int, trailing: str, exe: str, title: str) -> None:
@@ -625,7 +692,7 @@ class TriggerManager:
                 and self._sentence_start():
             up = char.upper()
             self._recent += up
-            self._emit(self.on_command, f"autocorrect:0:{up}")
+            self._emit(self.on_command, f"autocorrect:{1 if self._late else 0}:{up}")
             return True
         if self._opt.get("two_caps") and not (char.isalnum() or char in "'’-_"):
             word = re.search(r"[\w'’-]*$", self._recent).group(0)
@@ -633,7 +700,8 @@ class TriggerManager:
                     and any(c.islower() for c in word[2:]) and not any(c.isupper() for c in word[2:])):
                 fixed = word[0] + word[1].lower() + word[2:]
                 self._recent = self._recent[:-len(word)] + fixed + char
-                self._emit(self.on_command, f"autocorrect:{len(word)}:{fixed}{char}")
+                erase = len(word) + (1 if self._late else 0)
+                self._emit(self.on_command, f"autocorrect:{erase}:{fixed}{char}")
                 return True
         self._recent = (self._recent + char)[-64:]
         return False
@@ -754,10 +822,72 @@ class TriggerManager:
             self._focus_state[key] = hit
         return fired
 
+    # ------------------------------------------------------------ session + elevation
+    def check_session(self) -> str:
+        """FR-INP-06: unhook while the PC is locked or the Remote Desktop session is
+        disconnected, hook again when the user is back. Returns the state (testable)."""
+        if self._session_state is None:
+            from phraseforge.platform.session import session_state
+            self._session_state = session_state
+        try:
+            state = self._session_state() or "active"
+        except Exception:
+            state = "active"
+        if state == self._session:
+            return state
+        log.info("session %s -> %s", self._session, state)
+        self._session = state
+        self._reset_typing()
+        if self._hook is not None:
+            try:
+                if state == "active":
+                    if not getattr(self._hook, "running", False):
+                        self._start_hook()
+                else:
+                    self._hook.stop()
+            except Exception:
+                log.exception("keyboard hook not %s", "restarted" if state == "active" else "stopped")
+        return state
+
+    @property
+    def session_active(self) -> bool:
+        return self._session == "active"
+
+    def check_elevated(self) -> str | None:
+        """FR-INP-04: when a window that runs as administrator comes to the front, warn once
+        per program (Windows keeps us from reading or typing keys there). Returns the exe."""
+        hwnd = self._fg_hwnd()
+        if hwnd == self._poll_hwnd:
+            return None
+        self._poll_hwnd = hwnd
+        if self._window_elevated is None:
+            from phraseforge.platform.session import window_elevated
+            self._window_elevated = window_elevated
+        try:
+            if not hwnd or not self._window_elevated(hwnd):
+                return None
+        except Exception:
+            return None
+        exe = (self._fg()[0] or "").lower() or "?"
+        if exe in self._elevated_seen:
+            return None
+        self._elevated_seen.add(exe)
+        self._emit(self.on_command, f"elevated:{exe}")
+        return exe
+
     def _poll_loop(self) -> None:
         while not self._stop.wait(self.poll_interval_s):
+            try:
+                if self.check_session() != "active":
+                    continue
+            except Exception:
+                log.exception("session check failed")
             if not self._active():
                 continue
+            try:
+                self.check_elevated()
+            except Exception:
+                log.exception("elevation check failed")
             try:
                 exe, title = self._fg()
                 for pid in self.check_time(datetime.now()):

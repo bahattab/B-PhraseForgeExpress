@@ -36,6 +36,19 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-build.txt
 
+      # Native keyboard hook (PRD FR-INP-01), built with the runner's Visual Studio.
+      # The EXE build below refuses to run without it.
+      - name: Build native keyboard hook (pfhook.dll)
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw "Visual Studio C++ tools not found" }
+          New-Item -ItemType Directory -Force native\pfhook\build | Out-Null
+          cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul && cl /nologo /O2 /W4 /LD native\pfhook\pfhook.c /Fonative\pfhook\build\ /Fephraseforge\platform\pfhook.dll /link /NOLOGO user32.lib"
+          if ($LASTEXITCODE -ne 0) { throw "pfhook.dll build failed" }
+          $h = (Get-FileHash phraseforge\platform\pfhook.dll -Algorithm SHA256).Hash
+          Write-Host "pfhook.dll SHA-256: $h"
+
       - name: Version
         id: ver
         run: |
@@ -92,11 +105,14 @@ jobs:
           Write-Host "Built-in Google client written."
 
       - name: Build EXE (folder, for the installer)
+        env:
+          PF_REQUIRE_PFHOOK: "1"
         run: pyinstaller --noconfirm packaging/phraseforge.spec
 
       - name: Build portable single-file EXE
         env:
           PF_ONEFILE: "1"
+          PF_REQUIRE_PFHOOK: "1"
         run: pyinstaller --noconfirm packaging/phraseforge.spec
 
       - name: Self-test the EXEs
