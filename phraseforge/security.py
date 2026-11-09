@@ -100,6 +100,9 @@ def privileged_reason(name: str, args: list[str], opts: dict[str, str]) -> str |
     return reason
 
 
+PLUGIN_REASON = "use plugins that may reach the internet, files or the keyboard"
+
+
 def scan_privileged(content: str) -> list[str]:
     """Reasons for every privileged macro written in `content` (static check used
     to decide whether to ask before expanding). The engine still checks each call
@@ -107,7 +110,17 @@ def scan_privileged(content: str) -> list[str]:
     from phraseforge.macros.registry import REGISTRY, catalog
     catalog()                                     # make sure all commands are registered
     found: list[str] = []
+    for m in re.finditer(r"\{#([A-Za-z]\w*(?:-\w+)*)\.([A-Za-z_]\w*)", content or ""):     # plugin macros
+        from phraseforge.plugins import manager as pm
+        mgr = pm.current()
+        man = mgr.macro_manifest(m.group(1).lower(), m.group(2).lower()) if mgr is not None else None
+        if man is None or man.permissions.privileged:     # unknown now: it may be one later
+            reason = PLUGIN_REASON
+            if reason not in found:
+                found.append(reason)
     for m in re.finditer(r"\{#([A-Za-z][\w]*)([^{}]*)", content or ""):
+        if m.group(2).startswith("."):                   # a plugin macro: handled above
+            continue
         entry = REGISTRY.get(m.group(1).lower())
         if entry is None:
             continue

@@ -288,6 +288,8 @@ class MacroEngine:
         return actions_to_text(self.eval_nodes(tok.parts, rt))
 
     def eval_call(self, call: Call, rt: Runtime) -> list:
+        if "." in call.name:
+            return self.eval_plugin_call(call, rt)
         entry = REGISTRY.get(call.name)
         if entry is None or entry[1] is None:
             return [TextAction(call.raw)]
@@ -310,6 +312,29 @@ class MacroEngine:
         except Exception as e:  # noqa: BLE001 - surface any failure inline
             return [TextAction(f"[{call.name}: {type(e).__name__}: {e}]")]
         return _norm(res)
+
+    def eval_plugin_call(self, call: Call, rt: Runtime) -> list:
+        """{#<plugin id>.<macro>} (FR-PLG-07): arguments arrive expanded; the plugin answers text."""
+        from phraseforge import policy
+        from phraseforge.plugins import manager as pm
+        pid, _, name = call.name.partition(".")
+        mgr = pm.current()
+        m = mgr.macro_manifest(pid, name) if mgr is not None else None
+        if m is None:
+            return [TextAction(call.raw)]                 # unknown: kept as text, like any unknown macro
+        if policy.current().macro_disabled(call.name) or policy.current().macro_disabled(pid + ".*"):
+            return [TextAction(f"[{call.name}: disabled by your administrator]")]
+        if m.permissions.privileged and not getattr(rt.ctx, "allow_privileged", True):
+            return [TextAction(f"[{call.name}: blocked, phrase not approved on this PC]")]
+        args = [self.eval_token(t, rt) for t in call.args]
+        opts = {k: self.eval_token(v, rt) for k, v in call.opts.items()}
+        from phraseforge.plugins.host import PluginError, PluginTimeout
+        try:
+            return [TextAction(mgr.call_macro(pid, name, args, opts))]
+        except PluginTimeout:
+            return [TextAction(f"[{call.name}: plugin timeout]")]
+        except (PluginError, OSError) as e:
+            return [TextAction(f"[{call.name}: {e}]")]
 
     def eval_if(self, block: IfBlock, rt: Runtime) -> list:
         for cond, body in block.branches:

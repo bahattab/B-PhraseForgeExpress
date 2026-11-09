@@ -509,6 +509,8 @@ class PhraseForgeApp(QObject):
         self.options = options if options is not None else cli.Options()   # command-line switches
         self.qapp = qapp
         self.store = store
+        from phraseforge.plugins import manager as plugin_manager
+        plugin_manager.set_current(plugin_manager.PluginManager(store))   # {#<plugin>.<macro>}
         self.host = QtHost(self)
         self.poster = _Poster()
         self._jobs: queue.Queue = queue.Queue()
@@ -1902,6 +1904,9 @@ class PhraseForgeApp(QObject):
                 self.sticky.flush()      # save notes typed in the last half second
             self.triggers.stop()
             self.clip_history.stop()
+            from phraseforge.plugins import manager as plugin_manager
+            if plugin_manager.current() is not None:
+                plugin_manager.current().stop_all()
             self._cloud_push_on_exit()
         finally:
             self.tray.hide()
@@ -1985,10 +1990,23 @@ def quiet_http_loggers() -> None:
         logging.getLogger(name).setLevel(logging.WARNING)
 
 
+def _run_plugin(path: str) -> int:
+    """The frozen EXE runs a Python plugin's entry script (plugins/host.py starts it this way)."""
+    import runpy
+    from pathlib import Path
+    sys.argv = [path]
+    sys.path[:] = [str(Path(path).parent)] + [p for p in sys.path if p]
+    runpy.run_path(path, run_name="__main__")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
+    raw = list(argv if argv is not None else sys.argv)
+    if len(raw) >= 3 and raw[1] == "--run-plugin":          # never mixed with the app start-up
+        return _run_plugin(raw[2])
     from phraseforge import cli
-    argv = cli.link_only(list(argv if argv is not None else sys.argv))           # a link: nothing else (R81)
-    argv = paths.apply_command_line(argv)                                      # --portable, --home
+    argv = cli.link_only(raw)                               # a link: nothing else (R81)
+    argv = paths.apply_command_line(argv)                   # --portable, --home
     try:
         options = cli.parse(argv[1:])
     except cli.UsageError as e:

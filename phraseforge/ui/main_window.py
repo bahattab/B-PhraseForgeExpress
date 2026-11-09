@@ -797,6 +797,8 @@ class MainWindow(QMainWindow):
         b = g.add_large("Libraries", "folder_open", self.show_libraries)
         b.setToolTip("Use phrases from other phrase files next to your own (for example a team file "
                      "on a shared folder)")
+        b = g.add_large("Plugins", "settings", self.show_plugins)
+        b.setToolTip("Add-ons that bring new macros ({#plugin.macro}); each runs as its own program")
         b = g.add_large("Trash", "delete", self.show_trash)
         b.setToolTip("Deleted phrases and folders: restore them or delete them for good")
         b = g.add_large("Signatures", "email", self.show_signatures)
@@ -1753,6 +1755,10 @@ class MainWindow(QMainWindow):
         dlg = TasksDialog(self.store, self)
         dlg.show_phrase.connect(lambda pid: (dlg.accept(), self.select_phrase(pid)))
         dlg.exec()
+
+    def show_plugins(self) -> None:
+        from phraseforge.ui.plugins_dialog import PluginsDialog
+        PluginsDialog(self).exec()
 
     def show_libraries(self) -> None:
         from phraseforge.ui.libraries_dialog import LibrariesDialog
