@@ -145,7 +145,9 @@ class PluginManager:
             p.stop()
 
     def stop_all(self) -> None:
-        for pid in list(self._procs):
+        with self._lock:
+            ids = list(self._procs)
+        for pid in ids:
             self.stop(pid)
 
     def errors(self, pid: str) -> list[str]:

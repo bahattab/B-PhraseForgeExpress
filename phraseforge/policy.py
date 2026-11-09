@@ -175,7 +175,8 @@ def load(path: Path | None = None) -> Policy:
         return parse(p.read_text(encoding="utf-8-sig"), str(p))
     except Exception as e:                  # unreadable or invalid: lock rather than open up
         log.error("policy file %s could not be read, Settings and editing stay locked: %s", p, e)
-        return Policy(settings_locked=True, editing_disabled=True, source=str(p), error=str(e))
+        return Policy(settings_locked=True, editing_disabled=True, plugins_allowed=frozenset(), source=str(p),
+                      error=str(e))
 
 
 _current: Policy | None = None

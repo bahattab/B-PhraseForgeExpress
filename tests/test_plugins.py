@@ -269,3 +269,52 @@ def test_plugins_dialog(qapp, mgr):
     d.tree.setCurrentItem(d.tree.topLevelItem(0))
     d.remove_selected()
     assert mgr.installed() == {}
+
+
+# ---------------------------------------------------------------- review findings (regressions)
+def test_unreadable_policy_allows_no_plugin(tmp_path):
+    bad = tmp_path / "policy.toml"
+    bad.write_text("this is = = not toml")
+    p = policy.load(bad)
+    assert p.error and p.plugins_allowed == frozenset()
+
+
+def test_dashed_plugin_id_macros_work(mgr, tmp_path):
+    d = tmp_path / "dash"
+    shutil.copytree(EXAMPLE, d)
+    (d / "plugin.toml").write_text((d / "plugin.toml").read_text().replace('id = "hello"', 'id = "my-hello"'))
+    mgr.install(d, accept=True)
+    eng = MacroEngine(FakeHost())
+    assert eng.expand_to_text("{#my-hello.shout ok}", ExpansionContext()) == "OK"
+    from phraseforge.security import PLUGIN_REASON, scan_privileged
+    assert PLUGIN_REASON not in scan_privileged("{#my-hello.shout ok}")      # it asks for nothing privileged
+    assert PLUGIN_REASON in scan_privileged("{#other-thing.go}")             # unknown: counted
+
+
+def test_folder_with_a_link_is_refused(tmp_path):
+    d = tmp_path / "linky"
+    shutil.copytree(EXAMPLE, d)
+    secret = tmp_path / "private"
+    secret.mkdir()
+    (secret / "key.txt").write_text("secret")
+    try:
+        (d / "data").symlink_to(secret, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create links here")
+    with pytest.raises(ManifestError, match="link"):
+        inst.install(d, tmp_path / "p")
+    assert not (tmp_path / "p" / "hello").exists()
+
+
+def test_stop_during_send_is_a_plugin_error(tmp_path):
+    from phraseforge.plugins.host import PluginError
+    m = inst.install(EXAMPLE, tmp_path / "p")
+    proc = PluginProcess(m, tmp_path / "p" / "hello")
+    proc._proc = None
+    with pytest.raises(OSError):
+        proc._send({"x": 1})
+    try:
+        assert proc.call("macro", {"name": "shout", "args": ["a"], "opts": {}})["text"] == "A"
+    finally:
+        proc.stop()
+    assert issubclass(PluginError, Exception)

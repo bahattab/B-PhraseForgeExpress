@@ -110,7 +110,7 @@ def scan_privileged(content: str) -> list[str]:
     from phraseforge.macros.registry import REGISTRY, catalog
     catalog()                                     # make sure all commands are registered
     found: list[str] = []
-    for m in re.finditer(r"\{#([A-Za-z]\w*)\.([A-Za-z_][\w-]*)", content or ""):     # plugin macros
+    for m in re.finditer(r"\{#([A-Za-z]\w*(?:-\w+)*)\.([A-Za-z_]\w*)", content or ""):     # plugin macros
         from phraseforge.plugins import manager as pm
         mgr = pm.current()
         man = mgr.macro_manifest(m.group(1).lower(), m.group(2).lower()) if mgr is not None else None

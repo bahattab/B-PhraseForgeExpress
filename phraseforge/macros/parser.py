@@ -20,7 +20,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_-]*)?")   # ns.name: a plugin macro
+_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:(?:-[A-Za-z0-9_]+)*\.[A-Za-z_][A-Za-z0-9_]*)?")   # ns.name: a plugin macro
 _OPT = re.compile(r"-[A-Za-z][A-Za-z0-9_\-]*$")
 
 

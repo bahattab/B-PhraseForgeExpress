@@ -145,8 +145,14 @@ class PluginProcess:
                 p.wait(5)
 
     def _send(self, msg: dict) -> None:
-        self._proc.stdin.write((json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8"))
-        self._proc.stdin.flush()
+        proc = self._proc
+        if proc is None:
+            raise OSError("the plugin was stopped")
+        try:
+            proc.stdin.write((json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8"))
+            proc.stdin.flush()
+        except (ValueError, AttributeError) as e:          # stopped from another thread meanwhile
+            raise OSError(str(e)) from None
 
     # ------------------------------------------------------------ calls
     def call(self, method: str, params: dict | None = None, timeout: float = 5.0):

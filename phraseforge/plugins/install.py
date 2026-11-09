@@ -7,6 +7,7 @@ copy goes to a temporary folder and only then replaces the old version.
 """
 from __future__ import annotations
 
+import os
 import shutil
 import stat
 import tempfile
@@ -50,9 +51,36 @@ def _check_zip(z: zipfile.ZipFile) -> str:
     return _zip_root([i.filename for i in infos])
 
 
+def _check_folder(src: Path) -> None:
+    """No links or junctions (they would copy files from elsewhere on the PC), same limits as zips."""
+    count = total = 0
+    for root, dirs, files in os.walk(src, followlinks=False):
+        for name in dirs + files:
+            p = Path(root) / name
+            if p.is_symlink() or _is_junction(p):
+                raise ManifestError(f"the plugin folder contains a link: {p.relative_to(src)}")
+        for name in files:
+            count += 1
+            total += (Path(root) / name).stat().st_size
+            if count > MAX_FILES:
+                raise ManifestError(f"the plugin holds more than {MAX_FILES} files")
+            if total > MAX_BYTES:
+                raise ManifestError("the plugin is too large")
+
+
+def _is_junction(p: Path) -> bool:
+    try:
+        return bool(getattr(os.lstat(p), "st_file_attributes", 0) & 0x400)   # FILE_ATTRIBUTE_REPARSE_POINT
+    except OSError:
+        return False
+
+
 def inspect(src: str | Path) -> Manifest:
     src = Path(src)
+    if src.is_symlink():
+        raise ManifestError("the plugin folder is a link")
     if src.is_dir():
+        _check_folder(src)
         f = src / MANIFEST
         if not f.is_file():
             raise ManifestError("the folder has no plugin.toml")
@@ -79,7 +107,7 @@ def install(src: str | Path, dest_root: str | Path) -> Manifest:
     stage = Path(tempfile.mkdtemp(prefix=f".{m.id}-", dir=dest_root))
     try:
         if src.is_dir():
-            shutil.copytree(src, stage / "p", symlinks=False,
+            shutil.copytree(src, stage / "p", symlinks=True,          # links were refused above
                             ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".git"))
         else:
             with zipfile.ZipFile(src) as z:
