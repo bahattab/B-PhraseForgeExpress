@@ -41,11 +41,12 @@ CREATE TABLE IF NOT EXISTS {name} (
   kind TEXT NOT NULL, value TEXT NOT NULL, mode TEXT DEFAULT 'delimiter',
   case_sensitive INTEGER DEFAULT 0, word_start_only INTEGER DEFAULT 1, enabled INTEGER DEFAULT 1,
   word_pos TEXT DEFAULT '', exec_mode TEXT DEFAULT '', lead_delim TEXT DEFAULT '',
-  trail_delim TEXT DEFAULT '', remove_trailing INTEGER DEFAULT 0, window_scope TEXT DEFAULT '');
+  trail_delim TEXT DEFAULT '', remove_trailing INTEGER DEFAULT 0, window_scope TEXT DEFAULT '',
+  fast_only INTEGER DEFAULT 0);
 """
 TRIGGER_COLUMNS = ("phrase_id", "folder_id", "special", "kind", "value", "mode", "case_sensitive",
                    "word_start_only", "enabled", "word_pos", "exec_mode", "lead_delim", "trail_delim",
-                   "remove_trailing", "window_scope")
+                   "remove_trailing", "window_scope", "fast_only")
 
 # Change-set sync (cloud/merge.py) recognizes the same folder, phrase or note on two PCs by
 # this id, which never changes and travels with the sync copy. Rows inserted without one get
@@ -224,7 +225,7 @@ DEVICE_SETTING_PREFIXES = (
     "sync.", "gdrive.", "backup.cloud_", "backup.directory", "ocr.cli_path", "ocr.log_file",
     "app.start_with_windows", "app.first_run_done", "ui.item_colors", "ui.trigger_extras",
     "updates.last_check", "updates.notified_version", "net.", "onenote.exe",
-    "filesearch.actions", "filesearch.commands", "filesearch.roots", "sound.", "shared.", "recorder.", "dynamic.", "library.",
+    "filesearch.actions", "filesearch.commands", "filesearch.roots", "sound.", "shared.", "recorder.", "dynamic.", "library.", "autoskip.",
     *sorted(SECRET_SETTINGS))
 DEVICE_SETTING_SUFFIXES = ("_url", "_endpoint", "_path", "_file", ".file", ".exe", "_dir", "_directory")
 
@@ -646,6 +647,8 @@ class Store:
             if tc and "uid" not in tc:
                 c.execute(f"ALTER TABLE {t} ADD COLUMN uid TEXT")     # SCHEMA fills it in
         tcols = self._columns("triggers")
+        if tcols and "folder_id" in tcols and "fast_only" not in tcols:
+            c.execute("ALTER TABLE triggers ADD COLUMN fast_only INTEGER DEFAULT 0")
         if tcols and "folder_id" not in tcols:
             # phrase_id was NOT NULL: SQLite can only relax that by rebuilding the table
             c.commit()
@@ -986,7 +989,8 @@ class Store:
                 f"INSERT INTO triggers ({','.join(TRIGGER_COLUMNS)}) VALUES ({','.join('?' * len(TRIGGER_COLUMNS))})",
                 (t.phrase_id, t.folder_id, t.special, TriggerKind(t.kind).value, t.value,
                  AutotextMode(t.mode).value, int(t.case_sensitive), int(t.word_start_only), int(t.enabled),
-                 t.word_pos, t.exec_mode, t.lead_delim, t.trail_delim, int(t.remove_trailing), t.window_scope))
+                 t.word_pos, t.exec_mode, t.lead_delim, t.trail_delim, int(t.remove_trailing), t.window_scope,
+                 int(t.fast_only)))
             t.id = cur.lastrowid
 
     def _write_tags(self, p: Phrase) -> None:
@@ -1018,7 +1022,8 @@ class Store:
                        folder_id=r["folder_id"], special=r["special"] or "", word_pos=r["word_pos"] or "",
                        exec_mode=r["exec_mode"] or "", lead_delim=r["lead_delim"] or "",
                        trail_delim=r["trail_delim"] or "", remove_trailing=bool(r["remove_trailing"]),
-                       window_scope=r["window_scope"] or "")
+                       window_scope=r["window_scope"] or "",
+                       fast_only=bool(r["fast_only"]) if "fast_only" in r.keys() else False)
 
     def get_phrase(self, phrase_id: int) -> Phrase | None:
         with self.lock:

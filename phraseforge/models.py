@@ -30,7 +30,9 @@ class OutputMode(str, Enum):
 
 WORD_POSITIONS = ("start", "end", "middle", "entire")
 EXEC_MODES = ("immediate", "confirm", "pause", "continue")
-DELIMITER_CHOICES = ("Default", "None", "Space", "Enter", "Tab", "Punctuation", "Any non-letter")
+DELIMITER_CHOICES = ("Default", "None", "Space", "Enter", "Tab", "Punctuation", "Any non-letter",
+                     "All", "Letters", "Numbers", "Point", "Comma", "Custom")
+# Several classes can be combined with "+" ("Space+Comma"); "Custom:<chars>" lists characters.
 
 
 @dataclass
@@ -53,6 +55,7 @@ class Trigger:
     trail_delim: str = ""            # one of DELIMITER_CHOICES ("" = from mode)
     remove_trailing: bool = False    # drop the trailing delimiter after expansion
     window_scope: str = ""           # APP_FOCUS: "" / "any" = title contains, "program" = exe name
+    fast_only: bool = False          # AUTOTEXT: fire only when the abbreviation was typed quickly
 
     # effective values (old rows only have mode/word_start_only)
     def eff_word_pos(self) -> str:
@@ -84,7 +87,7 @@ class Trigger:
         kw = {k: v for k, v in d.items() if k in names and k not in ("id", "phrase_id", "folder_id")}
         kw["kind"] = TriggerKind(d["kind"])
         kw["mode"] = AutotextMode(d.get("mode", "delimiter"))
-        for b in ("case_sensitive", "word_start_only", "enabled", "remove_trailing"):
+        for b in ("case_sensitive", "word_start_only", "enabled", "remove_trailing", "fast_only"):
             if b in kw:
                 kw[b] = bool(kw[b])
         return cls(**kw)

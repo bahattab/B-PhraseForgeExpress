@@ -24,6 +24,7 @@ Commands passed to on_command (the app handles each one):
   "undo_expansion:<phrase_id>:<typed>"       Backspace right after an expansion: remove the
                                              inserted text and type <typed> back
   "sound:unwanted_detected"                  with undo_expansion
+  "autoskip:<phrase_id>:<exe>"               learned auto-skip switched that autotext off in exe
   "sound:unwanted_skipped"                   a trigger skipped by "Pause for a short time"
   "sound:spelling_added"                     AutoComplete learned a corrected word
 Accepting a SmartComplete tip (Tab/Enter, or accept_suggestion()) sends an
@@ -44,7 +45,7 @@ from typing import Callable
 from phraseforge.host import ExpansionContext, ExpansionRequest
 from phraseforge.models import Trigger, TriggerKind
 from phraseforge.platform import keys as K
-from phraseforge.triggers.autotext import (AutotextMatcher, Match, apply_group_prefixes, folder_prefixes,
+from phraseforge.triggers.autotext import (AutotextMatcher, Match, apply_global_prefix, apply_group_prefixes, folder_prefixes,
                                            typed_len)
 from phraseforge.triggers.hotkeys import HotkeyMatcher
 
@@ -66,6 +67,7 @@ COMMAND_HOTKEY_SETTINGS = {
     "hotkey.edit_last_phrase": "edit_last_phrase",
     "hotkey.new_phrase_from_clipboard": "new_phrase_from_clipboard",
     "hotkey.toggle_expansion": "toggle_expansion",
+    "hotkey.skip_next": "skip_next",              # FR-TRG-05: ignore the next autotext once
     "hotkey.open_main": "open_main",
     "hotkey.open_settings": "open_settings",
     "hotkey.clear_clipboard_cache": "clear_clipboard_cache",
@@ -178,6 +180,8 @@ class TriggerManager:
         self._late = False                         # the key being handled already reached the program
 
         self.matcher = AutotextMatcher()
+        from phraseforge.triggers.autoskip import AutoSkip
+        self.autoskip = AutoSkip(store)
         self.hotkeys = HotkeyMatcher(vk_from_char)
         self._clip_triggers: list[Trigger] = []
         self._time_triggers: list[tuple[Trigger, str, int]] = []
@@ -287,6 +291,11 @@ class TriggerManager:
             "programs": _parse_programs(s("app.restrict_programs", "")),
         }
         self.matcher.set_route_enter_tab(s("autotext.route_enter_tab", "0") == "1")
+        try:
+            self.matcher.set_fast_ms(int(s("autotext.fast_ms", "150") or 150))
+        except ValueError:
+            self.matcher.set_fast_ms(150)
+        self.autoskip.reload()
         from phraseforge.filesearch import DoubleTap
         self._double_ctrl = (DoubleTap({0x11, 0xA2, 0xA3}, clock=self._clock)
                              if s("filesearch.double_ctrl", "1") == "1" and s("filesearch.enabled", "1") == "1"
@@ -299,6 +308,7 @@ class TriggerManager:
             autotexts = apply_group_prefixes(autotexts, st.phrase_folder_map(), folder_prefixes(st.folders()))
         except Exception:
             log.exception("group prefixes not applied")
+        autotexts = apply_global_prefix(autotexts, s("autotext.global_prefix", ""))
         self.matcher.load(autotexts + st.triggers(TriggerKind.REGEX))
         self.hotkeys.clear()
         for key, cmd in COMMAND_HOTKEY_SETTINGS.items():
@@ -517,6 +527,8 @@ class TriggerManager:
                 and self._clock() - last["time"] <= UNDO_WINDOW_S):
             self._emit(self.on_command, f"undo_expansion:{last['pid']}:{last['typed']}")
             self._emit(self.on_command, "sound:unwanted_detected")
+            if last.get("auto") and self.autoskip.record_undo(last["pid"], last.get("exe", "")):
+                self._emit(self.on_command, f"autoskip:{last['pid']}:{last.get('exe', '')}")
             self._hide_suggestion()
             return True
 
@@ -565,6 +577,9 @@ class TriggerManager:
 
     def _on_hotkey(self, ev, payload) -> bool:
         kind, value = payload
+        if kind == "cmd" and value == "skip_next":
+            self.matcher.skip_next()
+            return True
         if kind == "cmd":
             self._emit(self.on_command, value)
             return True
@@ -625,7 +640,8 @@ class TriggerManager:
         allowed = []
         for c in (t,) + tuple(m.alternatives):
             if c.phrase_id is not None and c.phrase_id not in [a.phrase_id for a in allowed] \
-                    and self.store.phrase_allowed_in_app(c.phrase_id, exe):
+                    and self.store.phrase_allowed_in_app(c.phrase_id, exe) \
+                    and not (TriggerKind(c.kind) == TriggerKind.AUTOTEXT and self.autoskip.blocked(c.phrase_id, exe)):
                 allowed.append(c)
         if not allowed:
             return False
@@ -664,7 +680,8 @@ class TriggerManager:
         self._recent = ""
         self.words.reset()
         if self._opt.get("undo"):
-            self._last_exp = {"pid": pid, "typed": m.typed + m.trailing_delimiter, "time": self._clock()}
+            self._last_exp = {"pid": pid, "typed": m.typed + m.trailing_delimiter, "time": self._clock(),
+                              "exe": exe, "auto": TriggerKind(m.trigger.kind) == TriggerKind.AUTOTEXT}
 
     def _fire_pending(self, seq: int) -> None:
         """Timer for the "when pausing after autotext input" mode: no key came in time."""

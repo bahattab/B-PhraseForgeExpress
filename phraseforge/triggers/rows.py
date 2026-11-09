@@ -37,7 +37,7 @@ VALUELESS_OK = {"smartcomplete"}
 def default_row(type_: str = "autotext") -> dict[str, Any]:
     return {"type": type_, "value": "", "case_sensitive": False, "word_pos": "start",
             "exec": "immediate", "lead_delim": "Default", "trail_delim": "None", "remove_trailing": False,
-            "window_scope": "any", "enabled": True}
+            "window_scope": "any", "enabled": True, "fast_only": False}
 
 
 def row_to_trigger(row: dict) -> Trigger | None:
@@ -56,6 +56,7 @@ def row_to_trigger(row: dict) -> Trigger | None:
         t.lead_delim = row.get("lead_delim") or "Default"
         t.trail_delim = row.get("trail_delim") or "None"
         t.remove_trailing = bool(row.get("remove_trailing"))
+        t.fast_only = bool(row.get("fast_only"))
     elif kind == TriggerKind.REGEX:
         t.exec_mode = row.get("exec") or "immediate"
         t.mode = AutotextMode.IMMEDIATE
@@ -72,7 +73,7 @@ def trigger_to_row(t: Trigger) -> dict:
     row["case_sensitive"] = t.case_sensitive
     if kind == TriggerKind.AUTOTEXT:
         row.update(word_pos=t.eff_word_pos(), exec=t.eff_exec(), lead_delim=t.eff_lead(),
-                   trail_delim=t.eff_trail(), remove_trailing=t.remove_trailing)
+                   trail_delim=t.eff_trail(), remove_trailing=t.remove_trailing, fast_only=t.fast_only)
     elif kind == TriggerKind.REGEX:
         row["exec"] = t.eff_exec()
     elif kind == TriggerKind.APP_FOCUS:

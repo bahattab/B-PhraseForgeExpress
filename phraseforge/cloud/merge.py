@@ -84,7 +84,12 @@ def _cols(con, table: str) -> set[str]:
 
 def _trigger_rows(con, where: str, arg) -> str:
     rows = con.execute(f"SELECT * FROM triggers WHERE {where}=? ORDER BY id", (arg,)).fetchall()
-    return json.dumps([{k: r[k] for k in r.keys() if k not in TRIGGER_SKIP} for r in rows], sort_keys=True)
+    # options added later are left out while unset, so copies from before them compare equal
+    return json.dumps([{k: r[k] for k in r.keys() if k not in TRIGGER_SKIP and not (k in LATER_OPTIONS and not r[k])}
+                       for r in rows], sort_keys=True)
+
+
+LATER_OPTIONS = ("fast_only",)
 
 
 _DEFAULTS = {"show_in_popup": 1, "enabled": 1, "sort": 0, "use_count": 0, "output_mode": "auto",
