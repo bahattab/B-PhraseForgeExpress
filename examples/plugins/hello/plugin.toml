@@ -1,0 +1,12 @@
+id = "hello"
+name = "Hello"
+version = "1.0.0"
+api_version = "1.0"
+kinds = ["macro"]
+entry = "main.py"
+runtime = "python-subprocess"
+macros = ["greet", "shout", "secret_len"]
+description = "Example macro plugin: {#hello.greet Sam}, {#hello.shout text}"
+
+[permissions]
+secrets = ["token"]

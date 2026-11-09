@@ -209,7 +209,7 @@ SECRET_SETTINGS = frozenset({"ai.openai_key", "ai.anthropic_key", "ai.openrouter
                              "net.proxy_password", "shared.password", "sync.passphrase"})
 # Settings sealed the same way, by prefix: a dynamic folder's ODBC connection string can
 # hold a password (dynamic.conn.<folder id>, security R46).
-SECRET_PREFIXES = ("dynamic.conn.",)
+SECRET_PREFIXES = ("dynamic.conn.", "plugins.secret.")
 
 
 def is_secret_setting(key: str) -> bool:
@@ -225,7 +225,7 @@ DEVICE_SETTING_PREFIXES = (
     "sync.", "gdrive.", "backup.cloud_", "backup.directory", "ocr.cli_path", "ocr.log_file",
     "app.start_with_windows", "app.first_run_done", "ui.item_colors", "ui.trigger_extras",
     "updates.last_check", "updates.notified_version", "net.", "onenote.exe",
-    "filesearch.actions", "filesearch.commands", "filesearch.roots", "sound.", "shared.", "recorder.", "dynamic.", "library.", "autoskip.", "schedule.",
+    "filesearch.actions", "filesearch.commands", "filesearch.roots", "sound.", "shared.", "recorder.", "dynamic.", "library.", "autoskip.", "schedule.", "plugins.",
     *sorted(SECRET_SETTINGS))
 DEVICE_SETTING_SUFFIXES = ("_url", "_endpoint", "_path", "_file", ".file", ".exe", "_dir", "_directory")
 
