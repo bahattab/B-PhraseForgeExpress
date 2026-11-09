@@ -1100,8 +1100,10 @@ def test_a_broken_remote_copy_does_not_block_every_sync(tmp_path):
         policy.set_current(None)
 
 
-def test_a_future_timestamp_does_not_win_a_conflict(tmp_path):
-    """R54: modified='9999' in the other copy beat every local edit."""
+def test_a_future_timestamp_does_not_stick(tmp_path):
+    """R54: modified='9999' in the other copy won the conflict and stayed on the phrase, so
+    it went on beating every later edit made on this PC. A future stamp now counts as the
+    time of the merge, and whatever the other copy's text, it arrives quarantined."""
     from phraseforge import policy
     a, b, sa, sb, cloud, run = _sync_pair(tmp_path)
     try:
@@ -1110,7 +1112,10 @@ def test_a_future_timestamp_does_not_win_a_conflict(tmp_path):
         b.update_phrase(p)
         _tamper(cloud, "UPDATE phrases SET content='{#run evil.exe}', modified='9999-12-31T00:00:00'")
         run(sb)
-        assert b.find_phrase("Base").content == "B's text"
+        p = b.find_phrase("Base")
+        assert (p.modified or "") < "9000"
+        if "evil" in p.content:
+            assert b.quarantine_origin(p.id) == "synced"
     finally:
         policy.set_current(None)
 
@@ -1201,7 +1206,7 @@ def test_dynamic_folder_source_skips_links_and_brace_names(tmp_path):
     root = tmp_path / "src"
     root.mkdir()
     (root / "ok.txt").write_text("fine", encoding="utf-8")
-    (root / 'x}{#run "calc"}.txt').write_text("bad", encoding="utf-8")
+    (root / "x}{#run calc}.txt").write_text("bad", encoding="utf-8")     # Windows allows braces, not quotes
     outside = tmp_path / "secret.txt"
     outside.write_text("secret", encoding="utf-8")
     try:
