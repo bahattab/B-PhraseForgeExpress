@@ -28,11 +28,17 @@ import secrets
 import sqlite3
 import struct
 import sys
-from dataclasses import dataclass
+import unicodedata
+from dataclasses import dataclass, field
 from pathlib import Path
 
 MAGIC = b"PFVAULT1"
+# SCRYPT_N stays 2^15: cloud/sync.py derives the shared content-hash key with it, so every PC must
+# use the same value. New passphrase wraps use WRAP_N (R74); files with 2^15 still open.
 SCRYPT_N, SCRYPT_R, SCRYPT_P = 2 ** 15, 8, 1
+WRAP_N = 2 ** 17
+# scrypt settings come from the header before anything is authenticated: accept only these (R68)
+MIN_N, MAX_N = 2 ** 14, 2 ** 17
 FAKE_DPAPI_FOR_TESTS = False          # tests on Linux switch on a stand-in for DPAPI
 
 
@@ -83,6 +89,11 @@ def _unprotect(data: bytes) -> bytes:
     raise OSError("not protected for this user")
 
 
+def _nfc(passphrase: str) -> str:
+    """The same-looking passphrase typed with or without combining marks gives the same key (R74)."""
+    return unicodedata.normalize("NFC", passphrase)
+
+
 def _kek(passphrase: str, salt: bytes, n: int, r: int, p: int) -> bytes:
     return hashlib.scrypt(passphrase.encode("utf-8"), salt=salt, n=n, r=r, p=p, maxmem=256 * 1024 * 1024, dklen=32)
 
@@ -90,8 +101,8 @@ def _kek(passphrase: str, salt: bytes, n: int, r: int, p: int) -> bytes:
 @dataclass
 class Key:
     """The data key and how it is wrapped in the file's header."""
-    dek: bytes
-    wraps: dict
+    dek: bytes = field(repr=False)      # never printed in a log or a traceback (R75)
+    wraps: dict = field(default_factory=dict)
 
     @classmethod
     def new(cls, passphrase: str | None = None, use_dpapi: bool = True) -> "Key":
@@ -106,12 +117,19 @@ class Key:
             wraps["dpapi"] = _b64(_protect(self.dek))
         if passphrase:
             salt, nonce = secrets.token_bytes(16), secrets.token_bytes(12)
-            kek = _kek(passphrase, salt, SCRYPT_N, SCRYPT_R, SCRYPT_P)
-            wraps["pass"] = {"salt": _b64(salt), "n": SCRYPT_N, "r": SCRYPT_R, "p": SCRYPT_P,
+            kek = _kek(_nfc(passphrase), salt, WRAP_N, SCRYPT_R, SCRYPT_P)
+            wraps["pass"] = {"salt": _b64(salt), "n": WRAP_N, "r": SCRYPT_R, "p": SCRYPT_P,
                              "nonce": _b64(nonce), "ct": _b64(_aes()(kek).encrypt(nonce, self.dek, b"pf-dek"))}
         if not wraps:
             raise VaultError("A passphrase is required on this PC.")
         self.wraps = wraps
+
+    def matches(self, passphrase: str) -> bool:
+        """True when passphrase unwraps this key (the dialog checks the current passphrase)."""
+        try:
+            return unlock({"wraps": {"pass": self.wraps["pass"]}}, passphrase).dek == self.dek
+        except (KeyError, VaultError):
+            return False
 
     @property
     def has_passphrase(self) -> bool:
@@ -140,6 +158,9 @@ def _split(blob: bytes) -> tuple[bytes, dict, bytes, bytes]:
         header = json.loads(blob[start:start + n].decode("utf-8"))
     except ValueError as e:
         raise VaultError("The encrypted phrase file is damaged.") from e
+    # a damaged header must give a VaultError, not a crash at start (R68)
+    if not isinstance(header, dict) or not isinstance(header.get("wraps", {}), dict):
+        raise VaultError("The encrypted phrase file is damaged.")
     body = blob[start + n:]
     return aad, header, body[:12], body[12:]
 
@@ -161,12 +182,22 @@ def unlock(header: dict, passphrase: str | None = None) -> Key:
         raise VaultError("This phrase file was encrypted for another Windows user or PC.")
     if passphrase is None:
         raise NeedPassphrase("This phrase file is protected by a passphrase.")
-    kek = _kek(passphrase, _unb64(w["salt"]), int(w["n"]), int(w["r"]), int(w["p"]))
     try:
-        dek = _aes()(kek).decrypt(_unb64(w["nonce"]), _unb64(w["ct"]), b"pf-dek")
-    except Exception as e:                    # cryptography raises InvalidTag
-        raise WrongPassphrase("Wrong passphrase.") from e
-    return Key(dek, wraps)
+        salt, nonce, ct = _unb64(w["salt"]), _unb64(w["nonce"]), _unb64(w["ct"])
+        n, r, p = int(w["n"]), int(w["r"]), int(w["p"])
+    except (KeyError, TypeError, ValueError) as e:     # binascii.Error is a ValueError
+        raise VaultError("The encrypted phrase file is damaged.") from e
+    # bounded before scrypt runs: an edited header could ask for minutes of work (R68)
+    if not (MIN_N <= n <= MAX_N and n & (n - 1) == 0 and r == SCRYPT_R and p == SCRYPT_P):
+        raise VaultError("The encrypted phrase file has unsupported key settings.")
+    # the passphrase as typed, then in NFC form (files from 0.6.8 used the raw text) (R74)
+    for form in dict.fromkeys((passphrase, _nfc(passphrase))):
+        try:
+            dek = _aes()(_kek(form, salt, n, r, p)).decrypt(nonce, ct, b"pf-dek")
+            return Key(dek, wraps)
+        except Exception:                     # cryptography raises InvalidTag
+            continue
+    raise WrongPassphrase("Wrong passphrase.")
 
 
 def encrypt(data: bytes, key: Key) -> bytes:
@@ -215,7 +246,60 @@ def no_wal(data: bytes) -> bytes:
 def memory_db(data: bytes) -> sqlite3.Connection:
     con = sqlite3.connect(":memory:", check_same_thread=False)
     con.deserialize(no_wal(data))
+    memory_temp(con)
     return con
+
+
+def memory_temp(con: sqlite3.Connection) -> None:
+    """Sorts, temp tables and VACUUM stay in memory: with the default SQLite writes them to
+    etilqs_* files in %TEMP%, decrypted pages included (R67)."""
+    con.execute("PRAGMA temp_store = MEMORY")
+
+
+SQLITE_MAGIC = b"SQLite format 3\x00"
+
+
+def is_sqlite(path: str | Path) -> bool:
+    try:
+        with open(path, "rb") as f:
+            return f.read(len(SQLITE_MAGIC)) == SQLITE_MAGIC
+    except OSError:
+        return False
+
+
+def secure_copy(path: str | Path, key: Key, old_keys: tuple = ()) -> bool:
+    """Write a copy of the phrase file (a backup, the sync base) encrypted under key: a plain
+    one is encrypted and wiped (R64), an encrypted one is re-encrypted after a key change, with
+    one of old_keys or its own DPAPI entry (R63). False when it cannot be opened (an older
+    passphrase-only copy): it is left as it is."""
+    p = Path(path)
+    if is_sqlite(p):
+        data = p.read_bytes()
+        tmp = p.with_name(p.name + ".plain-old")
+        os.replace(p, tmp)
+        try:
+            write(p, no_wal(data), key)
+        except BaseException:
+            os.replace(tmp, p)           # the backup stays as it was rather than being lost
+            raise
+        wipe(tmp)
+        return True
+    if not is_encrypted(p):
+        return False
+    blob = p.read_bytes()
+    for k in old_keys:
+        try:
+            data = decrypt(blob, k)
+            break
+        except VaultError:
+            continue
+    else:
+        try:
+            data = decrypt(blob, unlock(_split(blob)[1]))
+        except VaultError:
+            return False
+    write(p, data, key)
+    return True
 
 
 def connect(path: str | Path, key: Key | None = None, passphrase: str | None = None) -> sqlite3.Connection:

@@ -1861,7 +1861,7 @@ def wrap_in_folder_text(store, p) -> str:
 # Module functions (not methods) so tests can drive _expand with a stand-in app.
 def _skipped_phrase(app, p, why: str) -> None:
     from phraseforge.ui.i18n import tr
-    log.warning("phrase %s (%r) not run: %s", p.id, p.description, why)
+    log.warning("phrase %s not run: %s", p.id, why)   # no phrase names in the log (R73)
     text = tr('"{name}" was skipped: it is not approved on this PC and was started automatically.')
     app.poster.posted.emit(lambda: app.tray.notify(tr("Phrase not run"), text.format(name=p.description)))
 
@@ -1872,7 +1872,7 @@ def unlocked_for(app, p, req: ExpansionRequest) -> bool:
     from phraseforge.security import LOCKS
     while (locked := LOCKS.locked_folder(app.store, p.folder_id)) is not None:
         if req.automatic:
-            log.info("phrase %s not run: folder %r is locked", p.id, locked.name)
+            log.info("phrase %s not run: folder %s is locked", p.id, locked.id)
             return False
         from phraseforge.ui.dialogs import ask_folder_password
         if not app.host._ui(lambda f=locked: ask_folder_password(app.store, f)):
@@ -1959,6 +1959,12 @@ def main(argv: list[str] | None = None) -> int:
     from phraseforge.ui import i18n
     apply_theme(qapp, store.setting("ui.theme", "system"), i18n.resolve_language(store.setting("ui.language", "auto")))
     app = PhraseForgeApp(qapp, store)
+    # a failed save of the encrypted phrase file is shown, not only logged (R75)
+    store.on_flush_error = lambda err: app.poster.posted.emit(lambda: app.tray.notify(
+        i18n.tr("Phrases not saved"), i18n.tr("The encrypted phrase file could not be saved: {err}").format(err=err)))
+    if store.vault_warning:               # a plain or older copy was put back in place (R70)
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.warning(None, "PhraseForge", i18n.tr(store.vault_warning))
 
     def _unhandled(*exc):
         # An error in a menu or button handler used to be written only to the log, so the
@@ -1992,4 +1998,10 @@ def main(argv: list[str] | None = None) -> int:
             store.flush()                 # an encrypted phrase file: save the last second's changes
         except Exception as e:
             log.error("could not save the encrypted phrase file: %s", e)
+            try:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.critical(None, "PhraseForge", i18n.tr(
+                    "The encrypted phrase file could not be saved: {err}").format(err=e))
+            except Exception:
+                pass
         instance.release()

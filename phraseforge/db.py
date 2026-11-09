@@ -308,15 +308,21 @@ class Store:
         self._qlocal = threading.local()     # quarantine_writes() context, per thread
         self.vault_key = None                # vault.Key while the file on disk is encrypted
         self._flusher = None
+        self.vault_warning = ""              # shown once at start (a plain or older file put back)
+        self.on_flush_error = None           # callable(str): the app shows a failed save (R75)
+        if self.path != ":memory:":
+            self._recover_interrupted_switch()
         if self.path != ":memory:" and vault.is_encrypted(self.path):
             data, self.vault_key = vault.read(self.path, passphrase=passphrase)
             self.conn = vault.memory_db(data)
+            self._check_marker(opened_with_passphrase=passphrase is not None)
         else:
             self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         if self.path != ":memory:" and self.vault_key is None:
             self.conn.execute("PRAGMA journal_mode = WAL")
+            self._check_marker()
         self._drop_foreign_schema()  # a file an older version pulled may still carry planted triggers
         self._migrate_schema()       # before SCHEMA: old tables need columns its indexes may use
         self.conn.executescript(SCHEMA)
@@ -341,14 +347,22 @@ class Store:
     def _start_flusher(self) -> None:
         self._saved_changes = -1
         self._flush_stop = threading.Event()
+        self._flush_failed = False
         self.flush()
 
         def loop():
             while not self._flush_stop.wait(self.FLUSH_SECONDS):
                 try:
                     self.flush()
+                    self._flush_failed = False
                 except Exception as e:   # keep trying; the next change retries the write
                     log.warning("could not save the encrypted phrase file: %s", e)
+                    if not self._flush_failed and self.on_flush_error is not None:
+                        self._flush_failed = True     # tell the user once, not every second (R75)
+                        try:
+                            self.on_flush_error(str(e))
+                        except Exception:
+                            pass
         self._flusher = threading.Thread(target=loop, name="vault-flush", daemon=True)
         self._flusher.start()
 
@@ -369,46 +383,171 @@ class Store:
             vault.write(self.path, data, key)
             self._saved_changes = n
 
-    def enable_encryption(self, passphrase: str | None = None, use_dpapi: bool = True) -> None:
-        """Encrypt the phrase file on disk; from now on it is only written encrypted."""
+    # files next to the phrase file while encryption is switched on or off
+    def _side(self, suffix: str) -> Path:
+        return Path(self.path + suffix)
+
+    def _recover_interrupted_switch(self) -> None:
+        """A crash while switching encryption on could leave the data only in <db>.enc or in
+        <db>.plain-old; the next start then opened a new, empty phrase file (R65)."""
+        p = Path(self.path)
+        enc, old = self._side(".enc"), self._side(".plain-old")
+        if not p.exists() or p.stat().st_size == 0:
+            if enc.exists() and vault.is_encrypted(enc):
+                os.replace(enc, p)
+            elif old.exists() and vault.is_sqlite(old):
+                os.replace(old, p)
+        if vault.is_encrypted(p) and old.exists():
+            vault.wipe(old)              # the switch got as far as the encrypted file
+        if enc.exists() and p.exists() and vault.is_sqlite(p):
+            # the switch stopped before the encrypted file was in place, or an older version made a
+            # new empty file next to the only copy: keep it (encrypted) under another name
+            keep = self._side(".enc.recovered")
+            n = 1
+            while keep.exists():
+                n += 1
+                keep = self._side(f".enc.recovered{n}")
+            os.replace(enc, keep)
+            log.warning("kept an encrypted copy found next to the phrase file as %s", keep)
+
+    # The marker remembers on this PC that the phrase file is encrypted, and how it opens. It
+    # sits next to the file, so a backup tool that puts back only the file leaves it (R70).
+    def _marker(self) -> Path:
+        p = Path(self.path)
+        return p.with_name(p.stem + ".encrypted")
+
+    def _write_marker(self) -> None:
+        try:
+            if self.vault_key is None:
+                self._marker().unlink(missing_ok=True)
+                return
+            self._marker().write_text(json.dumps({"ask": not self.vault_key.opens_without_passphrase}),
+                                      encoding="utf-8")
+        except OSError as e:             # the switch itself is done; only the start-up check is lost
+            log.warning("could not write %s: %s", self._marker(), e)
+
+    def _check_marker(self, opened_with_passphrase: bool = False) -> None:
+        try:
+            mark = json.loads(self._marker().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if not isinstance(mark, dict):
+            return
+        if self.vault_key is None:
+            self.vault_warning = ("The phrase file was encrypted on this PC, but the file now in its place is "
+                                  "not encrypted (an older copy was put back?). New changes are saved without "
+                                  "encryption until you turn it on again in Settings > Encryption.")
+        elif mark.get("ask") and self.vault_key.opens_without_passphrase and not opened_with_passphrase:
+            # an older copy that still opens for this Windows account undid "ask every time"
+            if self.vault_key.has_passphrase:
+                self.vault_key.wraps.pop("dpapi", None)
+                self._saved_changes = -1     # the next save writes the file without that entry
+            self.vault_warning = ("The phrase file opened without its passphrase although this PC asks for it "
+                                  "at every start: an older copy of the file was put back. Check your phrases.")
+
+    def _copies(self) -> list[Path]:
+        """Copies of the phrase file kept on this PC: the sync base, the copy made before a pull,
+        the local backups (here and in the backup folder chosen in the settings)."""
+        p = Path(self.path)
+        out = [p.with_name(p.stem + ".sync-base.db"), p.with_name(p.stem + ".before-sync.db")]
+        dirs = [p.parent / "backups"]
+        try:
+            chosen = self.setting("backup.directory", "")
+        except sqlite3.Error:
+            chosen = ""
+        if chosen:
+            dirs.append(Path(chosen))
+        seen = set()
+        for d in dirs:
+            try:
+                for f in sorted(d.glob("phrases-*.db")):
+                    if f.resolve() not in seen:
+                        seen.add(f.resolve())
+                        out.append(f)
+            except OSError:
+                pass
+        return [f for f in out if f.is_file()]
+
+    def _secure_copies(self, key: "vault.Key", old_keys: tuple = ()) -> list[Path]:
+        """Bring every local copy under key: plain ones are encrypted (R64), encrypted ones are
+        re-encrypted after a key change (R63). Returns the copies that could not be opened."""
+        left = []
+        for f in self._copies():
+            try:
+                if not vault.secure_copy(f, key, old_keys):
+                    left.append(f)
+            except OSError as e:
+                log.warning("could not encrypt %s: %s", f, e)
+                left.append(f)
+        p = Path(self.path)     # crash leftovers that are plain copies too (R75)
+        for extra in (p.with_name(p.stem + ".sync-base.part"), self._side(".plain")):
+            if extra.exists() and not vault.is_encrypted(extra):
+                vault.wipe(extra)
+        return left
+
+    def enable_encryption(self, passphrase: str | None = None, use_dpapi: bool = True) -> list[Path]:
+        """Encrypt the phrase file on disk; from now on it is only written encrypted. Local copies
+        are encrypted too. Returns the copies that could not be (left as they were)."""
         if self.path == ":memory:":
             raise vault.VaultError("This phrase file is not on disk.")
         if self.vault_key is not None:
-            self.change_passphrase(passphrase, use_dpapi)
-            return
+            return self.change_passphrase(passphrase, use_dpapi)
         key = vault.Key.new(passphrase, use_dpapi)
+        enc, old_plain = self._side(".enc"), self._side(".plain-old")
         with self.lock:
             self.conn.commit()
             self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             data = self.conn.serialize()
             mem = vault.memory_db(data)
-            vault.write(self.path + ".enc", data, key)
-            old = self.conn
-            old.close()
+            vault.write(enc, data, key)
+            self.conn.close()
+            try:
+                # never a moment without the phrase file: put the encrypted one in place first,
+                # then wipe the plain one under its new name (R65)
+                os.replace(self.path, old_plain)
+                os.replace(enc, self.path)
+            except OSError:
+                if not Path(self.path).exists() and old_plain.exists():
+                    os.replace(old_plain, self.path)
+                self.conn = sqlite3.connect(self.path, check_same_thread=False)
+                self.conn.row_factory = sqlite3.Row
+                self.conn.execute("PRAGMA foreign_keys = ON")
+                self.conn.execute("PRAGMA journal_mode = WAL")
+                enc.unlink(missing_ok=True)
+                raise
             for side in ("-wal", "-shm"):
                 vault.wipe(self.path + side)
-            vault.wipe(self.path)
-            os.replace(self.path + ".enc", self.path)
-            # plain copies next to the file would undo the encryption (R51): the sync base is
-            # rebuilt on the next sync, the local pre-sync backup on the next pull
-            p = Path(self.path)
-            for extra in (p.with_name(p.stem + ".sync-base.db"), p.with_name(p.stem + ".before-sync.db")):
-                if extra.exists() and not vault.is_encrypted(extra):
-                    vault.wipe(extra)
+            vault.wipe(old_plain)
             mem.row_factory = sqlite3.Row
             mem.execute("PRAGMA foreign_keys = ON")
             self.conn, self.vault_key = mem, key
+            self._write_marker()
+            left = self._secure_copies(key)
         self._start_flusher()
         self._changed("setting")
+        return left
 
-    def change_passphrase(self, passphrase: str | None, use_dpapi: bool = True) -> None:
-        """New passphrase (None = none), or ask for it on every start (use_dpapi=False)."""
+    def check_passphrase(self, passphrase: str) -> bool:
+        """True when passphrase is the current one (asked before it is changed or removed)."""
+        return self.vault_key is not None and self.vault_key.matches(passphrase)
+
+    def change_passphrase(self, passphrase: str | None, use_dpapi: bool = True) -> list[Path]:
+        """New passphrase (None = none), or ask for it on every start (use_dpapi=False). The file
+        gets a new data key, and the local copies are re-encrypted with it (R63)."""
         if self.vault_key is None:
             raise vault.VaultError("The phrase file is not encrypted.")
+        key = vault.Key.new(passphrase, use_dpapi)
         with self.lock:
-            self.vault_key.rewrap(passphrase, use_dpapi)
+            old = self.vault_key
+            self.vault_key = key
             self._saved_changes = -1
-            self.flush()
+            try:
+                self.flush()
+            except Exception:
+                self.vault_key = old
+                raise
+            self._write_marker()
+            return self._secure_copies(key, (old,))
 
     def disable_encryption(self) -> None:
         """Write the phrase file as a normal SQLite database again."""
@@ -429,6 +568,7 @@ class Store:
             self.conn.execute("PRAGMA foreign_keys = ON")
             self.conn.execute("PRAGMA journal_mode = WAL")
             self.vault_key = None
+            self._write_marker()
         self._changed("setting")
 
     # ------------------------------------------------------------ migrations
@@ -444,7 +584,9 @@ class Store:
             with self.conn:
                 for k, v in rows:
                     self.conn.execute("UPDATE settings SET value=? WHERE key=?", (_seal(v), k))
-            if self.path != ":memory:":
+            # an encrypted file is rewritten from memory anyway; its VACUUM would only spill the
+            # decrypted pages to a temp file (R67)
+            if self.path != ":memory:" and self.vault_key is None:
                 self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                 self.conn.execute("VACUUM")
                 self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -1540,7 +1682,7 @@ class Store:
         finally:
             self._qlocal.bypass -= 1
 
-    def restore_from(self, path: str | Path, untrusted: str | None = None) -> None:
+    def restore_from(self, path: str | Path, untrusted: str | None = None, passphrase: str | None = None) -> None:
         """Replace all data with a backup file, in place on the open connection.
 
         untrusted="synced"/"imported": the file came from elsewhere (cloud pull, a phrase file
@@ -1569,11 +1711,12 @@ class Store:
                 keep_pw = {u: h for u, h in self.conn.execute(
                     "SELECT uid, password_hash FROM folders WHERE password_hash IS NOT NULL AND password_hash<>''")}
         with self.lock:
-            src = vault.connect(path, self.vault_key) if vault.is_encrypted(path) else sqlite3.connect(str(path))
+            src = self._open_copy(path, passphrase)
             if self.vault_key is not None:        # in memory: load the image (a backup would copy WAL mode)
                 data = src.serialize()
                 src.close()
                 self.conn.deserialize(vault.no_wal(data))
+                vault.memory_temp(self.conn)
             else:
                 src.backup(self.conn)
                 src.close()
@@ -1614,6 +1757,19 @@ class Store:
             self.flush()
         for kind in ("folder", "phrase", "setting", "var", "clipboard", "sticky"):
             self._changed(kind)
+
+    def _open_copy(self, path: str | Path, passphrase: str | None = None):
+        """A connection to a backup or synced copy. An encrypted one made under an earlier key
+        (before the passphrase changed, or encryption was turned off and on) opens with its own
+        DPAPI entry or passphrase (R72); vault.NeedPassphrase asks the caller for it."""
+        if not vault.is_encrypted(path):
+            return sqlite3.connect(str(path))
+        if self.vault_key is not None and passphrase is None:
+            try:
+                return vault.connect(path, self.vault_key)
+            except vault.VaultError:
+                pass
+        return vault.connect(path, passphrase=passphrase)
 
     def backup_to(self, path: str | Path, keep_encryption: bool = False) -> None:
         """A copy of the database. keep_encryption: an encrypted phrase file's copy is encrypted
