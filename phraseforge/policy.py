@@ -59,6 +59,7 @@ class Policy:
     locked_settings: tuple[str, ...] = ()
     forced: dict[str, str] = field(default_factory=dict)
     message: str = ""
+    plugins_allowed: frozenset[str] | None = None   # None = any plugin; else only these ids ("*" = any)
     source: str = ""                       # file it came from ("" = no policy)
     error: str = ""                        # set when the file was unreadable (fail closed)
 
@@ -159,6 +160,8 @@ def parse(text: str, source: str = "policy.toml") -> Policy:
         locked_settings=tuple(_strings(data.get("locked_settings", []), "locked_settings")),
         forced={str(k): ("1" if v is True else "0" if v is False else str(v)) for k, v in forced.items()},
         message=str(data.get("message", "")),
+        plugins_allowed=(frozenset(x.strip().lower() for x in _strings(data["plugins_allowed"], "plugins_allowed"))
+                         if "plugins_allowed" in data else None),
         source=source)
 
 
