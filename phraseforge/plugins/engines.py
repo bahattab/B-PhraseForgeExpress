@@ -168,17 +168,22 @@ class PluginEngine(Engine):
         self.provider = PLUGIN_PREFIX + manifest.id
         self.kind = "ai_engine" if "ai_engine" in manifest.kinds else "translator"
 
-    def _call(self, method: str, params: dict | None = None, timeout: float = AI_TIMEOUT_S):
+    def _call(self, method: str, params: dict | None = None, timeout: float = AI_TIMEOUT_S, settings=None):
         from phraseforge.plugins.host import PluginError, PluginTimeout
         if not self.mgr.is_enabled(self.manifest.id):
             raise ai.AIError(f"the plugin {self.manifest.id} is switched off")
         p = dict(params or {})
-        p["secrets"] = self.mgr._secrets(self.manifest)
+        secrets = self.mgr._secrets(self.manifest)
+        for name in secrets:                      # a key typed in Settings but not saved yet ("Test")
+            typed = (settings or {}).get(f"plugins.secret.{self.manifest.id}.{name}")
+            if typed:
+                secrets[name] = typed
+        p["secrets"] = secrets
         try:
             return self.mgr.process(self.manifest.id).call(method, p, timeout=timeout)
         except PluginTimeout:
             raise ai.AIError(f"plugin {self.manifest.id}: timeout") from None
-        except (PluginError, OSError) as e:
+        except Exception as e:                    # noqa: BLE001 - uninstalled meanwhile, bad answer, ...
             raise ai.AIError(f"plugin {self.manifest.id}: {e}") from None
 
     def _dict(self, method: str, keys) -> dict:
@@ -223,12 +228,12 @@ class PluginEngine(Engine):
         clean = {k: v for k, v in params.items() if k in ("model", "system", "max_tokens", "length", "accuracy",
                                                           "variation")}
         return self._text(self._call("generate", {"messages": messages, "params": clean},
-                                     timeout=float(params.get("timeout", AI_TIMEOUT_S))))
+                                     timeout=float(params.get("timeout", AI_TIMEOUT_S)), settings=settings))
 
     def translate(self, settings: dict, text: str, src: str, to: str) -> str:
         if "translator" not in self.manifest.kinds:
             return super().translate(settings, text, src, to)
-        return self._text(self._call("translate", {"text": text, "from": src, "to": to}))
+        return self._text(self._call("translate", {"text": text, "from": src, "to": to}, settings=settings))
 
 
 BUILTIN: dict[str, Engine] = {p: BuiltinChatEngine(p) for p in ai.DEFAULT_MODELS}

@@ -1316,7 +1316,7 @@ class SettingsDialog(QDialog):
             self.store.setting(self._key_setting(prov), SCHEMA.get(self._key_setting(prov), ""))
         if not hasattr(self, "tr_key"):
             return
-        name = next(t for t, v, _ in TRANSLATION_PROVIDERS if v == prov).split(" (")[0]
+        name = next((t for t, v, _ in TRANSLATION_PROVIDERS if v == prov), self.tr_provider.currentText()).split(" (")[0]
         self.tr_visit.setText(f"Visit {name}")
         local = prov in LOCAL_ENGINES
         self.tr_key_label.setText(LOCAL_ENGINES.get(prov, "API key:"))

@@ -96,3 +96,36 @@ def test_switched_off_plugin_engine_reports(plugin_engine):
     pm.current().set_enabled("echo-ai", False)
     with pytest.raises(ai.AIError, match="not installed or switched off"):
         ai.complete({"ai.provider": "plugin:echo-ai"}, "x")
+
+
+def test_settings_lists_plugin_engines(plugin_engine):
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from phraseforge.ui.settings_dialog import SettingsDialog
+    d = SettingsDialog(pm.current().store)
+    for combo in (d.ai_provider, d.tr_provider):
+        i = combo.findData("plugin:echo-ai")
+        assert i >= 0
+        combo.setCurrentIndex(i)                 # used to raise StopIteration on the translation page
+    d._update_translation_status()
+
+
+def test_typed_key_is_used_before_saving(plugin_engine, monkeypatch):
+    seen = {}
+    real = plugin_engine.mgr.process("echo-ai").call
+
+    def spy(method, params, timeout=5.0):
+        seen.update(params.get("secrets", {}))
+        return real(method, params, timeout=timeout)
+    monkeypatch.setattr(plugin_engine.mgr.process("echo-ai"), "call", spy)
+    plugin_engine.generate({"plugins.secret.echo-ai.api_key": "typed", "plugins.secret.echo-ai.other": "x"},
+                           [{"role": "user", "content": "hi"}], {})
+    assert seen == {"api_key": "typed"}          # only the declared secret
+
+
+def test_errors_become_ai_errors(plugin_engine, monkeypatch):
+    monkeypatch.setattr(plugin_engine.mgr, "process", lambda pid: (_ for _ in ()).throw(KeyError(pid)))
+    with pytest.raises(ai.AIError):
+        plugin_engine.generate({}, [{"role": "user", "content": "hi"}], {})
