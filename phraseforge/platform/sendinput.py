@@ -183,7 +183,8 @@ def mouse_wheel(delta: int) -> None:
     """Scroll: +120 per notch away from the user, negative towards."""
     if delta:
         inp = _mouse(MOUSEEVENTF_WHEEL)
-        inp.mi.mouseData = ctypes.c_uint32(int(delta)).value     # DWORD carries a signed value
+        delta = max(-12000, min(12000, int(delta)))              # at most 100 notches
+        inp.mi.mouseData = ctypes.c_uint32(delta).value          # DWORD carries a signed value
         _send([inp])
 
 

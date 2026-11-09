@@ -198,6 +198,13 @@ def needs_rehash(stored: str) -> bool:
 SECRET_SETTINGS = frozenset({"ai.openai_key", "ai.anthropic_key", "ai.openrouter_key", "ai.deepl_key",
                              "ai.gemini_key", "ai.opencode_key", "ai.kilocode_key", "ai.mistral_key",
                              "net.proxy_password", "shared.password"})
+# Settings sealed the same way, by prefix: a dynamic folder's ODBC connection string can
+# hold a password (dynamic.conn.<folder id>, security R46).
+SECRET_PREFIXES = ("dynamic.conn.",)
+
+
+def is_secret_setting(key: str) -> bool:
+    return key in SECRET_SETTINGS or key.startswith(SECRET_PREFIXES)
 _SEALED = "dpapi:"
 
 # Settings that belong to this PC: never uploaded by sync, and kept when data comes from
@@ -209,7 +216,7 @@ DEVICE_SETTING_PREFIXES = (
     "sync.", "gdrive.", "backup.cloud_", "backup.directory", "ocr.cli_path", "ocr.log_file",
     "app.start_with_windows", "app.first_run_done", "ui.item_colors", "ui.trigger_extras",
     "updates.last_check", "updates.notified_version", "net.", "onenote.exe",
-    "filesearch.actions", "filesearch.commands", "filesearch.roots", "sound.", "shared.", "dynamic.",
+    "filesearch.actions", "filesearch.commands", "filesearch.roots", "sound.", "shared.", "recorder.", "dynamic.",
     *sorted(SECRET_SETTINGS))
 DEVICE_SETTING_SUFFIXES = ("_url", "_endpoint", "_path", "_file", ".file", ".exe", "_dir", "_directory")
 
@@ -293,6 +300,7 @@ class Store:
         self.conn.execute("PRAGMA foreign_keys = ON")
         if self.path != ":memory:" and self.vault_key is None:
             self.conn.execute("PRAGMA journal_mode = WAL")
+        self._drop_foreign_schema()  # a file an older version pulled may still carry planted triggers
         self._migrate_schema()       # before SCHEMA: old tables need columns its indexes may use
         self.conn.executescript(SCHEMA)
         with self.conn:
@@ -364,6 +372,12 @@ class Store:
                 vault.wipe(self.path + side)
             vault.wipe(self.path)
             os.replace(self.path + ".enc", self.path)
+            # plain copies next to the file would undo the encryption (R51): the sync base is
+            # rebuilt on the next sync, the local pre-sync backup on the next pull
+            p = Path(self.path)
+            for extra in (p.with_name(p.stem + ".sync-base.db"), p.with_name(p.stem + ".before-sync.db")):
+                if extra.exists() and not vault.is_encrypted(extra):
+                    vault.wipe(extra)
             mem.row_factory = sqlite3.Row
             mem.execute("PRAGMA foreign_keys = ON")
             self.conn, self.vault_key = mem, key
@@ -406,7 +420,7 @@ class Store:
         restored), then overwrite the freed pages so the old values are gone from the file."""
         with self.lock:
             rows = [(k, v) for k, v in self.conn.execute("SELECT key, value FROM settings")
-                    if k in SECRET_SETTINGS and v and not v.startswith(_SEALED)]
+                    if is_secret_setting(k) and v and not v.startswith(_SEALED)]
             if not rows:
                 return
             self.conn.execute("PRAGMA secure_delete = ON")
@@ -420,6 +434,21 @@ class Store:
 
     def _columns(self, table: str) -> set[str]:
         return {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+
+    def _drop_foreign_schema(self) -> None:
+        """Drop every trigger and view in the database; SCHEMA then recreates PhraseForge's own
+        uid triggers. A copied file brings its whole schema along: a trigger planted in a cloud
+        copy (AFTER INSERT ON phrase_quarantine ... DELETE) turned quarantine off for good and
+        travelled on with every push (security R44). trusted_schema=OFF keeps the file's
+        schema from calling functions with side effects."""
+        with self.lock:
+            self.conn.execute("PRAGMA trusted_schema = OFF")
+            rows = self.conn.execute(
+                "SELECT type, name FROM sqlite_master WHERE type IN ('trigger', 'view')").fetchall()
+            for kind, name in rows:
+                quoted = '"' + str(name).replace('"', '""') + '"'
+                self.conn.execute(f"DROP {'TRIGGER' if kind == 'trigger' else 'VIEW'} IF EXISTS {quoted}")
+            self.conn.commit()
 
     def _migrate_schema(self) -> None:
         """v1 -> v2, idempotent. Safe on a fresh (empty) database."""
@@ -732,8 +761,8 @@ class Store:
                                      "output_target_arg FROM phrases").fetchall()
             global_vars = {r[0]: r[1] for r in self.conn.execute(
                 "SELECT name, value FROM vars WHERE scope='global'")}
-            folders = {r[0]: (r[1], r[2] or "", r[3] or "") for r in self.conn.execute(
-                "SELECT id, parent_id, output_target, output_target_arg FROM folders")}
+            folders = {r[0]: (r[1], r[2] or "", r[3] or "", bool(r[4])) for r in self.conn.execute(
+                "SELECT id, parent_id, output_target, output_target_arg, password_hash FROM folders")}
             versions: dict[int, list] = {}
             for r in self.conn.execute(
                     "SELECT phrase_id, lang, content, content_format FROM phrase_versions ORDER BY phrase_id, lang"):
@@ -743,8 +772,8 @@ class Store:
             chain, fid, seen = [], r[3], set()
             while fid in folders and fid not in seen:
                 seen.add(fid)
-                parent, target, arg = folders[fid]
-                chain.append((target, arg))
+                parent, target, arg, locked = folders[fid]
+                chain.append((target, arg, locked) if locked else (target, arg))   # leaving a lock counts (R55)
                 fid = parent
             texts = [r[1] or ""] + [v[1] or "" for v in versions.get(r[0], [])]
             blob = json.dumps([r[1], r[2], versions.get(r[0], []), r[4] or "", r[5] or "", chain,
@@ -955,20 +984,20 @@ class Store:
             r = self.conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
         if not r:
             return default
-        return _unseal(r[0]) if key in SECRET_SETTINGS else r[0]
+        return _unseal(r[0]) if is_secret_setting(key) else r[0]
 
     def set_setting(self, key: str, value: str) -> None:
         if policy.current().setting_locked(key):
             log.info("a setting locked by the administrator's policy was not changed")
             return
-        value = _seal(str(value)) if key in SECRET_SETTINGS else str(value)
+        value = _seal(str(value)) if is_secret_setting(key) else str(value)
         with self.lock, self.conn:
             self.conn.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (key, value))
         self._changed("setting")
 
     def settings(self) -> dict[str, str]:
         with self.lock:
-            out = {r[0]: _unseal(r[1]) if r[0] in SECRET_SETTINGS else r[1]
+            out = {r[0]: _unseal(r[1]) if is_secret_setting(r[0]) else r[1]
                    for r in self.conn.execute("SELECT key, value FROM settings")}
         pol = policy.current()
         out.update(pol.forced)
@@ -1223,6 +1252,11 @@ class Store:
             # settings the administrator locked keep this PC's value, whatever the file holds:
             # a backup, an opened file or a sync pull must not unlock them (security R27)
             keep_locked = {k: v for k, v in rows if pol.setting_locked(k)}
+            # folder passwords set on this PC stay, whatever the file says (R55)
+            keep_pw = {}
+            if untrusted and "uid" in self._columns("folders"):
+                keep_pw = {u: h for u, h in self.conn.execute(
+                    "SELECT uid, password_hash FROM folders WHERE password_hash IS NOT NULL AND password_hash<>''")}
         with self.lock:
             src = vault.connect(path, self.vault_key) if vault.is_encrypted(path) else sqlite3.connect(str(path))
             if self.vault_key is not None:        # in memory: load the image (a backup would copy WAL mode)
@@ -1233,6 +1267,7 @@ class Store:
                 src.backup(self.conn)
                 src.close()
             self.conn.execute("PRAGMA foreign_keys = ON")
+            self._drop_foreign_schema()   # BEFORE anything writes: the copy's triggers would run (R44)
             self._migrate_schema()        # a backup/sync copy may come from an older version
             self.conn.executescript(SCHEMA)
         # Move a legacy output-target setting into the columns BEFORE the comparison below,
@@ -1251,6 +1286,8 @@ class Store:
                         self.conn.execute("DELETE FROM settings WHERE key=?", (k,))
                 for k, v in keep_device.items():
                     self.conn.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (k, v))
+                for u, h in keep_pw.items():
+                    self.conn.execute("UPDATE folders SET password_hash=? WHERE uid=?", (h, u))
             after = self.phrase_fingerprints()
             with self.lock, self.conn:
                 self.conn.execute("DELETE FROM phrase_quarantine")

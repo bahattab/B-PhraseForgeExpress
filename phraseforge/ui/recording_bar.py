@@ -34,6 +34,8 @@ class RecordingBar(QWidget):
         secs = int(time.monotonic() - self._started)
         self.label.setText("● " + tr("Recording {time} · {n} steps · stop with {key}").format(
             time=f"{secs // 60}:{secs % 60:02d}", n=len(self.recorder.events), key=self.recorder.stop_chord))
+        self.label.setToolTip(tr("Passwords typed in browsers and some programs are recorded too: "
+                                 "stop recording before you type a password."))
 
     def place(self) -> None:
         """Top centre of the primary screen."""
@@ -95,5 +97,6 @@ class RecordingController:
             if self.bar is not None:
                 self.bar.close()
                 self.bar = None
+        self.recorder.events.clear()                # the keystrokes do not stay in memory (R50)
         self.on_done(text)
         return text
