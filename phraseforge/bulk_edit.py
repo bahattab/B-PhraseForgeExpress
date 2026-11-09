@@ -103,6 +103,21 @@ def remove_duplicates(store, folder_id) -> int:
     return removed
 
 
+def sort_phrases_by(store, folder_id, keys: list[tuple[str, bool]]) -> int:
+    """Store a new manual order by several SORT_KEYS: [(key, descending), ...], the first one
+    deciding, the next one breaking ties (FR-DAT-05)."""
+    phrases = store.phrases(folder_id)
+    for key, desc in reversed(keys):              # stable sort: the last key first
+        phrases.sort(key=SORT_KEYS[key][1], reverse=desc)
+    changed = 0
+    for n, p in enumerate(phrases):
+        if p.sort != n:
+            p.sort = n
+            store.update_phrase(p, record_history=False)
+            changed += 1
+    return changed
+
+
 def sort_phrases(store, folder_id, key: str, descending: bool = False) -> int:
     """Store a new manual order (Phrase.sort) by one of SORT_KEYS."""
     _title, fn = SORT_KEYS[key]

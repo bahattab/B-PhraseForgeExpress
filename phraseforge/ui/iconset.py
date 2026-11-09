@@ -23,6 +23,7 @@ ICONS: dict[str, tuple[str, str]] = {
     "folder_open": ("mdi6.folder-open", YELLOW),
     "phrase": ("mdi6.file-document-outline", BLUE),
     "phrase_rich": ("mdi6.file-document-edit-outline", BLUE),
+    "phrase_link": ("mdi6.file-link-outline", BLUE),
     "last_used": ("mdi6.history", GREY),
     "clipboard_cache": ("mdi6.clipboard-text-clock-outline", GREY),
     "sticky_notes": ("mdi6.note-outline", YELLOW),

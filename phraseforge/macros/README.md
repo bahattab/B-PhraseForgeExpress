@@ -154,7 +154,7 @@ editing.
 | `f11` | `{#f11 N}` | Press f11 (optionally N times). |
 | `f12` | `{#f12 N}` | Press f12 (optionally N times). |
 | `sleep` (aliases: wait) | `{#sleep 500}` | Pause output for N milliseconds. |
-| `mouse` | `{#mouse click -x 100 -y 200}` | Mouse click\|rclick\|dblclick\|move at x,y. |
+| `mouse` | `{#mouse click -x 100 -y 200}` | Mouse click\|rclick\|dblclick\|move at x,y (-relative 1: from the top-left corner of the window in front), or wheel -delta N (120 per notch, negative scrolls down). |
 | `mousex` | `{#mousex}` | Horizontal mouse position on screen, in pixels. |
 | `mousey` | `{#mousey}` | Vertical mouse position on screen, in pixels. |
 | `mouseposition` | `{#mouseposition -sep ","}` | Mouse position as "x,y". |
@@ -244,7 +244,7 @@ editing.
 
 | Command | Syntax | Description |
 |---|---|---|
-| `insert` | `{#insert "Phrase description" -autotext abbr -folder "A/B" -pick manual\|random\|N -same}` | Insert another phrase (its macros run too): by description, by its autotext, or picked from a folder. |
+| `insert` | `{#insert "Phrase description" -autotext abbr -folder "A/B" -pick manual\|random\|N -same -uid id}` | Insert another phrase (its macros run too): by description, by its autotext, picked from a folder, or by its id (-uid, what a phrase link uses). |
 | `setphrase` | `{#setphrase "Description" "content" -target "Existing phrase" -folder "A/B"}` | Create a phrase, or replace the content of -target (no output). |
 | `signature` | `{#signature}` | E-mail signature from the Signatures folder: the default one, or {#signature "Name"}, with its active footers and, if switched on, a random quote. -lang picks a language version. |
 | `setlevel` | `{#setlevel de}` | Use this language version for the {#insert} calls that follow in this expansion ("" or default = the default version). |

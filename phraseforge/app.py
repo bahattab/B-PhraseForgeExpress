@@ -1291,6 +1291,7 @@ class PhraseForgeApp(QObject):
         # language version: chosen in the phrase menu, else the active language (Settings)
         lang = getattr(req, "language", "") or self.store.setting("phrase.active_language", "")
         p.content, p.content_format = self.store.phrase_text(p, lang)
+        p.content = wrap_in_folder_text(self.store, p)       # folder text before / after (FR-DAT-05)
         ctx.content_format = p.content_format
         if not approved_for(self, p, req):
             return
@@ -1839,6 +1840,21 @@ class PhraseForgeApp(QObject):
         finally:
             self.tray.hide()
             self.qapp.quit()
+
+
+def wrap_in_folder_text(store, p) -> str:
+    """The phrase's content with its folders' text before and after it (macros included). In a
+    formatted phrase the folder text is plain text: it is escaped and its line breaks kept."""
+    before, after = store.folder_wrap(p.folder_id)
+    if not (before or after):
+        return p.content
+    if p.content_format == "html":
+        import html as _html
+
+        def esc(t: str) -> str:
+            return _html.escape(t, quote=False).replace("\n", "<br>")
+        before, after = esc(before), esc(after)
+    return before + p.content + after
 
 
 # ---------------------------------------------------------- protection (security.py)

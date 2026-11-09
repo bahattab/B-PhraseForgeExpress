@@ -180,6 +180,12 @@ Phrases can hold one version per language; dates can be Hijri with Arabic digits
 - **Template folders:** right-click a folder > **Template folder**. Its phrases are never expanded
   and are not in the phrase menu. New > **Phrase from template...** copies one (text, format,
   tags, notes and language versions; not its abbreviation).
+- **Phrase links:** right-click a phrase > **Create link to this phrase**. The link (its own
+  folder, abbreviation and hotkey) always inserts the current text of the original.
+- **Folder text:** folder Properties > **Text before / after each phrase** is added to every
+  phrase in the folder and its subfolders when it is inserted (macros work; outer folders go
+  around inner ones). Changing it sends the folder's synced or imported phrases back for approval.
+- **Sort by two fields:** folder menu > Bulk edit > **Sort by two fields...**
 - **Comments:** right-click a phrase > **Comments...** to leave notes for yourself or your team
   (author, time, resolved). They sync and merge between PCs.
 

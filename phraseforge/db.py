@@ -60,7 +60,8 @@ CREATE TABLE IF NOT EXISTS folders (
   apps_include TEXT DEFAULT '', apps_exclude TEXT DEFAULT '',
   password_hash TEXT DEFAULT '', show_in_popup INTEGER DEFAULT 1, notes TEXT DEFAULT '',
   output_target TEXT DEFAULT 'current', output_target_arg TEXT DEFAULT '',
-  abbrev_prefix TEXT DEFAULT '', uid TEXT, is_template INTEGER DEFAULT 0);
+  abbrev_prefix TEXT DEFAULT '', uid TEXT, is_template INTEGER DEFAULT 0,
+  text_before TEXT DEFAULT '', text_after TEXT DEFAULT '');
 CREATE TABLE IF NOT EXISTS phrases (
   id INTEGER PRIMARY KEY, folder_id INTEGER REFERENCES folders(id) ON DELETE CASCADE,
   description TEXT NOT NULL, content TEXT DEFAULT '', content_format TEXT DEFAULT 'text',
@@ -242,6 +243,15 @@ def _read_vars(texts: list[str], global_vars: dict[str, str]) -> list:
         return sorted(global_vars.items())
     names = {next(g for g in m.groups() if g is not None) for t in texts for m in _VAR_REF.finditer(t)}
     return sorted((n, global_vars.get(n, "")) for n in names)
+
+
+_LINK = re.compile(r"\A\{#insert\s+-uid\s+([0-9a-f]{8,64})\}\Z")
+
+
+def link_uid(content: str) -> str | None:
+    """The uid a phrase link points to: its whole content is {#insert -uid <uid>} (FR-DAT-04)."""
+    m = _LINK.match((content or "").strip())
+    return m.group(1) if m else None
 
 
 def is_device_setting(key: str) -> bool:
@@ -473,6 +483,9 @@ class Store:
             c.execute("ALTER TABLE folders ADD COLUMN abbrev_prefix TEXT DEFAULT ''")
         if "is_template" not in fcols:
             c.execute("ALTER TABLE folders ADD COLUMN is_template INTEGER DEFAULT 0")
+        for col in ("text_before", "text_after"):
+            if col not in fcols:
+                c.execute(f"ALTER TABLE folders ADD COLUMN {col} TEXT DEFAULT ''")
         cols = self._columns("phrases")
         if "output_target" not in cols:
             c.execute("ALTER TABLE phrases ADD COLUMN output_target TEXT DEFAULT 'current'")
@@ -578,11 +591,12 @@ class Store:
         with self.lock, self.conn:
             cur = self.conn.execute(
                 "INSERT INTO folders (parent_id,name,sort,enabled,apps_include,apps_exclude,password_hash,"
-                "show_in_popup,notes,output_target,output_target_arg,abbrev_prefix,is_template) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "show_in_popup,notes,output_target,output_target_arg,abbrev_prefix,is_template,text_before,"
+                "text_after) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (f.parent_id, f.name, f.sort, int(f.enabled), f.apps_include, f.apps_exclude,
                  f.password_hash, int(f.show_in_popup), f.notes, f.output_target or "current",
-                 f.output_target_arg or "", f.abbrev_prefix or "", int(bool(f.is_template))))
+                 f.output_target_arg or "", f.abbrev_prefix or "", int(bool(f.is_template)),
+                 f.text_before or "", f.text_after or ""))
             f.id = cur.lastrowid
             if f.triggers:
                 self._write_owner_triggers("folder_id", f.id, f.triggers)
@@ -595,10 +609,11 @@ class Store:
             self.conn.execute(
                 "UPDATE folders SET parent_id=?,name=?,sort=?,enabled=?,apps_include=?,apps_exclude=?,"
                 "password_hash=?,show_in_popup=?,notes=?,output_target=?,output_target_arg=?,abbrev_prefix=?,"
-                "is_template=? WHERE id=?",
+                "is_template=?,text_before=?,text_after=? WHERE id=?",
                 (f.parent_id, f.name, f.sort, int(f.enabled), f.apps_include, f.apps_exclude,
                  f.password_hash, int(f.show_in_popup), f.notes, f.output_target or "current",
-                 f.output_target_arg or "", f.abbrev_prefix or "", int(bool(f.is_template)), f.id))
+                 f.output_target_arg or "", f.abbrev_prefix or "", int(bool(f.is_template)),
+                 f.text_before or "", f.text_after or "", f.id))
         self._changed("folder", f.id)
 
     # folder / special-folder triggers (a folder trigger opens that folder's popup menu)
@@ -640,7 +655,9 @@ class Store:
                       output_target=(r["output_target"] or "current") if "output_target" in keys else "current",
                       output_target_arg=(r["output_target_arg"] or "") if "output_target_arg" in keys else "",
                       abbrev_prefix=(r["abbrev_prefix"] or "") if "abbrev_prefix" in keys else "",
-                      is_template=bool(r["is_template"]) if "is_template" in keys else False)
+                      is_template=bool(r["is_template"]) if "is_template" in keys else False,
+                      text_before=(r["text_before"] or "") if "text_before" in keys else "",
+                      text_after=(r["text_after"] or "") if "text_after" in keys else "")
 
     def get_folder(self, folder_id: int) -> Folder | None:
         with self.lock:
@@ -772,21 +789,26 @@ class Store:
                                      "output_target_arg FROM phrases").fetchall()
             global_vars = {r[0]: r[1] for r in self.conn.execute(
                 "SELECT name, value FROM vars WHERE scope='global'")}
-            folders = {r[0]: (r[1], r[2] or "", r[3] or "", bool(r[4])) for r in self.conn.execute(
-                "SELECT id, parent_id, output_target, output_target_arg, password_hash FROM folders")}
+            folders = {r[0]: (r[1], r[2] or "", r[3] or "", bool(r[4]), r[5] or "", r[6] or "")
+                       for r in self.conn.execute("SELECT id, parent_id, output_target, output_target_arg, "
+                                                  "password_hash, text_before, text_after FROM folders")}
             versions: dict[int, list] = {}
             for r in self.conn.execute(
                     "SELECT phrase_id, lang, content, content_format FROM phrase_versions ORDER BY phrase_id, lang"):
                 versions.setdefault(r[0], []).append((r[1], r[2], r[3]))
         out = {}
         for r in rows:
-            chain, fid, seen = [], r[3], set()
+            chain, fid, seen, folder_texts = [], r[3], set(), []
             while fid in folders and fid not in seen:
                 seen.add(fid)
-                parent, target, arg, locked = folders[fid]
-                chain.append((target, arg, locked) if locked else (target, arg))   # leaving a lock counts (R55)
+                parent, target, arg, locked, before, after = folders[fid]
+                entry = (target, arg, locked) if locked else (target, arg)       # leaving a lock counts (R55)
+                if before or after:          # the folder's text runs with the phrase, macros included
+                    entry = entry + (before, after)
+                    folder_texts += [before, after]
+                chain.append(entry)
                 fid = parent
-            texts = [r[1] or ""] + [v[1] or "" for v in versions.get(r[0], [])]
+            texts = [r[1] or ""] + [v[1] or "" for v in versions.get(r[0], [])] + folder_texts
             blob = json.dumps([r[1], r[2], versions.get(r[0], []), r[4] or "", r[5] or "", chain,
                                _read_vars(texts, global_vars)], ensure_ascii=False)
             out[r[0]] = hashlib.sha256(blob.encode("utf-8")).hexdigest()
@@ -1333,7 +1355,7 @@ class Store:
         f = Folder(name=d["name"], parent_id=parent_id,
                    **{k: d[k] for k in ("sort", "enabled", "apps_include", "apps_exclude", "password_hash",
                                         "show_in_popup", "notes", "output_target", "output_target_arg",
-                                        "abbrev_prefix", "is_template") if k in d})
+                                        "abbrev_prefix", "is_template", "text_before", "text_after") if k in d})
         self.add_folder(f)
         with self.lock, self.conn:
             uid = d.get("uid")
@@ -1433,6 +1455,34 @@ class Store:
             r = self.conn.execute("SELECT phrase_id FROM phrase_comments WHERE id=?", (comment_id,)).fetchone()
             self.conn.execute("DELETE FROM phrase_comments WHERE id=?", (comment_id,))
         self._changed("phrase", r[0] if r else None)
+
+    # ------------------------------------------------------------ phrase links (FR-DAT-04)
+    def phrase_uid(self, phrase_id: int) -> str | None:
+        with self.lock:
+            return self._uid("phrases", phrase_id)
+
+    def phrase_by_uid(self, uid: str):
+        with self.lock:
+            r = self.conn.execute("SELECT id FROM phrases WHERE uid=?", (uid,)).fetchone()
+        return self.get_phrase(r[0]) if r else None
+
+    def create_link(self, phrase_id: int, folder_id: int | None) -> Phrase:
+        """A phrase that always inserts the current text of phrase_id (follows its edits)."""
+        target = self.get_phrase(phrase_id)
+        if target is None:
+            raise KeyError(phrase_id)
+        uid = self.phrase_uid(phrase_id)
+        return self.add_phrase(Phrase(description=target.description, content=f"{{#insert -uid {uid}}}",
+                                      folder_id=folder_id))
+
+    # ------------------------------------------------------------ folder text (FR-DAT-05)
+    def folder_wrap(self, folder_id: int | None) -> tuple[str, str]:
+        """(text before, text after) a phrase in this folder: the outermost folder's text comes
+        first before the phrase and last after it."""
+        chain = self.folder_chain(folder_id) if folder_id is not None else []
+        before = "".join(f.text_before for f in reversed(chain) if f.text_before)
+        after = "".join(f.text_after for f in chain if f.text_after)
+        return before, after
 
     # ------------------------------------------------------------ templates (FR-DAT-04)
     def template_phrases(self) -> list[Phrase]:
