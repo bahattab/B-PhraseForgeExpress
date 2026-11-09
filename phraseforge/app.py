@@ -887,6 +887,9 @@ class PhraseForgeApp(QObject):
         from PySide6.QtCore import QTimer
         self._dynamic_busy = threading.Lock()
         self._dynamic_errors: dict[int, str] = {}
+        self._library_errors: dict[str, str] = {}
+        from phraseforge import libraries
+        libraries.manager(self.store)          # mounted phrase libraries: guards and precedence now
         self._dynamic_timer = QTimer(self)
         self._dynamic_timer.timeout.connect(self.dynamic_tick)
         self._dynamic_timer.start(30_000)
@@ -906,6 +909,15 @@ class PhraseForgeApp(QObject):
                 self._dynamic_errors = now                       # a fixed problem is announced again if it returns
             except Exception:
                 log.exception("dynamic folders")
+            try:                                                  # phrase libraries whose file changed
+                from phraseforge import libraries
+                errs = {lib.id: (lib.name, e) for lib, e in libraries.manager(self.store).refresh()}
+                for lid, (name, err) in errs.items():
+                    if self._library_errors.get(lid) != err:
+                        self.poster.posted.emit(lambda n=name, e=err: self.tray.notify(f"Phrase library {n}", e[:240]))
+                self._library_errors = {k: v[1] for k, v in errs.items()}
+            except Exception:
+                log.exception("phrase libraries")
             finally:
                 self._dynamic_busy.release()
         threading.Thread(target=work, name="dynamic-folders", daemon=True).start()

@@ -87,7 +87,16 @@ def _trigger_rows(con, where: str, arg) -> str:
     return json.dumps([{k: r[k] for k in r.keys() if k not in TRIGGER_SKIP} for r in rows], sort_keys=True)
 
 
-def read_state(path: str | Path, key=None) -> State:
+_DEFAULTS = {"show_in_popup": 1, "enabled": 1, "sort": 0, "use_count": 0, "output_mode": "auto",
+             "content_format": "text", "output_target": "current"}
+
+
+def _g(r, k: str):
+    """A column that an older phrase file may not have."""
+    return r[k] if k in r.keys() else _DEFAULTS.get(k)
+
+
+def read_state(path: str | Path, key=None, allow_rowids: bool = False) -> State:
     """Everything the merge compares, keyed by uid. Raises CannotMerge for copies without uids.
     key: the vault key, for a copy encrypted like the phrase file (the saved base)."""
     from phraseforge import vault
@@ -95,23 +104,25 @@ def read_state(path: str | Path, key=None) -> State:
     con.row_factory = sqlite3.Row
     try:
         tables = _tables(con)
-        if not {"folders", "phrases"} <= tables or "uid" not in _cols(con, "folders") \
-                or "uid" not in _cols(con, "phrases"):
+        if not {"folders", "phrases"} <= tables:
+            raise CannotMerge("This is not a PhraseForge phrase file.")
+        has_uids = "uid" in _cols(con, "folders") and "uid" in _cols(con, "phrases")
+        if not has_uids and not allow_rowids:
             raise CannotMerge("This copy was saved by an older PhraseForge.")
         st = State()
         fuid: dict[int, str] = {}
         for r in con.execute("SELECT * FROM folders ORDER BY id"):
-            fuid[r["id"]] = r["uid"] or f"row:{r['id']}"
+            fuid[r["id"]] = _g(r, "uid") or f"row:{r['id']}"
         for r in con.execute("SELECT * FROM folders ORDER BY id"):
             u = fuid[r["id"]]
             st.ids[("folder", u)] = r["id"]
             st.folders[u] = {
                 "name": r["name"], "parent": fuid.get(r["parent_id"]) if r["parent_id"] is not None else None,
-                "sort": r["sort"], "enabled": int(r["enabled"]), "apps_include": r["apps_include"] or "",
-                "apps_exclude": r["apps_exclude"] or "", "password_hash": r["password_hash"] or "",
-                "show_in_popup": int(r["show_in_popup"]), "notes": r["notes"] or "",
-                "output_target": r["output_target"] or "current", "output_target_arg": r["output_target_arg"] or "",
-                "abbrev_prefix": r["abbrev_prefix"] or "",
+                "sort": _g(r, "sort"), "enabled": int(_g(r, "enabled")), "apps_include": _g(r, "apps_include") or "",
+                "apps_exclude": _g(r, "apps_exclude") or "", "password_hash": _g(r, "password_hash") or "",
+                "show_in_popup": int(_g(r, "show_in_popup")), "notes": _g(r, "notes") or "",
+                "output_target": _g(r, "output_target") or "current", "output_target_arg": _g(r, "output_target_arg") or "",
+                "abbrev_prefix": _g(r, "abbrev_prefix") or "",
                 "is_template": int(r["is_template"] or 0) if "is_template" in r.keys() else 0,
                 "text_before": (r["text_before"] or "") if "text_before" in r.keys() else "",
                 "text_after": (r["text_after"] or "") if "text_after" in r.keys() else "",
@@ -119,7 +130,7 @@ def read_state(path: str | Path, key=None) -> State:
         has_versions = "phrase_versions" in tables
         puid: dict[int, str] = {}
         for r in con.execute("SELECT * FROM phrases ORDER BY id"):
-            u = r["uid"] or f"row:{r['id']}"
+            u = _g(r, "uid") or f"row:{r['id']}"
             puid[r["id"]] = u
             st.ids[("phrase", u)] = r["id"]
             tags = sorted(t[0] for t in con.execute(
@@ -130,16 +141,16 @@ def read_state(path: str | Path, key=None) -> State:
                 versions = {v["lang"]: [v["content"] or "", v["content_format"] or "text"] for v in con.execute(
                     "SELECT lang, content, content_format FROM phrase_versions WHERE phrase_id=?", (r["id"],))}
             st.phrases[u] = {
-                "description": r["description"], "content": [r["content"] or "", r["content_format"] or "text"],
+                "description": r["description"], "content": [r["content"] or "", _g(r, "content_format") or "text"],
                 "folder": fuid.get(r["folder_id"]) if r["folder_id"] is not None else None,
-                "output_mode": r["output_mode"], "apps_include": r["apps_include"] or "",
-                "apps_exclude": r["apps_exclude"] or "", "enabled": int(r["enabled"]), "sort": r["sort"],
-                "notes": r["notes"] or "", "output_target": r["output_target"] or "current",
-                "output_target_arg": r["output_target_arg"] or "",
+                "output_mode": _g(r, "output_mode"), "apps_include": _g(r, "apps_include") or "",
+                "apps_exclude": _g(r, "apps_exclude") or "", "enabled": int(_g(r, "enabled")), "sort": _g(r, "sort"),
+                "notes": _g(r, "notes") or "", "output_target": _g(r, "output_target") or "current",
+                "output_target_arg": _g(r, "output_target_arg") or "",
                 "triggers": _trigger_rows(con, "phrase_id", r["id"]), "tags": tags,
                 "versions": json.dumps(versions, sort_keys=True),
-                "_use_count": r["use_count"] or 0, "_last_used": r["last_used"], "_created": r["created"],
-                "_modified": r["modified"] or ""}
+                "_use_count": _g(r, "use_count") or 0, "_last_used": _g(r, "last_used"), "_created": _g(r, "created"),
+                "_modified": _g(r, "modified") or ""}
         if "sticky_notes" in tables and "uid" in _cols(con, "sticky_notes"):
             for r in con.execute("SELECT * FROM sticky_notes ORDER BY id"):
                 u = r["uid"] or f"row:{r['id']}"

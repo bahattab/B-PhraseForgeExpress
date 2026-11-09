@@ -791,6 +791,9 @@ class MainWindow(QMainWindow):
         b = g.add_large("Record\nmacro", "m_recorder", self.record_macro, key="Record macro")
         b.setToolTip("Record keys and mouse clicks in any program as a new phrase "
                      "(stop with Ctrl+Shift+F12 or the Stop button)")
+        b = g.add_large("Libraries", "folder_open", self.show_libraries)
+        b.setToolTip("Use phrases from other phrase files next to your own (for example a team file "
+                     "on a shared folder)")
         b = g.add_large("Trash", "delete", self.show_trash)
         b.setToolTip("Deleted phrases and folders: restore them or delete them for good")
         b = g.add_large("Signatures", "email", self.show_signatures)
@@ -1125,6 +1128,8 @@ class MainWindow(QMainWindow):
         dirty = dirty() if callable(dirty) else getattr(ed, "dirty", True)
         if not dirty:
             return True
+        if self.sel_kind in ("phrase", "folder") and self._in_read_only_library(self.sel_kind, self.sel_id):
+            return True                                 # a read-only phrase library: nothing can be saved
         try:
             ed.save()      # editors return False for "nothing to save"; only exceptions are failures
             return True
@@ -1187,6 +1192,9 @@ class MainWindow(QMainWindow):
                     pass
             if not editing_allowed() and kind != "clip":
                 ed.setEnabled(False)                    # load() enables the editor again
+            elif kind in ("phrase", "folder") and self._in_read_only_library(kind, id_):
+                ed.setEnabled(False)                    # a read-only phrase library (libraries.py)
+                ed.setToolTip(tr("This phrase library is read only."))
             self.editor_stack.setCurrentWidget(ed)
         else:
             self.editor_stack.setCurrentWidget(self.blank)
@@ -1712,6 +1720,26 @@ class MainWindow(QMainWindow):
         if (self.sel_kind, self.sel_id) == (kind, id_) or (self.current and self.store.get_phrase(self.current.id) is None):
             self._set_selection("", None)
             self.editor_stack.setCurrentWidget(self.blank)
+        self.refresh_tree()
+
+    def _in_read_only_library(self, kind: str, id_) -> bool:
+        if id_ is None or getattr(self.store, "closed", False):
+            return False
+        from phraseforge import libraries
+        mgr = libraries.manager(self.store)
+        if not mgr.libraries():
+            return False
+        if kind == "phrase":
+            p = self.store.get_phrase(id_)
+            lib = mgr.library_of_folder(p.folder_id) if p else None
+        else:
+            lib = mgr.library_of_folder(id_)
+        return lib is not None and not lib.writable
+
+    def show_libraries(self) -> None:
+        from phraseforge.ui.libraries_dialog import LibrariesDialog
+        self.save_current()
+        LibrariesDialog(self.store, self).exec()
         self.refresh_tree()
 
     def show_trash(self) -> None:

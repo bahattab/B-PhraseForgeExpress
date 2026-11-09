@@ -169,6 +169,11 @@ def content_hash(store: Store) -> str:
     """Hash of the user's data (not timestamps of the export itself)."""
     d = store.export_dict()
     d.pop("exported", None)
+    from phraseforge.libraries import mirror_folder_ids
+    lib_folders = mirror_folder_ids(store)                # mounted libraries are not synced
+    if lib_folders:
+        d["folders"] = [f for f in d.get("folders", []) if f.get("id") not in lib_folders]
+        d["phrases"] = [p for p in d.get("phrases", []) if p.get("folder_id") not in lib_folders]
     for p in d.get("phrases", []):           # usage counters change on every expansion
         for k in ("use_count", "last_used"):
             p.pop(k, None)
@@ -477,12 +482,15 @@ class CloudSync:
 
 
 def _strip(path: Path) -> None:
-    """Remove what never leaves this PC: clipboard history, the trash and device-only settings."""
+    """Remove what never leaves this PC: clipboard history, the trash, mounted phrase libraries
+    and device-only settings."""
     con = sqlite3.connect(str(path))
     with con:
         con.execute("DELETE FROM clipboard")
         if con.execute("SELECT 1 FROM sqlite_master WHERE name='trash'").fetchone():
             con.execute("DELETE FROM trash")              # the trash belongs to this PC
+        from phraseforge.libraries import strip_copy
+        strip_copy(con)                                   # so do the mounted phrase libraries
         for (k,) in con.execute("SELECT key FROM settings").fetchall():
             if _is_local_key(k):
                 con.execute("DELETE FROM settings WHERE key=?", (k,))
