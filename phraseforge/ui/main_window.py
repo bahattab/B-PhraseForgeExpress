@@ -773,6 +773,7 @@ class MainWindow(QMainWindow):
                               ("Restore settings and phrases from migration file", "restore", self.migration_restore, True)])
         m.add("Migration Assistant", "migration", mig)
         m.add("Maintenance", "settings", self.show_maintenance)
+        m.add("Scheduled tasks", "m_datetime", self.show_tasks)
         m.addSeparator()
         m.add("Exit", "exit", self.close)
         self.file_menu = m
@@ -1745,6 +1746,13 @@ class MainWindow(QMainWindow):
         dlg.show_phrase.connect(lambda pid: (self.refresh_tree(), self.select_phrase(pid)))
         dlg.exec()
         self.refresh_tree()
+
+    def show_tasks(self) -> None:
+        from phraseforge.ui.schedule_dialog import TasksDialog
+        self.save_current()
+        dlg = TasksDialog(self.store, self)
+        dlg.show_phrase.connect(lambda pid: (dlg.accept(), self.select_phrase(pid)))
+        dlg.exec()
 
     def show_libraries(self) -> None:
         from phraseforge.ui.libraries_dialog import LibrariesDialog

@@ -233,8 +233,14 @@ class TriggerRow(QWidget):
         self.time_edit.setFixedWidth(72)
         from PySide6.QtCore import QLocale
         self.time_edit.setLocale(QLocale(QLocale.English, QLocale.UnitedStates))
-        self.time_edit.timeChanged.connect(lambda t: self._set("value", t.toString("HH:mm")))
-        tl.addWidget(self.time_edit); tl.addStretch(1)
+        self.time_edit.timeChanged.connect(self._time_changed)
+        tl.addWidget(self.time_edit)
+        self.schedule_button = QPushButton("Schedule...")
+        self.schedule_button.setToolTip("Weekdays, dates, a random delay or a single run")
+        self.schedule_button.clicked.connect(self._edit_schedule)
+        tl.addWidget(self.schedule_button)
+        self.schedule_label = QLabel("")
+        tl.addWidget(self.schedule_label, 1)
         self._add_page("time", tw)
 
         self.clip_edit = QLineEdit()
@@ -296,6 +302,37 @@ class TriggerRow(QWidget):
             self.data.update(dlg.values())
             self.changed.emit()
 
+    # -------------------------------------------------- time schedule (triggers/schedule.py)
+    def _time_changed(self, qt) -> None:
+        from phraseforge.triggers import schedule
+        hhmm = qt.toString("HH:mm")
+        try:
+            current = schedule.parse(self.data.get("value") or "00:00")
+            if current.kind == "every":           # an interval has no time of day to change
+                return
+            value = schedule.format(current.with_time(hhmm))
+        except ValueError:
+            value = hhmm
+        if self.data.get("value") != value:      # also keeps "every:15" while the time field is not touched
+            self._set("value", value)
+        self._show_schedule()
+
+    def _edit_schedule(self) -> None:
+        from phraseforge.ui.schedule_dialog import ScheduleDialog
+        dlg = ScheduleDialog(self.data.get("value") or "00:00", self)
+        if dlg.exec():
+            self._set("value", dlg.value())
+            self._show_schedule()
+
+    def _show_schedule(self) -> None:
+        from phraseforge.triggers import schedule
+        try:
+            s = schedule.parse(self.data.get("value") or "00:00")
+            extra = s.describe().split("; ", 1)[1] if s.days or s.start or s.end or s.once or s.random_minutes else ""
+        except ValueError:
+            extra = ""
+        self.schedule_label.setText(extra)
+
     # -------------------------------------------------- state
     def _set(self, key, value, refresh=False):
         if self.data.get(key) == value:
@@ -352,10 +389,11 @@ class TriggerRow(QWidget):
                 i = self.window_scope.findData(self.data.get("window_scope", "any"))
                 self.window_scope.setCurrentIndex(max(0, i))
             elif t == "time":
-                qt = QTime.fromString(v or "00:00", "HH:mm")
+                qt = QTime.fromString((v or "00:00").split()[0], "HH:mm")
                 self.time_edit.setTime(qt if qt.isValid() else QTime(0, 0))
                 if not v:
                     self.data["value"] = "00:00"
+                self._show_schedule()
             elif t == "clipboard":
                 self.clip_edit.setText(v)
             elif t == "regex_clipboard":
