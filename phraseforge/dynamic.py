@@ -35,6 +35,7 @@ import io
 import json
 import logging
 import os
+import re
 import sqlite3
 import time
 from dataclasses import asdict, dataclass, field
@@ -47,6 +48,8 @@ log = logging.getLogger(__name__)
 SOURCES = ("text", "table", "folder", "sqlite", "odbc")
 MAX_ITEMS = 5000
 MAX_CONTENT = 200_000
+MAX_FILE_BYTES = 20 * 1024 * 1024    # a text/table/Excel source or one file in a folder (R49)
+MAX_SCAN = 20_000                    # folder entries looked at per read or change check (R62)
 TAG = "dynamic"
 TABLES = """
 CREATE TABLE IF NOT EXISTS dynamic_folders (
@@ -145,10 +148,25 @@ def _csv_rows(path: Path) -> list[list[str]]:
     return [r for r in csv.reader(io.StringIO(text), _dialect(text)) if any(c.strip() for c in r)]
 
 
+_SQL_LITERAL = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|\[[^\]]*\]|--[^\n]*|/\*.*?\*/", re.S)
+_SQL_WRITE = re.compile(
+    r"\b(insert|update|delete|merge|drop|alter|create|grant|revoke|deny|exec|execute|into|truncate|"
+    r"openrowset|opendatasource|openquery|openxml|bulk|backup|restore|declare|use|shutdown|dbcc|kill|"
+    r"attach|detach|pragma|vacuum|reindex|waitfor|xp_\w*|sp_\w*)\b", re.I)
+
+
 def _check_query(q: str) -> str:
-    q = (q or "").strip().rstrip(";")
-    if not q.lower().startswith(("select", "with")) or ";" in q:
+    """One SELECT (or WITH ... SELECT). T-SQL needs no ";" between statements, so the words
+    that write, run procedures or reach other servers are refused outside quoted text
+    (security R48). The database login should still be read-only: this check is a guard,
+    not a sandbox."""
+    q = (q or "").strip().rstrip(";").strip()
+    bare = _SQL_LITERAL.sub(" ", q)
+    if not bare.lstrip().lower().startswith(("select", "with")) or ";" in bare:
         raise DynamicError("only a single SELECT query is allowed")
+    bad = _SQL_WRITE.search(bare)
+    if bad:
+        raise DynamicError(f"only a single SELECT query is allowed ({bad.group(0)} is not)")
     return q
 
 
@@ -167,10 +185,17 @@ def read_items(cfg: DynamicConfig, odbc_connect=None) -> list[Item]:
     path = cfg.path if src == "odbc" else _env_path(cfg.path)    # %USERPROFILE%\\... works for files
     if src not in SOURCES:
         raise DynamicError(f"unknown source {src!r}")
+    if src in ("text", "table"):
+        _check_size(Path(path))
     if src == "text":
         from phraseforge.importers.phraseexpress import _read_text
-        lines = [ln.strip() for ln in _read_text(path).splitlines()]
-        items = [Item(ln.casefold(), _label(ln), ln) for ln in lines if ln]
+        items = []
+        for ln in _read_text(path).splitlines():
+            ln = ln.strip()
+            if ln:
+                items.append(Item(ln.casefold(), _label(ln), ln[:MAX_CONTENT]))
+                if len(items) >= MAX_ITEMS:
+                    break
     elif src == "table":
         p = Path(path)
         if p.suffix.lower() in (".xlsx", ".xlsm"):
@@ -188,11 +213,18 @@ def read_items(cfg: DynamicConfig, odbc_connect=None) -> list[Item]:
         root = Path(path)
         if not root.is_dir():
             raise DynamicError(f"folder not found: {path}")
-        files = sorted(root.rglob("*") if cfg.recursive else root.iterdir())
+        base = root.resolve()
         items = []
-        for f in files:
-            if not f.is_file() or f.name.startswith(("~$", ".")):
+        for f in sorted(_scan(root, cfg.recursive)):
+            if f.is_symlink() or not f.is_file() or f.name.startswith(("~$", ".")):
+                continue                            # a link could point anywhere on the PC (R60)
+            try:
+                if not f.resolve().is_relative_to(base) or f.stat().st_size > MAX_FILE_BYTES:
+                    continue
+            except OSError:
                 continue
+            if any(c in f.name for c in '{}"'):
+                continue                            # would break out of {#document "..."} (R61)
             ext = f.suffix.lower()
             rel = f.relative_to(root).as_posix()
             q = '"' + str(f).replace('"', '\\"') + '"'
@@ -201,8 +233,7 @@ def read_items(cfg: DynamicConfig, odbc_connect=None) -> list[Item]:
             elif ext in WORD_EXT + RTF_EXT:
                 content = "{#document " + q + "}" if cfg.link else file_text(f)[:MAX_CONTENT]
             elif ext in (".txt", ".md", ".html", ".htm"):
-                content = "{#document " + q + "}" if cfg.link else \
-                    f.read_bytes()[:MAX_CONTENT * 4].decode("utf-8-sig", errors="replace")[:MAX_CONTENT]
+                content = "{#document " + q + "}" if cfg.link else _head(f)
             else:
                 continue
             items.append(Item(rel.casefold(), f.stem, content))
@@ -234,6 +265,42 @@ def read_items(cfg: DynamicConfig, odbc_connect=None) -> list[Item]:
     return _keyed(items)[:MAX_ITEMS]
 
 
+def _check_size(p: Path) -> None:
+    try:
+        size = p.stat().st_size
+    except OSError as e:
+        raise DynamicError(f"cannot read {p}: {e}") from e
+    if size > MAX_FILE_BYTES:
+        raise DynamicError(f"{p.name} is larger than {MAX_FILE_BYTES // (1024 * 1024)} MB")
+
+
+def _head(f: Path) -> str:
+    with open(f, "rb") as fh:
+        return fh.read(MAX_CONTENT * 4).decode("utf-8-sig", errors="replace")[:MAX_CONTENT]
+
+
+def _scan(root: Path, recursive: bool):
+    """Files under root, at most MAX_SCAN entries, without following directory links."""
+    seen = 0
+    todo = [root]
+    while todo:
+        d = todo.pop()
+        try:
+            with os.scandir(d) as it:
+                for e in it:
+                    seen += 1
+                    if seen > MAX_SCAN:
+                        return
+                    p = Path(e.path)
+                    if e.is_dir(follow_symlinks=False):
+                        if recursive:
+                            todo.append(p)
+                    else:
+                        yield p
+        except OSError:
+            continue
+
+
 def source_stamp(cfg: DynamicConfig) -> str:
     """Changes when a file source changes ("" for queries, which go by ttl_s)."""
     p = Path(_env_path(cfg.path))
@@ -243,7 +310,7 @@ def source_stamp(cfg: DynamicConfig) -> str:
             return f"{st.st_mtime_ns}:{st.st_size}"
         if cfg.source == "folder":
             parts = []
-            for f in (p.rglob("*") if cfg.recursive else p.iterdir()):
+            for f in _scan(p, cfg.recursive):
                 if f.is_file():
                     st = f.stat()
                     parts.append(f"{f}:{st.st_mtime_ns}:{st.st_size}")
@@ -259,11 +326,33 @@ def _tables(store) -> None:
         store.conn.executescript(TABLES)
 
 
+def _stored(cfg: DynamicConfig) -> str:
+    """The config as written to the phrase file. An ODBC connection string can hold a
+    password and names this PC's servers: it stays on this PC, sealed (security R46)."""
+    d = asdict(cfg)
+    if cfg.source == "odbc":
+        d["path"] = ""
+    return json.dumps(d)
+
+
 def config(store, folder_id: int) -> DynamicConfig | None:
     _tables(store)
     with store.lock:
         r = store.conn.execute("SELECT config FROM dynamic_folders WHERE folder_id=?", (folder_id,)).fetchone()
-    return DynamicConfig.from_json(r[0]) if r else None
+    if not r:
+        return None
+    cfg = DynamicConfig.from_json(r[0])
+    if cfg.source == "odbc":
+        local = store.setting(f"dynamic.conn.{folder_id}", "")
+        if cfg.path and not local and approved_fp(store, folder_id) in (_fingerprint(store, folder_id, cfg),
+                                                                          cfg.fingerprint()):
+            # written by 0.6.7: move this PC's own connection string out of the file
+            store.set_setting(f"dynamic.conn.{folder_id}", cfg.path)
+            local = cfg.path
+            with store.lock, store.conn:
+                store.conn.execute("UPDATE dynamic_folders SET config=? WHERE folder_id=?", (_stored(cfg), folder_id))
+        cfg.path = local
+    return cfg
 
 
 def dynamic_folder_ids(store) -> list[int]:
@@ -272,13 +361,44 @@ def dynamic_folder_ids(store) -> list[int]:
         return [r[0] for r in store.conn.execute("SELECT folder_id FROM dynamic_folders")]
 
 
+def _fingerprint(store, folder_id: int, cfg: DynamicConfig) -> str:
+    """The approval covers this source in this folder: the folder's uid is part of it, so a
+    new folder that reuses a deleted folder's id does not inherit its approval (R59)."""
+    uid = ""
+    try:
+        with store.lock:
+            r = store.conn.execute("SELECT uid FROM folders WHERE id=?", (folder_id,)).fetchone()
+        uid = (r[0] or "") if r else ""
+    except Exception:                               # an old store without uids
+        pass
+    return hashlib.sha256((cfg.fingerprint() + ":" + uid).encode()).hexdigest()[:32]
+
+
+def approved_fp(store, folder_id: int) -> str:
+    return store.setting(f"dynamic.approved.{folder_id}", "")
+
+
 def approved(store, folder_id: int, cfg: DynamicConfig | None = None) -> bool:
     cfg = cfg or config(store, folder_id)
-    return cfg is not None and store.setting(f"dynamic.approved.{folder_id}", "") == cfg.fingerprint()
+    if cfg is None:
+        return False
+    have, want = approved_fp(store, folder_id), _fingerprint(store, folder_id, cfg)
+    if have and have == cfg.fingerprint() and store.get_folder(folder_id) is not None:
+        store.set_setting(f"dynamic.approved.{folder_id}", want)   # approved by 0.6.7: add the uid
+        return True
+    return bool(have) and have == want
 
 
-def set_config(store, folder_id: int, cfg: DynamicConfig) -> None:
-    """Make a folder dynamic (or change its source) and approve that source on this PC."""
+def _editable(store) -> None:
+    from phraseforge import policy
+    if policy.current().editing_disabled:            # a dynamic folder writes phrases (R47)
+        raise policy.PolicyError(policy.current().notice("Editing phrases"))
+
+
+def set_config(store, folder_id: int, cfg: DynamicConfig, approve: bool = True) -> None:
+    """Make a folder dynamic (or change its source) and, with approve, approve that source
+    on this PC. A source that came from elsewhere is approved only with approve_source()."""
+    _editable(store)
     if cfg.source not in SOURCES:
         raise DynamicError(f"unknown source {cfg.source!r}")
     if cfg.source in ("sqlite", "odbc"):
@@ -287,12 +407,24 @@ def set_config(store, folder_id: int, cfg: DynamicConfig) -> None:
     with store.lock, store.conn:
         store.conn.execute("INSERT INTO dynamic_folders (folder_id, config) VALUES (?, ?) ON CONFLICT(folder_id) "
                            "DO UPDATE SET config=excluded.config, last_refresh=0, last_stamp=''",
-                           (folder_id, json.dumps(asdict(cfg))))
-    store.set_setting(f"dynamic.approved.{folder_id}", cfg.fingerprint())
+                           (folder_id, _stored(cfg)))
+    if cfg.source == "odbc":
+        store.set_setting(f"dynamic.conn.{folder_id}", cfg.path)
+    if approve:
+        store.set_setting(f"dynamic.approved.{folder_id}", _fingerprint(store, folder_id, cfg))
+
+
+def approve_source(store, folder_id: int) -> None:
+    """Approve the source as it is stored now (after the user confirmed it)."""
+    _editable(store)
+    cfg = config(store, folder_id)
+    if cfg is not None:
+        store.set_setting(f"dynamic.approved.{folder_id}", _fingerprint(store, folder_id, cfg))
 
 
 def remove(store, folder_id: int, delete_phrases: bool = False) -> None:
     """Make the folder an ordinary one again (its phrases stay unless delete_phrases)."""
+    _editable(store)
     _tables(store)
     with store.lock:
         ids = [r[0] for r in store.conn.execute("SELECT phrase_id FROM dynamic_items WHERE folder_id=?", (folder_id,))]
@@ -303,6 +435,7 @@ def remove(store, folder_id: int, delete_phrases: bool = False) -> None:
         store.conn.execute("DELETE FROM dynamic_items WHERE folder_id=?", (folder_id,))
         store.conn.execute("DELETE FROM dynamic_folders WHERE folder_id=?", (folder_id,))
     store.set_setting(f"dynamic.approved.{folder_id}", "")
+    store.set_setting(f"dynamic.conn.{folder_id}", "")
 
 
 def status(store, folder_id: int) -> dict:
@@ -348,8 +481,18 @@ def refresh(store, folder_id: int, odbc_connect=None, now: float | None = None) 
     with store.lock:
         known = {k: (pid, fp) for k, pid, fp in store.conn.execute(
             "SELECT item_key, phrase_id, fp FROM dynamic_items WHERE folder_id=?", (folder_id,))}
+    if not items and known:
+        # a source that is empty for a moment (being rewritten, a share that is offline)
+        # must not delete the folder's phrases and their statistics (R62)
+        msg = "the source returned nothing; the phrases were kept"
+        with store.lock, store.conn:
+            store.conn.execute("UPDATE dynamic_folders SET last_error=?, last_refresh=? WHERE folder_id=?",
+                               (msg, now or time.time(), folder_id))
+        raise DynamicError(msg)
     added = updated = removed = 0
     keep = set()
+    # a source set up before the administrator locked editing keeps feeding its folder (IT can
+    # hand out phrases that way); setting one up or changing it is refused under the lock
     with store.policy_bypass(), store.quarantine_writes("imported"):
         for it in items:
             keep.add(it.key)
@@ -386,6 +529,10 @@ def refresh(store, folder_id: int, odbc_connect=None, now: float | None = None) 
 def refresh_due(store, odbc_connect=None) -> list[tuple[int, str]]:
     """Refresh every approved dynamic folder that is due. Returns [(folder id, error)] for failures."""
     errors = []
+    for key in [k for k in store.settings() if k.startswith(("dynamic.approved.", "dynamic.conn."))]:
+        fid = key.rsplit(".", 1)[-1]
+        if fid.isdigit() and store.get_folder(int(fid)) is None and store.setting(key, ""):
+            store.set_setting(key, "")                # the folder is gone: so is its approval (R59)
     for fid in dynamic_folder_ids(store):
         if store.get_folder(fid) is None or not approved(store, fid):
             continue

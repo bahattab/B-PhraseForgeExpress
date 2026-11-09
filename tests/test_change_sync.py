@@ -81,9 +81,9 @@ def test_same_field_newer_edit_wins_and_loser_is_in_history(two_pcs):
     pb = b.find_phrase("Sig")
     pb.content = "from B"
     b.update_phrase(pb)
-    a.conn.execute("UPDATE phrases SET modified='2030-01-02T00:00:00' WHERE id=?", (pa.id,))   # A edited later
+    a.conn.execute("UPDATE phrases SET modified='2020-01-02T00:00:00' WHERE id=?", (pa.id,))   # A edited later (past dates: R54 counts future stamps as now)
     a.conn.commit()
-    b.conn.execute("UPDATE phrases SET modified='2030-01-01T00:00:00' WHERE id=?", (pb.id,))
+    b.conn.execute("UPDATE phrases SET modified='2020-01-01T00:00:00' WHERE id=?", (pb.id,))
     b.conn.commit()
     run(sa)
     res = run(sb)

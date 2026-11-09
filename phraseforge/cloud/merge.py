@@ -69,6 +69,11 @@ class State:
     comments: dict = field(default_factory=dict)     # phrase uid -> {(author, created, text): resolved}
 
 
+
+def _now() -> str:
+    from datetime import datetime
+    return datetime.now().isoformat(timespec="seconds")
+
 def _tables(con) -> set[str]:
     return {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 
@@ -223,7 +228,9 @@ def merge_items(base: dict, local: dict, remote: dict, fields: tuple, stamp: str
         if l is not None and r is not None:
             bb = b or {}
             rec = dict(l)
-            remote_newer = bool(stamp) and (r.get(stamp) or "") > (l.get(stamp) or "")
+            # a stamp from the future (forged to win every conflict) counts as now (R54)
+            r_stamp = min(r.get(stamp) or "", _now()) if stamp else ""
+            remote_newer = bool(stamp) and r_stamp > (l.get(stamp) or "")
             lost = False
             for f in fields:
                 v, conflict = _pick(bb.get(f, MISSING), l.get(f), r.get(f))
@@ -234,7 +241,7 @@ def merge_items(base: dict, local: dict, remote: dict, fields: tuple, stamp: str
             if lost and losers is not None:
                 losers.append((u, l if remote_newer else r))
             if stamp:
-                rec[stamp] = max(l.get(stamp) or "", r.get(stamp) or "")
+                rec[stamp] = max(l.get(stamp) or "", r_stamp)
             if kind == "phrase":
                 rec["_use_count"] = l["_use_count"] + max(0, r["_use_count"] - bb.get("_use_count", 0))
                 rec["_last_used"] = max(l["_last_used"] or "", r["_last_used"] or "") or None
@@ -286,15 +293,19 @@ def merge(base: State, local: State, remote: State) -> Merged:
     for rec in phrases.values():
         if rec["folder"] is not None and not ensure(rec["folder"]):
             rec["folder"] = None
-    # moves on both sides can make a loop: cut it at the root
+    # moves on both sides can make a loop: cut it at the root. Each folder is walked once,
+    # so a deep chain in a crafted copy costs linear time, not folders x depth (R53)
+    done: set = set()
     for u in list(folders):
-        seen, cur = set(), u
-        while cur is not None and cur in folders:
-            if cur in seen:
+        path, on_path, cur = [], set(), u
+        while cur is not None and cur in folders and cur not in done:
+            if cur in on_path:
                 folders[cur]["parent"] = None
                 break
-            seen.add(cur)
+            on_path.add(cur)
+            path.append(cur)
             cur = folders[cur]["parent"]
+        done.update(path)
     for rec in folders.values():
         if rec["parent"] is not None and rec["parent"] not in folders:
             rec["parent"] = None
@@ -327,12 +338,18 @@ def apply(store: Store, local: State, remote: State, m: Merged) -> None:
     conn = store.conn
     fid: dict[str, int] = {u: local.ids[("folder", u)] for u in local.folders}
 
+    depths: dict = {}
+
     def depth(u):
-        d, cur, seen = 0, m.folders[u]["parent"], set()
-        while cur is not None and cur in m.folders and cur not in seen:
-            seen.add(cur)
-            d, cur = d + 1, m.folders[cur]["parent"]
-        return d
+        chain, cur = [], u
+        while cur is not None and cur in m.folders and cur not in depths and cur not in chain:
+            chain.append(cur)
+            cur = m.folders[cur]["parent"]
+        d = depths.get(cur, -1) if cur in depths else -1
+        for x in reversed(chain):
+            d += 1
+            depths[x] = d
+        return depths.get(u, 0)
 
     with store.policy_bypass():
         for u in sorted(m.folders, key=depth):                       # parents first

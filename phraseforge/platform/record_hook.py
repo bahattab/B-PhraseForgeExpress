@@ -21,6 +21,7 @@ log = logging.getLogger(__name__)
 WH_MOUSE_LL = 14
 WM_LBUTTONDOWN, WM_RBUTTONDOWN, WM_MBUTTONDOWN, WM_MOUSEWHEEL = 0x201, 0x204, 0x207, 0x20A
 GA_ROOT = 2
+LLMHF_INJECTED = 0x1
 BUTTONS = {WM_LBUTTONDOWN: "left", WM_RBUTTONDOWN: "right", WM_MBUTTONDOWN: "middle"}
 
 
@@ -86,10 +87,13 @@ class MouseHook:
             user32.UnhookWindowsHookEx(hook)
 
     def _callback(self, ncode, wparam, lparam):
-        if ncode == 0 and wparam in (WM_LBUTTONDOWN, WM_RBUTTONDOWN, WM_MBUTTONDOWN, WM_MOUSEWHEEL):
+        # middle clicks are not recorded: replayed they would be left clicks (R58)
+        if ncode == 0 and wparam in (WM_LBUTTONDOWN, WM_RBUTTONDOWN, WM_MOUSEWHEEL):
             try:
                 ms = ctypes.cast(lparam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
-                if ms.dwExtraInfo != INJECT_MAGIC:
+                # neither PhraseForge's own input nor clicks other programs inject
+                # (LLMHF_INJECTED), like the keyboard hook (R58)
+                if ms.dwExtraInfo != INJECT_MAGIC and not (ms.flags & LLMHF_INJECTED):
                     x, y = ms.pt.x, ms.pt.y
                     root = _window_at(x, y)
                     if root is None or not _own_window(root):

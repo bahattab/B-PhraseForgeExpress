@@ -730,10 +730,10 @@ class SettingsDialog(QDialog):
 
     def export_to(self, path: str) -> None:
         self.save()
-        from phraseforge.db import SECRET_SETTINGS
+        from phraseforge.db import is_secret_setting
         # API keys and the proxy password are left out: the file is plain JSON and may be
         # mailed or synced. They are re-entered on the other PC.
-        data = {k: v for k, v in self.store.settings().items() if k not in SECRET_SETTINGS}
+        data = {k: v for k, v in self.store.settings().items() if not is_secret_setting(k)}
         with open(path, "w", encoding="utf-8") as fh:
             json.dump({"format": "phraseforge-settings", "settings": data,
                        "excluded_apps": sorted(self.store.excluded_apps())}, fh, ensure_ascii=False, indent=2)
