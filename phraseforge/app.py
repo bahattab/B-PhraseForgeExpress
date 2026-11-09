@@ -1861,7 +1861,8 @@ class PhraseForgeApp(QObject):
         _exec_in_front(SettingsDialog(self.store))
         try:
             from phraseforge import autostart
-            autostart.set_enabled(self.store.setting("app.start_with_windows", "0") == "1")
+            if not paths.is_portable():            # portable: never touch the registry
+                autostart.set_enabled(self.store.setting("app.start_with_windows", "0") == "1")
         except Exception:
             log.exception("autostart update failed")
         from phraseforge.ui.theme import apply_theme
@@ -1962,7 +1963,8 @@ def quiet_http_loggers() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    if "--self-test" in (argv if argv is not None else sys.argv):
+    argv = paths.apply_command_line(list(argv if argv is not None else sys.argv))   # --portable, --home
+    if "--self-test" in argv:
         from phraseforge.selftest import run
         return run()
     logging.basicConfig(filename=str(paths.data_dir() / "phraseforge.log"), level=logging.INFO,
@@ -1970,11 +1972,11 @@ def main(argv: list[str] | None = None) -> int:
     quiet_http_loggers()
     sys.excepthook = lambda *a: log.error("".join(traceback.format_exception(*a)))
     # Qt 6 sets per-monitor DPI awareness itself; setting it here first made Qt warn.
-    qapp = QApplication(argv if argv is not None else sys.argv)
+    qapp = QApplication(argv)
     qapp.setApplicationName("PhraseForge")
     qapp.setQuitOnLastWindowClosed(False)
     from phraseforge.single_instance import SingleInstance, instance_name
-    argv_list = list(argv if argv is not None else sys.argv)
+    argv_list = list(argv)
     if "--after-exit" in argv_list:       # "restart as administrator": let the old copy close first
         i = argv_list.index("--after-exit")
         pid = argv_list[i + 1] if i + 1 < len(argv_list) else ""

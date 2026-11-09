@@ -433,7 +433,8 @@ class MainWindow(QMainWindow):
         self.on_test_phrase = on_test_phrase
         self.on_command = on_command        # app-level commands (OneNote, OCR, Search files)
         from phraseforge import __version__
-        self.setWindowTitle(f"PhraseForge v{__version__}")
+        from phraseforge import paths
+        self.setWindowTitle(f"PhraseForge v{__version__}" + (" " + tr("(portable)") if paths.is_portable() else ""))
         try:
             from phraseforge.ui.icons import app_icon
             self.setWindowIcon(app_icon())

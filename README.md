@@ -14,6 +14,13 @@ Download from the repository's **Releases** page (or the latest *Windows build* 
   optional desktop shortcut and "start with Windows". Uninstall from Windows Settings > Apps.
   Your phrases in `%APPDATA%\PhraseForge` are kept when you uninstall.
 - `B-PhraseForgeExpress-portable.exe`: single file, no install. Starts a little slower.
+  It is **portable**: all its data (phrases, settings, backups, dictionaries, logs) goes into a
+  `PhraseForgeData` folder next to the EXE, so it can run from a USB stick, and it writes
+  nothing to `%APPDATA%` or the registry. For that reason "Start with Windows" and "Export
+  signatures to Outlook" are switched off there. Any copy becomes portable with a file
+  `portable.ini` next to it or the `--portable` switch; `--home <folder>` uses any data folder.
+  On another PC, keys saved under Windows' protection (AI keys, an encrypted phrase file
+  without a passphrase) cannot be opened: give an encrypted portable phrase file a passphrase.
 - `B-PhraseForgeExpress-<version>-win64.zip`: the same program as a folder.
 
 Windows SmartScreen may warn because the files are not code-signed: click

@@ -642,6 +642,8 @@ AR_EXTRA = {
     "output": "الإخراج",
     "output target": "وجهة الإخراج",
     "programs": "البرامج",
+    "(portable)": "(محمول)",
+    "Exporting to Outlook is not available in portable mode: Outlook's signature folder is in this PC's user profile. Copy the signature text instead.": "التصدير إلى Outlook غير متاح في الوضع المحمول: مجلد توقيعات Outlook في ملف المستخدم على هذا الجهاز. انسخ نص التوقيع بدلًا من ذلك.",
     "Libraries": "المكتبات",
     "Phrase libraries": "مكتبات العبارات",
     "Add phrase library": "إضافة مكتبة عبارات",
