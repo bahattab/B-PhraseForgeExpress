@@ -49,7 +49,8 @@ PhraseExpress does not document all parameters of these commands, so PhraseForge
 their behaviour itself (compat: approximate): `explode`, `numlist`, `settemp`/`gettemp`,
 `autocase`, `lastchars`, `textempty`, `prefix`, `postfix`, `regexpos`, `regexcount`,
 `setlevel`, `langdetect`, `mousex`/`mousey`/`mouseposition`, `sound`, `formgroup`,
-`formcheckcombo`. Phrases imported from PhraseExpress that use other parameters may need
+`formcheckcombo`, `contents`, `dictionary`, `parse`, `decstr`, `checktext`, `headfootfilled`,
+`convertlayout` (main key block of en/ar/ru/de/fr only), `speak`. Phrases imported from PhraseExpress that use other parameters may need
 editing.
 
 ## Commands
@@ -202,6 +203,10 @@ editing.
 | `regexpos` | `{#regexpos text pattern -i}` | 1-based position of the first regex match; 0 when there is none. |
 | `regexcount` | `{#regexcount text pattern -i}` | Number of regex matches in the text. |
 | `langdetect` | `{#langdetect text}` | Two-letter code (ISO 639-1) of the language the text is written in, detected offline (ar, en, de, fr, es, ru, zh, ...). |
+| `parse` | `{#parse text -start "<" -end ">" -index 1}` | The text between -start and -end. -index N picks the Nth such part (negative counts from the end); -all joins every part with -join. Without -end, everything after -start; without -start, everything before -end. |
+| `decstr` | `{#decstr text -by 1}` | Count the last number in the text down by -by (default 1), keeping leading zeros: "INV-0010" becomes "INV-0009". Text without a number stays as it is. |
+| `checktext` | `{#checktext text -contains x \| -startswith x \| -endswith x \| -regex p \| -empty} -i` | Test a text: outputs 1 when it passes, 0 when not (for {#if}). -i ignores case. |
+| `convertlayout` | `{#convertlayout text -from en -to ar}` | Re-map text typed with the wrong keyboard layout switched on, key by key. Layouts: en (US), ar (Arabic 101), ru, de, fr. |
 
 ### Clipboard
 
@@ -229,6 +234,7 @@ editing.
 | `focus` | `{#focus -process notepad.exe -title "Untitled" -state normal\|max\|min\|none -timeout 5}` | Bring an application window to the front. |
 | `web` | `{#web "https://example.com" -browser default\|chrome\|edge\|firefox}` | Open a web page. |
 | `sound` | `{#sound "C:\sounds\done.wav"}` | Play a .wav file, or a Windows sound: beep, info, warning, error, question. Outputs nothing. |
+| `speak` | `{#speak text -voice "Zira" -rate 0}` | Read the text aloud with a Windows voice (-voice: part of its name; -rate -10..10). Outputs nothing. |
 
 ### Variables
 
@@ -248,6 +254,9 @@ editing.
 | `setphrase` | `{#setphrase "Description" "content" -target "Existing phrase" -folder "A/B"}` | Create a phrase, or replace the content of -target (no output). |
 | `signature` | `{#signature}` | E-mail signature from the Signatures folder: the default one, or {#signature "Name"}, with its active footers and, if switched on, a random quote. -lang picks a language version. |
 | `setlevel` | `{#setlevel de}` | Use this language version for the {#insert} calls that follow in this expansion ("" or default = the default version). |
+| `contents` | `{#contents "Phrase description"}` | The text of another phrase as it is written, without running its macros. |
+| `dictionary` | `{#dictionary word -from "Phrase description" -default ""}` | Look a word up in a phrase used as a dictionary: one "word=translation" per line (or a tab between them). Case does not matter. Unknown words give -default (or the word itself with -keep). |
+| `headfootfilled` | `{#headfootfilled}` | 1 when the folders of this phrase add text before or after it (folder header/footer), else 0. |
 
 ### Files & data
 

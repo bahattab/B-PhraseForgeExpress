@@ -341,3 +341,200 @@ def _sound(rt, args, opts):
     except RuntimeError as e:
         raise MacroError(f"cannot play {what}: {e}") from e
     return None
+
+
+# ====================================================================== G-11 rest, G-30
+def _find_phrase(rt, key: str):
+    """The phrase {#insert} would use (id first, then description), or None."""
+    if rt.store is None or not key:
+        return None
+    return (rt.store.get_phrase(int(key)) if key.isdigit() else None) or rt.store.find_phrase(key)
+
+
+def _readable(rt, p, key: str) -> str:
+    """Raw text of another phrase, with the same lock check {#insert} makes."""
+    from phraseforge.macros.engine import html_to_text
+    from phraseforge.security import LOCKS
+    if p is None:
+        found = rt.host.phrase_content(key) if hasattr(rt.host, "phrase_content") else None
+        if found is None:
+            raise MacroError(f"phrase '{key}' not found")
+        content, fmt = found
+    else:
+        if LOCKS.is_locked(rt.store, p.folder_id):
+            raise MacroError(f"phrase '{key}' is in a locked folder")
+        lang = rt.level or rt.setting("phrase.active_language", "")
+        content, fmt = rt.store.phrase_text(p, lang) if hasattr(rt.store, "phrase_text") else (p.content, p.content_format)
+    return html_to_text(content) if fmt == "html" else content
+
+
+@macro("contents", "Phrases", '{#contents "Phrase description"}',
+       "The text of another phrase as it is written, without running its macros.",
+       '{#contents "Description"}')
+def _contents(rt, args, opts):
+    key = _arg(args, 0)
+    return _readable(rt, _find_phrase(rt, key), key)
+
+
+@macro("dictionary", "Phrases", '{#dictionary word -from "Phrase description" -default ""}',
+       'Look a word up in a phrase used as a dictionary: one "word=translation" per line (or a tab '
+       "between them). Case does not matter. Unknown words give -default (or the word itself with -keep).",
+       '{#dictionary word -from "Dictionary"}')
+def _dictionary(rt, args, opts):
+    word = _text(args).strip()
+    src = opts.get("from", "")
+    if not src:
+        raise MacroError("-from names the dictionary phrase")
+    entries: dict[str, str] = {}
+    for line in _readable(rt, _find_phrase(rt, src), src).splitlines():
+        k, sep, v = line.partition("\t") if "\t" in line else line.partition("=")
+        if sep and k.strip():
+            entries.setdefault(k.strip().casefold(), v.strip())
+    hit = entries.get(word.casefold())
+    if hit is not None:
+        return hit
+    return word if _flag(opts, "keep") else opts.get("default", "")
+
+
+@macro("parse", "Text", '{#parse text -start "<" -end ">" -index 1}',
+       "The text between -start and -end. -index N picks the Nth such part (negative counts from the end); "
+       "-all joins every part with -join. Without -end, everything after -start; without -start, "
+       "everything before -end.",
+       '{#parse "Order: [1234]" -start "[" -end "]"}')
+def _parse(rt, args, opts):
+    text, start, end = _text(args), _esc(opts.get("start", "")), _esc(opts.get("end", ""))
+    if not start and not end:
+        raise MacroError("give -start, -end or both")
+    parts, pos = [], 0
+    while True:
+        a = text.find(start, pos) if start else pos
+        if a < 0:
+            break
+        a += len(start)
+        if end:
+            b = text.find(end, a)
+            if b < 0:
+                break
+            parts.append(text[a:b])
+            pos = b + len(end)
+        else:
+            parts.append(text[a:])
+            break
+        if not start:
+            break
+    if _flag(opts, "all"):
+        return _esc(opts.get("join", "\\n")).join(parts)
+    if _flag(opts, "count"):
+        return str(len(parts))
+    try:
+        i = int(opts.get("index", "1"))
+    except ValueError as e:
+        raise MacroError("-index must be a number") from e
+    if i == 0 or abs(i) > len(parts):
+        return ""
+    return parts[i - 1] if i > 0 else parts[i]
+
+
+@macro("decstr", "Text", "{#decstr text -by 1}",
+       'Count the last number in the text down by -by (default 1), keeping leading zeros: '
+       '"INV-0010" becomes "INV-0009". Text without a number stays as it is.',
+       '{#decstr "INV-0010"}')
+def _decstr(rt, args, opts):
+    try:
+        by = int(opts.get("by", "1"))
+    except ValueError as e:
+        raise MacroError("-by must be a whole number") from e
+    text = _text(args)
+    m = re.search(r"(\d+)(\D*)$", text)
+    if not m:
+        return text
+    digits = m.group(1)
+    value = max(0, int(digits) - by)
+    return text[:m.start()] + str(value).zfill(len(digits)) + m.group(2)
+
+
+@macro("checktext", "Text", '{#checktext text -contains x | -startswith x | -endswith x | -regex p | -empty} -i',
+       'Test a text: outputs 1 when it passes, 0 when not (for {#if}). -i ignores case.',
+       '{#checktext "Hello world" -contains world}')
+def _checktext(rt, args, opts):
+    text = _text(args)
+    fold = (lambda s: s.casefold()) if _flag(opts, "i") else (lambda s: s)
+    t = fold(text)
+    if "contains" in opts:
+        ok = fold(_esc(opts["contains"])) in t
+    elif "startswith" in opts:
+        ok = t.startswith(fold(_esc(opts["startswith"])))
+    elif "endswith" in opts:
+        ok = t.endswith(fold(_esc(opts["endswith"])))
+    elif "regex" in opts:
+        from phraseforge import saferegex
+        try:
+            ok = saferegex.run(opts["regex"], re.I if _flag(opts, "i") else 0, text,
+                               lambda rx, t: rx.search(t)) is not None
+        except saferegex.RegexError as e:
+            raise MacroError(str(e)) from e
+    elif "empty" in opts:
+        ok = not text.strip()
+    else:
+        raise MacroError("give -contains, -startswith, -endswith, -regex or -empty")
+    return "1" if ok else "0"
+
+
+@macro("headfootfilled", "Phrases", "{#headfootfilled}",
+       "1 when the folders of this phrase add text before or after it (folder header/footer), else 0.")
+def _headfootfilled(rt, args, opts):
+    pid = getattr(rt.ctx, "phrase_id", None)
+    if rt.store is None or pid is None or not hasattr(rt.store, "folder_wrap"):
+        return "0"
+    p = rt.store.get_phrase(pid)
+    if p is None:
+        return "0"
+    before, after = rt.store.folder_wrap(p.folder_id)
+    return "1" if (before or after) else "0"
+
+
+@macro("convertlayout", "Text", "{#convertlayout text -from en -to ar}",
+       "Re-map text typed with the wrong keyboard layout switched on, key by key. Layouts: en (US), "
+       "ar (Arabic 101), ru, de, fr.",
+       "{#convertlayout {#clipboard} -from en -to ar}")
+def _convertlayout(rt, args, opts):
+    from phraseforge.macros import layouts
+    try:
+        return layouts.convert(_text(args), opts.get("from", "en"), opts.get("to", "ar"))
+    except KeyError as e:
+        raise MacroError(f"unknown layout {e.args[0]!r} (use en, ar, ru, de or fr)") from None
+
+
+def _sapi_speak(text: str, voice: str = "", rate: int = 0) -> None:
+    import win32com.client  # type: ignore
+    sp = win32com.client.Dispatch("SAPI.SpVoice")
+    if voice:
+        for v in sp.GetVoices():
+            if voice.lower() in v.GetDescription().lower():
+                sp.Voice = v
+                break
+    sp.Rate = max(-10, min(10, rate))
+    sp.Speak(text, 1)                                  # 1 = asynchronous: output goes on
+
+
+SPEAKER = _sapi_speak                                  # tests replace this
+
+
+@macro("speak", "System", '{#speak text -voice "Zira" -rate 0}',
+       "Read the text aloud with a Windows voice (-voice: part of its name; -rate -10..10). Outputs nothing.",
+       '{#speak "Done"}')
+def _speak(rt, args, opts):
+    text = _text(args).strip()
+    if not text:
+        return ""
+    if sys.platform != "win32" and SPEAKER is _sapi_speak:
+        raise MacroError("speech needs Windows")
+    try:
+        rate = int(opts.get("rate", "0"))
+    except ValueError as e:
+        raise MacroError("-rate must be a number from -10 to 10") from e
+    try:
+        SPEAKER(text, opts.get("voice", ""), rate)
+    except Exception as e:                                # no SAPI, no voice
+        raise MacroError(f"cannot speak: {e}") from e
+    return ""
