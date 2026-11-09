@@ -33,6 +33,18 @@ WINDOW_SCOPES = [("any", "window title contains"), ("program", "program (exe nam
 DELIMITERS = list(DELIMITER_CHOICES)
 
 
+def _add_regex_presets(combo: QComboBox) -> None:
+    """FR-TRG-04: the ready-made patterns, named in each item's tooltip."""
+    from PySide6.QtCore import Qt
+    from phraseforge.triggers.regex_presets import PRESETS
+    combo.setInsertPolicy(QComboBox.NoInsert)
+    for name, pattern in PRESETS.items():
+        combo.addItem(pattern)
+        combo.setItemData(combo.count() - 1, name, Qt.ToolTipRole)
+    combo.setToolTip("Type a regular expression, or pick a ready-made one: " + ", ".join(PRESETS))
+    combo.setCurrentIndex(-1)
+
+
 def rows_for_triggers(db_triggers: list[Trigger]) -> list[dict]:
     return [trigger_to_row(t) for t in db_triggers]
 
@@ -59,6 +71,16 @@ class ExpertOptionsDialog(QDialog):
         self.remove_trailing = QCheckBox("Remove trailing delimiter")
         self.remove_trailing.setChecked(bool(row.get("remove_trailing")))
         lay.addWidget(self.remove_trailing)
+        for combo in (self.lead, self.trail):       # "Space+Comma", "Custom:-_" (FR-TRG-03)
+            combo.setEditable(True)
+            combo.setInsertPolicy(QComboBox.NoInsert)
+            combo.setToolTip('Pick a class, join several with "+" (Space+Comma), or type "Custom:" '
+                             'followed by the characters.')
+        self.fast_only = QCheckBox("Only when typed quickly")
+        self.fast_only.setToolTip("The autotext fires only if its characters were typed in quick succession "
+                                  "(Settings > Autotext sets how quick).")
+        self.fast_only.setChecked(bool(row.get("fast_only")))
+        lay.addWidget(self.fast_only)
         self.trail.currentTextChanged.connect(self._sync)
         self._sync()
         lay.addSpacing(8)
@@ -86,10 +108,13 @@ class ExpertOptionsDialog(QDialog):
     def _reset(self):
         self.lead.setCurrentText("Default"); self.trail.setCurrentText("None")
         self.remove_trailing.setChecked(False)
+        self.fast_only.setChecked(False)
 
     def values(self) -> dict:
-        return {"lead_delim": self.lead.currentText(), "trail_delim": self.trail.currentText(),
-                "remove_trailing": self.remove_trailing.isChecked() and self.remove_trailing.isEnabled()}
+        return {"lead_delim": self.lead.currentText().strip() or "Default",
+                "trail_delim": self.trail.currentText().strip() or "None",
+                "remove_trailing": self.remove_trailing.isChecked() and self.remove_trailing.isEnabled(),
+                "fast_only": self.fast_only.isChecked()}
 
 
 class AddTagDialog(QDialog):
@@ -181,7 +206,9 @@ class TriggerRow(QWidget):
         self._add_page("smartcomplete", self.smart_edit)
 
         self.regex_edit = QComboBox(); self.regex_edit.setEditable(True)
+        _add_regex_presets(self.regex_edit)
         self.regex_edit.lineEdit().textEdited.connect(lambda t: self._set("value", t))
+        self.regex_edit.activated.connect(lambda i, c=self.regex_edit: self._set("value", c.itemText(i)))
         self._add_page("regex_autotext", self.regex_edit)
 
         self.hotkey = HotkeyPicker(clearable=False)
@@ -215,7 +242,9 @@ class TriggerRow(QWidget):
         self._add_page("clipboard", self.clip_edit)
 
         self.clip_regex_edit = QComboBox(); self.clip_regex_edit.setEditable(True)
+        _add_regex_presets(self.clip_regex_edit)
         self.clip_regex_edit.lineEdit().textEdited.connect(lambda t: self._set("value", t))
+        self.clip_regex_edit.activated.connect(lambda i, c=self.clip_regex_edit: self._set("value", c.itemText(i)))
         self._add_page("regex_clipboard", self.clip_regex_edit)
 
     def _add_page(self, key: str, w: QWidget):

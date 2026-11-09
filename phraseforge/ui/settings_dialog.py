@@ -850,6 +850,7 @@ class SettingsDialog(QDialog):
         gl.setSpacing(3)
         rows = [("hotkey.open_main", f"Open {APP}"),
                 ("hotkey.toggle_expansion", "Enable/disable text expansion"),
+                ("hotkey.skip_next", "Skip the next autotext"),
                 ("hotkey.new_phrase", "Create a new phrase"),
                 ("hotkey.new_phrase_from_clipboard", "Create a new phrase from the clipboard"),
                 ("hotkey.edit_last_phrase", "Edit the last used phrase"),
@@ -2439,6 +2440,22 @@ class SettingsDialog(QDialog):
         pause.setToolTip('Used by the Autotext options "When pausing after autotext input" '
                          'and "When continue typing quickly after autotext".')
         gl.addWidget(_row("Pause/fast-typing time:", pause, "ms"))
+        fast = self.bind("autotext.fast_ms", _spin(30, 2000))
+        fast.setSingleStep(10)
+        fast.setToolTip('For autotexts set to "Only when typed quickly" (Expert options): the most time '
+                        "between two of their characters.")
+        gl.addWidget(_row("Typed quickly means at most", fast, "ms per key"))
+        lay.addWidget(g)
+        g, gl = _group("Autotext prefix and auto-skip")
+        prefix = self.bind("autotext.global_prefix", QLineEdit())
+        prefix.setFixedWidth(60)
+        prefix.setToolTip('Every autotext must be typed after this text ("#" makes "sig" fire as "#sig"). '
+                          "Empty: no prefix.")
+        gl.addWidget(_row("Prefix for every autotext:", prefix))
+        skip = self.bind("triggers.autoskip", QCheckBox("Stop an autotext in a program after it was undone"))
+        n = self.bind("triggers.skip_threshold", _spin(1, 20))
+        n.setFixedWidth(50)
+        gl.addWidget(_row(skip, n, "times in 7 days"))
         lay.addWidget(g)
         lay.addStretch(1)
         return w

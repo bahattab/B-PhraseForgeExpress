@@ -45,6 +45,7 @@ SCHEMA: dict[str, str] = {
     "hotkey.edit_last_phrase": "",
     "hotkey.new_phrase_from_clipboard": "",
     "hotkey.toggle_expansion": "",
+    "hotkey.skip_next": "",
     "hotkey.open_main": "",
     "tray.left_click_popup": "0",   # PhraseExpress: left click on the tray icon opens the phrase menu
     "hotkey.open_settings": "",
@@ -200,6 +201,10 @@ SCHEMA: dict[str, str] = {
     # ms without typing that counts as a "pause" (autotext "When pausing") and the
     # window for "When continue typing quickly"; read by the trigger layer
     "autotext.pause_ms": "700",
+    "autotext.fast_ms": "150",          # "Only when typed quickly": most ms between two characters
+    "autotext.global_prefix": "",       # typed before every autotext ("#sig"), erased with it
+    "triggers.autoskip": "1",           # learned auto-skip (triggers/autoskip.py)
+    "triggers.skip_threshold": "3",
     "app.restrict_enabled": "0",
     "app.restrict_programs": "",
     "mail.method": "mailto",           # mapi | outlook | gmail | mailto

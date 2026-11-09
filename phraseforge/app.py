@@ -586,6 +586,7 @@ class PhraseForgeApp(QObject):
         reg("suggest_hide", lambda arg, hwnd: post(self._hide_tip))
         reg("autocorrect", lambda arg, hwnd: self._jobs.put(("replace", arg, hwnd)))       # "<erase>:<text>"
         reg("undo_expansion", lambda arg, hwnd: self._jobs.put(("undo", arg, hwnd)))       # "<pid>:<typed>"
+        reg("autoskip", lambda arg, hwnd: post(lambda: self._autoskip_notice(arg)))         # "<pid>:<exe>"
         # Microsoft OneNote (Settings > OneNote hotkeys, tray menu)
         reg("onenote_send_clipboard", lambda arg, hwnd: self._onenote_jobs.put(self._onenote_send_clipboard))
         reg("onenote_clip", lambda arg, hwnd: self._onenote_jobs.put(self._onenote_clip))
@@ -1289,6 +1290,20 @@ class PhraseForgeApp(QObject):
         log.info("expansion skipped: %s runs as administrator", exe)
         self.poster.posted.emit(lambda: self._elevated_notice(exe))
         return True
+
+    def _autoskip_notice(self, arg: str) -> None:
+        """Learned auto-skip turned an autotext off in one program; clicking brings it back."""
+        from phraseforge.ui.i18n import tr
+        pid_s, _, exe = arg.partition(":")
+        if not pid_s.isdigit():
+            return
+        p = self.store.get_phrase(int(pid_s))
+        name = p.description if p is not None else "?"
+        restore = lambda: self.triggers.autoskip.restore(int(pid_s), exe)  # noqa: E731
+        self.tray.notify(tr("Autotext skipped"),
+                         tr('You undid "{name}" several times in {exe}, so its autotext no longer fires there. '
+                            "Click here to turn it back on.").replace("{name}", name).replace("{exe}", exe),
+                         ms=10000, on_click=restore)
 
     def _elevated_notice(self, exe: str) -> None:
         """Tray message for an elevated window; clicking it restarts PhraseForge as administrator."""

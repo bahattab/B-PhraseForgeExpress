@@ -16,11 +16,20 @@ Word position (Trigger.eff_word_pos):
   end     may follow letters, but must be followed by a trailing delimiter
   middle  anywhere
   entire  leading delimiter before and trailing delimiter after
+
+Delimiter choices (Trigger.lead_delim / trail_delim, PRD FR-TRG-03): one of
+models.DELIMITER_CHOICES, several joined with "+" ("Space+Comma"), and "Custom:<chars>".
+"Standard" is another name for "Default" (the global set in Settings).
+
+Fast typing only (Trigger.fast_only, FR-TRG-01): the abbreviation fires only when no two of
+its characters were typed more than fast_ms apart, so a word typed slowly stays as it is.
+skip_next() (FR-TRG-05) makes the next match be ignored once.
 """
 from __future__ import annotations
 
 import re
 import threading
+import time
 from dataclasses import dataclass, replace
 from typing import Callable
 
@@ -61,6 +70,10 @@ class AutotextMatcher:
         self._trail_raw = delimiters
         self._lead_raw = leading
         self._buf = ""
+        self._times: list[float] = []      # when each character of _buf was typed
+        self.fast_ms = 150
+        self._skip_next = False
+        self._clock = time.monotonic
         self._no_trail: list[Trigger] = []
         self._trail: list[Trigger] = []
         self._regex: list[tuple[Trigger, re.Pattern]] = []
@@ -116,11 +129,58 @@ class AutotextMatcher:
 
     def reset(self) -> None:
         self._buf = ""
+        self._times = []
+
+    def set_fast_ms(self, ms: int) -> None:
+        self.fast_ms = max(10, int(ms))
+
+    def skip_next(self) -> None:
+        """Ignore the next autotext or regex match once (the Skip-next hotkey)."""
+        self._skip_next = True
+
+    @property
+    def skipping(self) -> bool:
+        return self._skip_next
+
+    def _fast(self, t: Trigger, times: list[float]) -> bool:
+        if not t.fast_only:
+            return True
+        limit = self.fast_ms / 1000.0
+        return all(b - a <= limit for a, b in zip(times, times[1:]))
+
+    def _set_buf(self, buf: str, times: list[float]) -> None:
+        self._buf, self._times = buf, times[-len(buf):] if buf else []
+
+    def _hit(self, m: Match) -> Match | None:
+        self._buf, self._times = "", []
+        if self._skip_next:
+            self._skip_next = False
+            return None
+        return m
 
     # ------------------------------------------------------------ delimiter rules
     def _choice_pred(self, choice: str, default: set[str]) -> Callable[[str], bool] | None:
         if choice == "None":
             return None
+        if choice.startswith("Custom:"):
+            chars = set(choice[len("Custom:"):])
+            return lambda c: c in chars
+        if "+" in choice and choice not in ("+",):
+            preds = [p for p in (self._choice_pred(part.strip(), default) for part in choice.split("+") if part.strip())
+                     if p is not None]
+            return (lambda c: any(p(c) for p in preds)) if preds else None
+        if choice == "All":
+            return lambda c: True
+        if choice == "Letters":
+            return lambda c: c.isalpha()
+        if choice == "Numbers":
+            return lambda c: c.isdigit()
+        if choice == "Point":
+            return lambda c: c == "."
+        if choice == "Comma":
+            return lambda c: c == ","
+        if choice == "Custom":              # "Custom" without characters: nothing matches
+            return lambda c: False
         if choice == "Space":
             return lambda c: c == " "
         if choice == "Enter":
@@ -171,50 +231,52 @@ class AutotextMatcher:
         return tuple(out)
 
     # ------------------------------------------------------------ matching
-    def feed(self, char: str | None, key: str | None = None) -> Match | None:
+    def feed(self, char: str | None, key: str | None = None, now: float | None = None) -> Match | None:
         """Feed one keystroke. char is the produced text (may be '\\n'/'\\t');
         key names a non-text key ('backspace', 'left', 'click', ...)."""
         with self._lock:
             if char is None:
                 if key == "backspace":
-                    self._buf = self._buf[:-1]
+                    self._buf, self._times = self._buf[:-1], self._times[:-1]
                 elif key in RESET_KEYS or key is not None:
-                    self._buf = ""
+                    self._buf, self._times = "", []
                 return None
+            now = self._clock() if now is None else now
             buf = self._buf + char
+            times = (self._times + [now])[-len(buf):]
             # 1. triggers that need no trailing delimiter (abbreviation ends with this char)
             for i, t in enumerate(self._no_trail):
                 start = self._suffix(t, buf)
-                if start is not None:
-                    self._buf = ""
-                    alts = self._same(t, self._no_trail[i + 1:], lambda o: self._suffix(o, buf) == start)
-                    return Match(t, erase_chars=len(t.value) - 1, typed=buf[start:], alternatives=alts)
+                if start is not None and self._fast(t, times[start:]):
+                    alts = self._same(t, self._no_trail[i + 1:],
+                                      lambda o: self._suffix(o, buf) == start and self._fast(o, times[start:]))
+                    return self._hit(Match(t, erase_chars=len(t.value) - 1, typed=buf[start:], alternatives=alts))
             # 2. regex triggers
             for t, rx in self._regex:
                 m = rx.search(buf)
                 if m and m.end() > m.start():
-                    self._buf = ""
-                    return Match(t, erase_chars=(m.end() - m.start()) - 1, typed=m.group(0),
-                                 groups=tuple(g or "" for g in m.groups()))
+                    return self._hit(Match(t, erase_chars=(m.end() - m.start()) - 1, typed=m.group(0),
+                                           groups=tuple(g or "" for g in m.groups())))
             # 3. triggers completed by a trailing delimiter (this char)
-            prev = self._buf
+            prev, ptimes = self._buf, self._times
             for i, t in enumerate(self._trail):
                 pred = self._trail_pred(t)
                 if pred is not None and pred(char):
                     start = self._suffix(t, prev)
-                    if start is not None:
-                        self._buf = ""
+                    if start is not None and self._fast(t, ptimes[start:]):
 
                         def also(o, start=start):
                             op = self._trail_pred(o)
-                            return op is not None and op(char) and self._suffix(o, prev) == start
+                            return (op is not None and op(char) and self._suffix(o, prev) == start
+                                    and self._fast(o, ptimes[start:]))
 
                         alts = self._same(t, self._trail[i + 1:], also)
-                        return Match(t, erase_chars=len(t.value), trailing_delimiter=char, typed=prev[start:],
-                                     alternatives=alts)
-            self._buf = buf[-MAX_BUFFER:]
+                        return self._hit(Match(t, erase_chars=len(t.value), trailing_delimiter=char,
+                                               typed=prev[start:], alternatives=alts))
             if char == "\n":
-                self._buf = "\n"   # keep a boundary marker, drop old line
+                self._set_buf("\n", [now])   # keep a boundary marker, drop old line
+            else:
+                self._set_buf(buf[-MAX_BUFFER:], times)
             return None
 
 
@@ -264,3 +326,13 @@ def apply_group_prefixes(triggers: list[Trigger], phrase_folder: dict[int, int |
             pre = prefixes.get(fid, "") if fid is not None else ""
         out.append(replace(t, value=pre + t.value) if pre and t.value and not t.value.startswith(pre) else t)
     return out
+
+
+def apply_global_prefix(triggers: list[Trigger], prefix: str) -> list[Trigger]:
+    """Settings > Autotext "global prefix" (FR-TRG-02): every autotext abbreviation must be typed
+    after the prefix ("#sig"); the prefix is erased with the abbreviation. Returns copies."""
+    if not prefix:
+        return triggers
+    return [replace(t, value=prefix + t.value)
+            if TriggerKind(t.kind) == TriggerKind.AUTOTEXT and t.value else t
+            for t in triggers]
