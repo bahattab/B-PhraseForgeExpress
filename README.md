@@ -168,6 +168,12 @@ changes" to be asked which copy to keep instead (also used for the very first sy
 that already has phrases, and for a cloud copy from a version before 0.7).
 Clipboard history and PC-specific settings are never uploaded.
 
+**End-to-end encryption:** tick "Encrypt what is uploaded" and enter a sync passphrase (the same
+on every PC). The sync copy and the cloud backups are then encrypted (AES-256-GCM) before they
+leave the PC, so Google Drive or the sync folder only holds scrambled data. The passphrase is
+stored on each PC protected by Windows; nobody can recover it. While encryption is on, a cloud
+copy that is not encrypted is never taken in: use "Upload this PC's phrases" to replace it.
+
 ## Encrypting the phrase file
 
 Settings > Phrase File/Database > **Encryption...** encrypts the phrase file on disk (AES-256-GCM).
@@ -176,14 +182,36 @@ moment after every change. The key is random and protected by Windows for your a
 file opens without a question on this PC. A passphrase is optional: it opens the file on another
 PC or after Windows was reinstalled. Or choose "Ask for the passphrase every time PhraseForge
 starts": then only the passphrase opens it. Write it down; nobody can recover it.
-Local backups are encrypted the same way. Not covered: the copy that Backup & Sync uploads (it is
-as readable as before), "Save As" database copies, and the learning statistics file.
+Local backups are encrypted the same way, including those made before encryption was turned on.
+Changing the passphrase, or switching to "ask every time", gives the file a new key and
+re-encrypts the local backups with it, so an old copy no longer opens the current file.
+The Backup & Sync copies are encrypted only with "Encrypt what is uploaded" (Settings > Backup &
+Sync). Not covered: the learned words, imported images (the `assets` folder), the file search
+history and the log. "Save As" database copies ask whether to stay encrypted.
 
 ## Arabic
 
 Settings > Display > User Interface Language > Arabic turns the whole interface right to left.
 The Arabic user guide is [docs/USER_GUIDE.ar.md](docs/USER_GUIDE.ar.md) (also under Help in the program).
 Phrases can hold one version per language; dates can be Hijri with Arabic digits.
+
+## Trash, templates and comments
+
+- **Trash:** Delete moves a phrase or folder (with everything in it) to Phrases > **Trash**.
+  Restore puts it back in its folder, with its abbreviations, tags, language versions, comments,
+  history and approval state. Entries older than 30 days are removed at start
+  (setting `trash.days`, 0 = keep). The trash stays on this PC and is not synced.
+- **Template folders:** right-click a folder > **Template folder**. Its phrases are never expanded
+  and are not in the phrase menu. New > **Phrase from template...** copies one (text, format,
+  tags, notes and language versions; not its abbreviation).
+- **Phrase links:** right-click a phrase > **Create link to this phrase**. The link (its own
+  folder, abbreviation and hotkey) always inserts the current text of the original.
+- **Folder text:** folder Properties > **Text before / after each phrase** is added to every
+  phrase in the folder and its subfolders when it is inserted (macros work; outer folders go
+  around inner ones). Changing it sends the folder's synced or imported phrases back for approval.
+- **Sort by two fields:** folder menu > Bulk edit > **Sort by two fields...**
+- **Comments:** right-click a phrase > **Comments...** to leave notes for yourself or your team
+  (author, time, resolved). They sync and merge between PCs.
 
 ## Import and export
 

@@ -781,7 +781,8 @@ class MainWindow(QMainWindow):
         g = t.add_group("Insert")
         new_menu = menu_with(self, [("Phrase", "new_phrase", lambda: self.new_phrase()),
                                     ("Rich text phrase", "phrase_rich", lambda: self.new_phrase(rich=True)),
-                                    ("Folder", "new_folder", lambda: self.new_folder())])
+                                    ("Folder", "new_folder", lambda: self.new_folder()),
+                                    ("Phrase from template...", "new_phrase", self.new_from_template)])
         self.btn_new_folder = g.add_large("New\nFolder", "new_folder", lambda: self.new_folder(), key="New Folder")
         self.btn_new_phrase = g.add_large("New\nPhrase", "new_phrase", lambda: self.new_phrase(), menu=new_menu,
                                           key="New Phrase")
@@ -790,6 +791,8 @@ class MainWindow(QMainWindow):
         b = g.add_large("Record\nmacro", "m_recorder", self.record_macro, key="Record macro")
         b.setToolTip("Record keys and mouse clicks in any program as a new phrase "
                      "(stop with Ctrl+Shift+F12 or the Stop button)")
+        b = g.add_large("Trash", "delete", self.show_trash)
+        b.setToolTip("Deleted phrases and folders: restore them or delete them for good")
         b = g.add_large("Signatures", "email", self.show_signatures)
         b.setToolTip("E-mail signatures, dated footers and random quotes; export them to Outlook")
         g = t.add_group("Sync")
@@ -1698,17 +1701,66 @@ class MainWindow(QMainWindow):
     def delete_item(self, kind: str, id_: int, confirm: bool = True) -> None:
         if confirm:
             name = (self.store.get_folder(id_).name if kind == "folder" else self.store.get_phrase(id_).description)
-            msg = f'Delete folder "{name}" and everything in it?' if kind == "folder" else f'Delete phrase "{name}"?'
-            if QMessageBox.question(self, "Delete", msg) != QMessageBox.Yes:
+            msg = (tr('Move folder "{name}" and everything in it to the Trash?') if kind == "folder"
+                   else tr('Move phrase "{name}" to the Trash?')).replace("{name}", name)
+            if QMessageBox.question(self, tr("Delete"), msg) != QMessageBox.Yes:
                 return
-        if kind == "folder":
-            self.store.delete_folder(id_)
+        if kind == "folder":                     # into the Trash: it can be restored (Phrases > Trash)
+            self.store.trash_folder(id_)
         else:
-            self.store.delete_phrase(id_)
+            self.store.trash_phrase(id_)
         if (self.sel_kind, self.sel_id) == (kind, id_) or (self.current and self.store.get_phrase(self.current.id) is None):
             self._set_selection("", None)
             self.editor_stack.setCurrentWidget(self.blank)
         self.refresh_tree()
+
+    def show_trash(self) -> None:
+        from phraseforge.ui.trash_dialog import TrashDialog
+        self.save_current()
+        dlg = TrashDialog(self.store, self)
+        dlg.exec()
+        self.refresh_tree()
+        if dlg.restored:
+            kind, new_id = dlg.restored[-1]
+            (self.select_folder if kind == "folder" else self.select_phrase)(new_id)
+
+    def new_from_template(self) -> None:
+        from phraseforge.ui.trash_dialog import TemplatePicker
+        self.save_current()
+        dlg = TemplatePicker(self.store, self)
+        if dlg.exec() != QDialog.Accepted or dlg.chosen is None:
+            return
+        fid = self.selected_folder_id()
+        if fid is not None and any(f.is_template for f in self.store.folder_chain(fid)):
+            fid = None                       # not into the template folder itself
+        p = self.store.new_from_template(dlg.chosen, fid)
+        self.refresh_tree()
+        self.select_phrase(p.id)
+        self._focus_description()
+
+    def create_link(self, phrase_id: int) -> None:
+        """A new phrase in the same folder that always inserts this phrase's current text."""
+        self.save_current()
+        src = self.store.get_phrase(phrase_id)
+        if src is None:
+            return
+        p = self.store.create_link(phrase_id, src.folder_id)
+        self.refresh_tree()
+        self.select_phrase(p.id)
+        self._focus_description()
+
+    def toggle_template(self, folder_id: int) -> None:
+        f = self.store.get_folder(folder_id)
+        if f is None:
+            return
+        f.is_template = not f.is_template
+        self.store.update_folder(f)
+        self.refresh_tree()
+
+    def show_comments(self, phrase_id: int) -> None:
+        from phraseforge.ui.trash_dialog import CommentsDialog
+        self.save_current()
+        CommentsDialog(self.store, phrase_id, self).exec()
 
     def delete_selected(self) -> None:
         if self.sel_kind in ("phrase", "folder"):
@@ -2027,6 +2079,7 @@ class MainWindow(QMainWindow):
         add.addAction(icon("new_phrase"), "Phrase", lambda: self.new_phrase())
         add.addAction(icon("phrase_rich"), "Rich text phrase", lambda: self.new_phrase(rich=True))
         add.addAction(icon("new_folder"), "Folder", lambda: self.new_folder())
+        add.addAction(icon("new_phrase"), "Phrase from template...", self.new_from_template)
         m.addSeparator()
         a = m.addAction("Cut", lambda: self.clip_items("cut"))
         a.setEnabled(item)
@@ -2060,11 +2113,21 @@ class MainWindow(QMainWindow):
             a.setCheckable(True)
             a.setChecked(bool(f and f.show_in_popup))
             m.addAction(icon("refresh"), "Dynamic folder...", lambda: self.dynamic_folder(id_))
+            a = m.addAction("Template folder", lambda: self.toggle_template(id_))
+            a.setCheckable(True)
+            a.setChecked(bool(f and f.is_template))
+            a.setToolTip("Its phrases are templates: not expanded, not in the phrase menu")
         else:
             m.addSeparator()
         a = m.addAction(icon("sticky_notes"), "Pin to desktop", lambda: self.pin_to_desktop(id_))
         a.setEnabled(kind == "phrase")
+        if kind == "phrase":
+            m.addAction(icon("phrase_link"), "Create link to this phrase", lambda: self.create_link(id_))
+            n = self.store.comment_counts().get(id_, 0)
+            m.addAction(tr("Comments...") + (f" ({n})" if n else ""), lambda: self.show_comments(id_))
         m.addSeparator()
+        if kind == "root":
+            m.addAction(icon("delete"), "Trash...", self.show_trash)
         a = m.addAction("Properties", self.properties_selected)
         a.setShortcut("Alt+Return")
         a.setEnabled(item)
@@ -2086,6 +2149,7 @@ class MainWindow(QMainWindow):
                     sub.addSeparator()
                 sub.addAction(op_title, lambda t=target, o=op: self.bulk_text(fid, t, o))
         bulk.addSeparator()
+        bulk.addAction("Sort by two fields...", lambda: self.bulk_sort_two(fid))
         bulk.addAction("Enable all phrases", lambda: self.bulk_enable(fid, True))
         bulk.addAction("Disable all phrases", lambda: self.bulk_enable(fid, False))
         bulk.addAction("Sort phrases alphabetically", lambda: self.bulk_sort(fid))
@@ -2122,6 +2186,16 @@ class MainWindow(QMainWindow):
     def bulk_sort_by(self, folder_id: int | None, key: str) -> int:
         from phraseforge import bulk_edit
         n = bulk_edit.sort_phrases(self.store, folder_id, key, descending=key in ("times_used", "last_used"))
+        self.refresh_tree()
+        return n
+
+    def bulk_sort_two(self, folder_id: int | None) -> int:
+        from phraseforge import bulk_edit
+        from phraseforge.ui.main_dialogs import SortTwoDialog
+        dlg = SortTwoDialog(self)
+        if dlg.exec() != QDialog.Accepted:
+            return 0
+        n = bulk_edit.sort_phrases_by(self.store, folder_id, dlg.keys())
         self.refresh_tree()
         return n
 
@@ -2180,10 +2254,27 @@ class MainWindow(QMainWindow):
             if QMessageBox.question(self, "Open", "Replace all current phrases with this phrase file?") \
                     != QMessageBox.Yes:
                 return
-            self.store.restore_from(path, untrusted="imported")
+            try:
+                self._restore(path, untrusted="imported")
+            except Exception as e:
+                QMessageBox.warning(self, "Open", str(e))
             self.refresh_tree()
         else:
             self._import_path(path)
+
+    def _restore(self, path, untrusted: str | None = None) -> bool:
+        """restore_from, asking for the passphrase of a copy encrypted under an earlier key (R72)."""
+        from phraseforge import vault
+        try:
+            self.store.restore_from(path, untrusted=untrusted)
+            return True
+        except vault.NeedPassphrase:
+            from phraseforge.ui.encryption_dialog import ask_copy_passphrase
+            pw = ask_copy_passphrase(self)
+            if pw is None:
+                return False
+            self.store.restore_from(path, untrusted=untrusted, passphrase=pw)
+            return True
 
     def save_as(self) -> None:
         self.save_current()
@@ -2193,7 +2284,11 @@ class MainWindow(QMainWindow):
             return
         try:
             if path.lower().endswith(".db"):
-                self.store.backup_to(path)
+                # an encrypted phrase file's copy stays encrypted unless the user says otherwise (R71)
+                keep = self.store.encrypted and QMessageBox.question(
+                    self, "Save As", tr("The phrase file is encrypted. Save the copy encrypted too? "
+                                        "(No saves it unencrypted.)")) == QMessageBox.Yes
+                self.store.backup_to(path, keep_encryption=keep)
             else:
                 from phraseforge import io_formats
                 io_formats.export_json(self.store, path)
@@ -2249,7 +2344,8 @@ class MainWindow(QMainWindow):
                                 "Replace all current phrases with the selected backup?") != QMessageBox.Yes:
             return
         try:
-            self.store.restore_from(dlg.selected())
+            if not self._restore(dlg.selected()):
+                return
             self._set_selection("", None)
             self.editor_stack.setCurrentWidget(self.blank)
             self.refresh_tree()

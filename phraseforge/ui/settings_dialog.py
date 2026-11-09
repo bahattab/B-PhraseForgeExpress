@@ -1814,6 +1814,17 @@ class SettingsDialog(QDialog):
                                    "On: edits from both PCs are kept; when the same phrase was edited on both,\n"
                                    "the newer edit wins and the other one is kept in the phrase's history.")
         ob.addWidget(self.sync_merge)
+        self.sync_encrypt = self.bind("sync.encrypt", QCheckBox(
+            "Encrypt what is uploaded, with a sync passphrase (the same on every PC)"))
+        self.sync_encrypt.setToolTip("The sync copy and the cloud backups are encrypted (AES-256) before they leave "
+                                     "this PC.\nGoogle Drive or the sync folder only sees scrambled data. Enter the "
+                                     "same passphrase on each PC;\nnobody can recover it.")
+        ob.addWidget(self.sync_encrypt)
+        self.sync_pass = self.bind("sync.passphrase", QLineEdit())
+        self.sync_pass.setEchoMode(QLineEdit.Password)
+        self.sync_pass.setPlaceholderText("sync passphrase (at least 8 characters)")
+        ob.addWidget(_row("Sync passphrase:", self.sync_pass))
+        self.enable_with(self.sync_encrypt, self.sync_pass)
         self.cloud_backup_auto = self.bind("backup.cloud_auto", QCheckBox("Back up to the cloud every"))
         self.cloud_backup_hours = self.bind("backup.cloud_interval_hours", _spin(1, 720))
         ob.addWidget(_row(self.cloud_backup_auto, self.cloud_backup_hours, "hours"))
@@ -1828,7 +1839,10 @@ class SettingsDialog(QDialog):
         restore = QPushButton("Restore from cloud backup...")
         restore.clicked.connect(lambda: self._cloud_action("restore"))
         self.cloud_last = QLabel()
-        lay.addWidget(_row(sync_now, backup_now, restore))
+        upload = QPushButton("Upload this PC's phrases")
+        upload.setToolTip("Replace the cloud copy with this PC's phrases (for example after turning encryption on)")
+        upload.clicked.connect(lambda: self._cloud_action("upload"))
+        lay.addWidget(_row(sync_now, backup_now, restore, upload))
         lay.addWidget(self.cloud_last)
         lay.addStretch(1)
         for rb in self.cloud_radios.values():
@@ -1949,8 +1963,19 @@ class SettingsDialog(QDialog):
             QMessageBox.information(self, "Backup & Sync",
                                     "Choose Google Drive (and sign in) or a sync folder first.")
             return
+        if self.store.setting("sync.encrypt", "0") == "1" and len(self.store.setting("sync.passphrase", "")) < 8:
+            QMessageBox.warning(self, "Backup & Sync", "The sync passphrase needs at least 8 characters.")
+            return
         cs = CloudSync(self.store, remote)
         keep = int(self.store.setting("backup.cloud_keep", "10") or 10)
+        if what == "upload":
+            if QMessageBox.question(self, "Backup & Sync", "Replace the cloud copy with this PC's phrases? "
+                                    "A backup of the cloud copy is not made.") != QMessageBox.Yes:
+                return
+            ok, res = _run_with_wait(self, "Uploading...", lambda: cs.resolve("local"))
+            (QMessageBox.information if ok else QMessageBox.warning)(
+                self, "Backup & Sync", "Uploaded." if ok else f"Upload failed: {res}")
+            return
         if what == "backup":
             ok, res = _run_with_wait(self, "Backing up...", lambda: cs.backup_now(keep))
             msg = f"Backup saved: {res}" if ok else f"Backup failed: {res}"

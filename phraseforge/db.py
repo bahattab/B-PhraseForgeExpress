@@ -60,7 +60,8 @@ CREATE TABLE IF NOT EXISTS folders (
   apps_include TEXT DEFAULT '', apps_exclude TEXT DEFAULT '',
   password_hash TEXT DEFAULT '', show_in_popup INTEGER DEFAULT 1, notes TEXT DEFAULT '',
   output_target TEXT DEFAULT 'current', output_target_arg TEXT DEFAULT '',
-  abbrev_prefix TEXT DEFAULT '', uid TEXT);
+  abbrev_prefix TEXT DEFAULT '', uid TEXT, is_template INTEGER DEFAULT 0,
+  text_before TEXT DEFAULT '', text_after TEXT DEFAULT '');
 CREATE TABLE IF NOT EXISTS phrases (
   id INTEGER PRIMARY KEY, folder_id INTEGER REFERENCES folders(id) ON DELETE CASCADE,
   description TEXT NOT NULL, content TEXT DEFAULT '', content_format TEXT DEFAULT 'text',
@@ -92,6 +93,13 @@ CREATE TABLE IF NOT EXISTS phrase_versions (
 CREATE TABLE IF NOT EXISTS phrase_quarantine (
   phrase_id INTEGER PRIMARY KEY REFERENCES phrases(id) ON DELETE CASCADE,
   origin TEXT DEFAULT 'imported', added TEXT);
+CREATE TABLE IF NOT EXISTS trash (
+  id INTEGER PRIMARY KEY, kind TEXT NOT NULL, name TEXT, deleted_at TEXT NOT NULL,
+  parent_uid TEXT, parent_name TEXT, data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS phrase_comments (
+  id INTEGER PRIMARY KEY, phrase_id INTEGER NOT NULL REFERENCES phrases(id) ON DELETE CASCADE,
+  author TEXT DEFAULT '', created TEXT, text TEXT NOT NULL, resolved INTEGER DEFAULT 0);
+CREATE INDEX IF NOT EXISTS ix_comments_phrase ON phrase_comments(phrase_id);
 CREATE TABLE IF NOT EXISTS sticky_notes (
   id INTEGER PRIMARY KEY, text TEXT DEFAULT '', html TEXT DEFAULT '', color TEXT DEFAULT 'yellow',
   x INTEGER, y INTEGER, w INTEGER DEFAULT 300, h INTEGER DEFAULT 300,
@@ -197,7 +205,7 @@ def needs_rehash(stored: str) -> bool:
 # database file does not reveal them (other platforms: stored base64-encoded only).
 SECRET_SETTINGS = frozenset({"ai.openai_key", "ai.anthropic_key", "ai.openrouter_key", "ai.deepl_key",
                              "ai.gemini_key", "ai.opencode_key", "ai.kilocode_key", "ai.mistral_key",
-                             "net.proxy_password", "shared.password"})
+                             "net.proxy_password", "shared.password", "sync.passphrase"})
 # Settings sealed the same way, by prefix: a dynamic folder's ODBC connection string can
 # hold a password (dynamic.conn.<folder id>, security R46).
 SECRET_PREFIXES = ("dynamic.conn.",)
@@ -235,6 +243,15 @@ def _read_vars(texts: list[str], global_vars: dict[str, str]) -> list:
         return sorted(global_vars.items())
     names = {next(g for g in m.groups() if g is not None) for t in texts for m in _VAR_REF.finditer(t)}
     return sorted((n, global_vars.get(n, "")) for n in names)
+
+
+_LINK = re.compile(r"\A\{#insert\s+-uid\s+([0-9a-f]{8,64})\}\Z")
+
+
+def link_uid(content: str) -> str | None:
+    """The uid a phrase link points to: its whole content is {#insert -uid <uid>} (FR-DAT-04)."""
+    m = _LINK.match((content or "").strip())
+    return m.group(1) if m else None
 
 
 def is_device_setting(key: str) -> bool:
@@ -291,15 +308,21 @@ class Store:
         self._qlocal = threading.local()     # quarantine_writes() context, per thread
         self.vault_key = None                # vault.Key while the file on disk is encrypted
         self._flusher = None
+        self.vault_warning = ""              # shown once at start (a plain or older file put back)
+        self.on_flush_error = None           # callable(str): the app shows a failed save (R75)
+        if self.path != ":memory:":
+            self._recover_interrupted_switch()
         if self.path != ":memory:" and vault.is_encrypted(self.path):
             data, self.vault_key = vault.read(self.path, passphrase=passphrase)
             self.conn = vault.memory_db(data)
+            self._check_marker(opened_with_passphrase=passphrase is not None)
         else:
             self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         if self.path != ":memory:" and self.vault_key is None:
             self.conn.execute("PRAGMA journal_mode = WAL")
+            self._check_marker()
         self._drop_foreign_schema()  # a file an older version pulled may still carry planted triggers
         self._migrate_schema()       # before SCHEMA: old tables need columns its indexes may use
         self.conn.executescript(SCHEMA)
@@ -324,14 +347,22 @@ class Store:
     def _start_flusher(self) -> None:
         self._saved_changes = -1
         self._flush_stop = threading.Event()
+        self._flush_failed = False
         self.flush()
 
         def loop():
             while not self._flush_stop.wait(self.FLUSH_SECONDS):
                 try:
                     self.flush()
+                    self._flush_failed = False
                 except Exception as e:   # keep trying; the next change retries the write
                     log.warning("could not save the encrypted phrase file: %s", e)
+                    if not self._flush_failed and self.on_flush_error is not None:
+                        self._flush_failed = True     # tell the user once, not every second (R75)
+                        try:
+                            self.on_flush_error(str(e))
+                        except Exception:
+                            pass
         self._flusher = threading.Thread(target=loop, name="vault-flush", daemon=True)
         self._flusher.start()
 
@@ -352,46 +383,171 @@ class Store:
             vault.write(self.path, data, key)
             self._saved_changes = n
 
-    def enable_encryption(self, passphrase: str | None = None, use_dpapi: bool = True) -> None:
-        """Encrypt the phrase file on disk; from now on it is only written encrypted."""
+    # files next to the phrase file while encryption is switched on or off
+    def _side(self, suffix: str) -> Path:
+        return Path(self.path + suffix)
+
+    def _recover_interrupted_switch(self) -> None:
+        """A crash while switching encryption on could leave the data only in <db>.enc or in
+        <db>.plain-old; the next start then opened a new, empty phrase file (R65)."""
+        p = Path(self.path)
+        enc, old = self._side(".enc"), self._side(".plain-old")
+        if not p.exists() or p.stat().st_size == 0:
+            if enc.exists() and vault.is_encrypted(enc):
+                os.replace(enc, p)
+            elif old.exists() and vault.is_sqlite(old):
+                os.replace(old, p)
+        if vault.is_encrypted(p) and old.exists():
+            vault.wipe(old)              # the switch got as far as the encrypted file
+        if enc.exists() and p.exists() and vault.is_sqlite(p):
+            # the switch stopped before the encrypted file was in place, or an older version made a
+            # new empty file next to the only copy: keep it (encrypted) under another name
+            keep = self._side(".enc.recovered")
+            n = 1
+            while keep.exists():
+                n += 1
+                keep = self._side(f".enc.recovered{n}")
+            os.replace(enc, keep)
+            log.warning("kept an encrypted copy found next to the phrase file as %s", keep)
+
+    # The marker remembers on this PC that the phrase file is encrypted, and how it opens. It
+    # sits next to the file, so a backup tool that puts back only the file leaves it (R70).
+    def _marker(self) -> Path:
+        p = Path(self.path)
+        return p.with_name(p.stem + ".encrypted")
+
+    def _write_marker(self) -> None:
+        try:
+            if self.vault_key is None:
+                self._marker().unlink(missing_ok=True)
+                return
+            self._marker().write_text(json.dumps({"ask": not self.vault_key.opens_without_passphrase}),
+                                      encoding="utf-8")
+        except OSError as e:             # the switch itself is done; only the start-up check is lost
+            log.warning("could not write %s: %s", self._marker(), e)
+
+    def _check_marker(self, opened_with_passphrase: bool = False) -> None:
+        try:
+            mark = json.loads(self._marker().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if not isinstance(mark, dict):
+            return
+        if self.vault_key is None:
+            self.vault_warning = ("The phrase file was encrypted on this PC, but the file now in its place is "
+                                  "not encrypted (an older copy was put back?). New changes are saved without "
+                                  "encryption until you turn it on again in Settings > Encryption.")
+        elif mark.get("ask") and self.vault_key.opens_without_passphrase and not opened_with_passphrase:
+            # an older copy that still opens for this Windows account undid "ask every time"
+            if self.vault_key.has_passphrase:
+                self.vault_key.wraps.pop("dpapi", None)
+                self._saved_changes = -1     # the next save writes the file without that entry
+            self.vault_warning = ("The phrase file opened without its passphrase although this PC asks for it "
+                                  "at every start: an older copy of the file was put back. Check your phrases.")
+
+    def _copies(self) -> list[Path]:
+        """Copies of the phrase file kept on this PC: the sync base, the copy made before a pull,
+        the local backups (here and in the backup folder chosen in the settings)."""
+        p = Path(self.path)
+        out = [p.with_name(p.stem + ".sync-base.db"), p.with_name(p.stem + ".before-sync.db")]
+        dirs = [p.parent / "backups"]
+        try:
+            chosen = self.setting("backup.directory", "")
+        except sqlite3.Error:
+            chosen = ""
+        if chosen:
+            dirs.append(Path(chosen))
+        seen = set()
+        for d in dirs:
+            try:
+                for f in sorted(d.glob("phrases-*.db")):
+                    if f.resolve() not in seen:
+                        seen.add(f.resolve())
+                        out.append(f)
+            except OSError:
+                pass
+        return [f for f in out if f.is_file()]
+
+    def _secure_copies(self, key: "vault.Key", old_keys: tuple = ()) -> list[Path]:
+        """Bring every local copy under key: plain ones are encrypted (R64), encrypted ones are
+        re-encrypted after a key change (R63). Returns the copies that could not be opened."""
+        left = []
+        for f in self._copies():
+            try:
+                if not vault.secure_copy(f, key, old_keys):
+                    left.append(f)
+            except OSError as e:
+                log.warning("could not encrypt %s: %s", f, e)
+                left.append(f)
+        p = Path(self.path)     # crash leftovers that are plain copies too (R75)
+        for extra in (p.with_name(p.stem + ".sync-base.part"), self._side(".plain")):
+            if extra.exists() and not vault.is_encrypted(extra):
+                vault.wipe(extra)
+        return left
+
+    def enable_encryption(self, passphrase: str | None = None, use_dpapi: bool = True) -> list[Path]:
+        """Encrypt the phrase file on disk; from now on it is only written encrypted. Local copies
+        are encrypted too. Returns the copies that could not be (left as they were)."""
         if self.path == ":memory:":
             raise vault.VaultError("This phrase file is not on disk.")
         if self.vault_key is not None:
-            self.change_passphrase(passphrase, use_dpapi)
-            return
+            return self.change_passphrase(passphrase, use_dpapi)
         key = vault.Key.new(passphrase, use_dpapi)
+        enc, old_plain = self._side(".enc"), self._side(".plain-old")
         with self.lock:
             self.conn.commit()
             self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             data = self.conn.serialize()
             mem = vault.memory_db(data)
-            vault.write(self.path + ".enc", data, key)
-            old = self.conn
-            old.close()
+            vault.write(enc, data, key)
+            self.conn.close()
+            try:
+                # never a moment without the phrase file: put the encrypted one in place first,
+                # then wipe the plain one under its new name (R65)
+                os.replace(self.path, old_plain)
+                os.replace(enc, self.path)
+            except OSError:
+                if not Path(self.path).exists() and old_plain.exists():
+                    os.replace(old_plain, self.path)
+                self.conn = sqlite3.connect(self.path, check_same_thread=False)
+                self.conn.row_factory = sqlite3.Row
+                self.conn.execute("PRAGMA foreign_keys = ON")
+                self.conn.execute("PRAGMA journal_mode = WAL")
+                enc.unlink(missing_ok=True)
+                raise
             for side in ("-wal", "-shm"):
                 vault.wipe(self.path + side)
-            vault.wipe(self.path)
-            os.replace(self.path + ".enc", self.path)
-            # plain copies next to the file would undo the encryption (R51): the sync base is
-            # rebuilt on the next sync, the local pre-sync backup on the next pull
-            p = Path(self.path)
-            for extra in (p.with_name(p.stem + ".sync-base.db"), p.with_name(p.stem + ".before-sync.db")):
-                if extra.exists() and not vault.is_encrypted(extra):
-                    vault.wipe(extra)
+            vault.wipe(old_plain)
             mem.row_factory = sqlite3.Row
             mem.execute("PRAGMA foreign_keys = ON")
             self.conn, self.vault_key = mem, key
+            self._write_marker()
+            left = self._secure_copies(key)
         self._start_flusher()
         self._changed("setting")
+        return left
 
-    def change_passphrase(self, passphrase: str | None, use_dpapi: bool = True) -> None:
-        """New passphrase (None = none), or ask for it on every start (use_dpapi=False)."""
+    def check_passphrase(self, passphrase: str) -> bool:
+        """True when passphrase is the current one (asked before it is changed or removed)."""
+        return self.vault_key is not None and self.vault_key.matches(passphrase)
+
+    def change_passphrase(self, passphrase: str | None, use_dpapi: bool = True) -> list[Path]:
+        """New passphrase (None = none), or ask for it on every start (use_dpapi=False). The file
+        gets a new data key, and the local copies are re-encrypted with it (R63)."""
         if self.vault_key is None:
             raise vault.VaultError("The phrase file is not encrypted.")
+        key = vault.Key.new(passphrase, use_dpapi)
         with self.lock:
-            self.vault_key.rewrap(passphrase, use_dpapi)
+            old = self.vault_key
+            self.vault_key = key
             self._saved_changes = -1
-            self.flush()
+            try:
+                self.flush()
+            except Exception:
+                self.vault_key = old
+                raise
+            self._write_marker()
+            return self._secure_copies(key, (old,))
 
     def disable_encryption(self) -> None:
         """Write the phrase file as a normal SQLite database again."""
@@ -412,6 +568,7 @@ class Store:
             self.conn.execute("PRAGMA foreign_keys = ON")
             self.conn.execute("PRAGMA journal_mode = WAL")
             self.vault_key = None
+            self._write_marker()
         self._changed("setting")
 
     # ------------------------------------------------------------ migrations
@@ -427,7 +584,9 @@ class Store:
             with self.conn:
                 for k, v in rows:
                     self.conn.execute("UPDATE settings SET value=? WHERE key=?", (_seal(v), k))
-            if self.path != ":memory:":
+            # an encrypted file is rewritten from memory anyway; its VACUUM would only spill the
+            # decrypted pages to a temp file (R67)
+            if self.path != ":memory:" and self.vault_key is None:
                 self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                 self.conn.execute("VACUUM")
                 self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -464,6 +623,11 @@ class Store:
             c.execute("ALTER TABLE folders ADD COLUMN output_target_arg TEXT DEFAULT ''")
         if "abbrev_prefix" not in fcols:
             c.execute("ALTER TABLE folders ADD COLUMN abbrev_prefix TEXT DEFAULT ''")
+        if "is_template" not in fcols:
+            c.execute("ALTER TABLE folders ADD COLUMN is_template INTEGER DEFAULT 0")
+        for col in ("text_before", "text_after"):
+            if col not in fcols:
+                c.execute(f"ALTER TABLE folders ADD COLUMN {col} TEXT DEFAULT ''")
         cols = self._columns("phrases")
         if "output_target" not in cols:
             c.execute("ALTER TABLE phrases ADD COLUMN output_target TEXT DEFAULT 'current'")
@@ -569,10 +733,12 @@ class Store:
         with self.lock, self.conn:
             cur = self.conn.execute(
                 "INSERT INTO folders (parent_id,name,sort,enabled,apps_include,apps_exclude,password_hash,"
-                "show_in_popup,notes,output_target,output_target_arg,abbrev_prefix) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "show_in_popup,notes,output_target,output_target_arg,abbrev_prefix,is_template,text_before,"
+                "text_after) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (f.parent_id, f.name, f.sort, int(f.enabled), f.apps_include, f.apps_exclude,
                  f.password_hash, int(f.show_in_popup), f.notes, f.output_target or "current",
-                 f.output_target_arg or "", f.abbrev_prefix or ""))
+                 f.output_target_arg or "", f.abbrev_prefix or "", int(bool(f.is_template)),
+                 f.text_before or "", f.text_after or ""))
             f.id = cur.lastrowid
             if f.triggers:
                 self._write_owner_triggers("folder_id", f.id, f.triggers)
@@ -584,11 +750,12 @@ class Store:
         with self.lock, self.conn:
             self.conn.execute(
                 "UPDATE folders SET parent_id=?,name=?,sort=?,enabled=?,apps_include=?,apps_exclude=?,"
-                "password_hash=?,show_in_popup=?,notes=?,output_target=?,output_target_arg=?,abbrev_prefix=? "
-                "WHERE id=?",
+                "password_hash=?,show_in_popup=?,notes=?,output_target=?,output_target_arg=?,abbrev_prefix=?,"
+                "is_template=?,text_before=?,text_after=? WHERE id=?",
                 (f.parent_id, f.name, f.sort, int(f.enabled), f.apps_include, f.apps_exclude,
                  f.password_hash, int(f.show_in_popup), f.notes, f.output_target or "current",
-                 f.output_target_arg or "", f.abbrev_prefix or "", f.id))
+                 f.output_target_arg or "", f.abbrev_prefix or "", int(bool(f.is_template)),
+                 f.text_before or "", f.text_after or "", f.id))
         self._changed("folder", f.id)
 
     # folder / special-folder triggers (a folder trigger opens that folder's popup menu)
@@ -629,7 +796,10 @@ class Store:
                       notes=(r["notes"] or "") if "notes" in keys else "",
                       output_target=(r["output_target"] or "current") if "output_target" in keys else "current",
                       output_target_arg=(r["output_target_arg"] or "") if "output_target_arg" in keys else "",
-                      abbrev_prefix=(r["abbrev_prefix"] or "") if "abbrev_prefix" in keys else "")
+                      abbrev_prefix=(r["abbrev_prefix"] or "") if "abbrev_prefix" in keys else "",
+                      is_template=bool(r["is_template"]) if "is_template" in keys else False,
+                      text_before=(r["text_before"] or "") if "text_before" in keys else "",
+                      text_after=(r["text_after"] or "") if "text_after" in keys else "")
 
     def get_folder(self, folder_id: int) -> Folder | None:
         with self.lock:
@@ -761,21 +931,26 @@ class Store:
                                      "output_target_arg FROM phrases").fetchall()
             global_vars = {r[0]: r[1] for r in self.conn.execute(
                 "SELECT name, value FROM vars WHERE scope='global'")}
-            folders = {r[0]: (r[1], r[2] or "", r[3] or "", bool(r[4])) for r in self.conn.execute(
-                "SELECT id, parent_id, output_target, output_target_arg, password_hash FROM folders")}
+            folders = {r[0]: (r[1], r[2] or "", r[3] or "", bool(r[4]), r[5] or "", r[6] or "")
+                       for r in self.conn.execute("SELECT id, parent_id, output_target, output_target_arg, "
+                                                  "password_hash, text_before, text_after FROM folders")}
             versions: dict[int, list] = {}
             for r in self.conn.execute(
                     "SELECT phrase_id, lang, content, content_format FROM phrase_versions ORDER BY phrase_id, lang"):
                 versions.setdefault(r[0], []).append((r[1], r[2], r[3]))
         out = {}
         for r in rows:
-            chain, fid, seen = [], r[3], set()
+            chain, fid, seen, folder_texts = [], r[3], set(), []
             while fid in folders and fid not in seen:
                 seen.add(fid)
-                parent, target, arg, locked = folders[fid]
-                chain.append((target, arg, locked) if locked else (target, arg))   # leaving a lock counts (R55)
+                parent, target, arg, locked, before, after = folders[fid]
+                entry = (target, arg, locked) if locked else (target, arg)       # leaving a lock counts (R55)
+                if before or after:          # the folder's text runs with the phrase, macros included
+                    entry = entry + (before, after)
+                    folder_texts += [before, after]
+                chain.append(entry)
                 fid = parent
-            texts = [r[1] or ""] + [v[1] or "" for v in versions.get(r[0], [])]
+            texts = [r[1] or ""] + [v[1] or "" for v in versions.get(r[0], [])] + folder_texts
             blob = json.dumps([r[1], r[2], versions.get(r[0], []), r[4] or "", r[5] or "", chain,
                                _read_vars(texts, global_vars)], ensure_ascii=False)
             out[r[0]] = hashlib.sha256(blob.encode("utf-8")).hexdigest()
@@ -909,7 +1084,7 @@ class Store:
             r = self.conn.execute("SELECT folder_id FROM phrases WHERE id=?", (phrase_id,)).fetchone()
         if not r:
             return False
-        return all(f.enabled for f in self.folder_chain(r["folder_id"]))
+        return all(f.enabled and not f.is_template for f in self.folder_chain(r["folder_id"]))
 
     def phrase_allowed_in_app(self, phrase_id: int, exe: str) -> bool:
         """Apply phrase + folder include/exclude lists and global exclusions."""
@@ -1203,6 +1378,280 @@ class Store:
             self.conn.execute("UPDATE suggestions SET dismissed=1 WHERE text=?", (text,))
         self._changed("suggestion")
 
+    # ------------------------------------------------------------ trash (FR-DAT-02)
+    # A deleted phrase or folder (with everything in it) is kept here as a snapshot and can be
+    # put back with its id, triggers, tags, language versions, comments, history and approval
+    # state. The trash belongs to this PC: it is not synced and a sync pull keeps it.
+    TRASH_DAYS = 30
+
+    def _uid(self, table: str, row_id) -> str | None:
+        if row_id is None:
+            return None
+        r = self.conn.execute(f"SELECT uid FROM {table} WHERE id=?", (row_id,)).fetchone()
+        return r[0] if r else None
+
+    def _phrase_snapshot(self, pid: int) -> dict:
+        p = self.get_phrase(pid)
+        d = {k: v for k, v in vars(p).items() if k not in ("triggers", "id", "folder_id")}
+        d["output_mode"] = OutputMode(p.output_mode).value
+        d["triggers"] = [t.to_dict() for t in p.triggers]
+        d["versions"] = {k: list(v) for k, v in self.phrase_versions(pid).items()}
+        d["uid"] = self._uid("phrases", pid)
+        d["quarantine"] = self.quarantine_origin(pid)
+        d["comments"] = [dict(r) for r in self.conn.execute(
+            "SELECT author, created, text, resolved FROM phrase_comments WHERE phrase_id=? ORDER BY id", (pid,))]
+        d["history"] = [dict(r) for r in self.conn.execute(
+            "SELECT saved, description, content FROM phrase_history WHERE phrase_id=? ORDER BY id", (pid,))]
+        return d
+
+    def _folder_snapshot(self, fid: int) -> dict:
+        f = self.get_folder(fid)
+        d = {k: v for k, v in vars(f).items() if k not in ("triggers", "id", "parent_id")}
+        d["triggers"] = [t.to_dict() for t in self.folder_triggers(fid)]
+        d["uid"] = self._uid("folders", fid)
+        d["phrases"] = [self._phrase_snapshot(p.id) for p in self.phrases(fid)]
+        d["folders"] = [self._folder_snapshot(c.id) for c in self.folders(fid)]
+        return d
+
+    @_editable
+    def trash_phrase(self, phrase_id: int) -> int:
+        """Delete a phrase into the trash; returns the trash entry's id."""
+        with self.lock:
+            p = self.get_phrase(phrase_id)
+            if p is None:
+                raise KeyError(phrase_id)
+            parent = self.get_folder(p.folder_id) if p.folder_id is not None else None
+            snap = self._phrase_snapshot(phrase_id)
+            with self.conn:
+                cur = self.conn.execute(
+                    "INSERT INTO trash (kind,name,deleted_at,parent_uid,parent_name,data) VALUES (?,?,?,?,?,?)",
+                    ("phrase", p.description, _now(), self._uid("folders", p.folder_id),
+                     parent.name if parent else "", json.dumps(snap, ensure_ascii=False)))
+                self.conn.execute("DELETE FROM phrases WHERE id=?", (phrase_id,))
+        self._changed("phrase", phrase_id)
+        return cur.lastrowid
+
+    @_editable
+    def trash_folder(self, folder_id: int) -> int:
+        """Delete a folder with all its subfolders and phrases into the trash."""
+        with self.lock:
+            f = self.get_folder(folder_id)
+            if f is None:
+                raise KeyError(folder_id)
+            parent = self.get_folder(f.parent_id) if f.parent_id is not None else None
+            snap = self._folder_snapshot(folder_id)
+            with self.conn:
+                cur = self.conn.execute(
+                    "INSERT INTO trash (kind,name,deleted_at,parent_uid,parent_name,data) VALUES (?,?,?,?,?,?)",
+                    ("folder", f.name, _now(), self._uid("folders", f.parent_id),
+                     parent.name if parent else "", json.dumps(snap, ensure_ascii=False)))
+                self.conn.execute("DELETE FROM folders WHERE id=?", (folder_id,))
+        self._changed("folder", folder_id)
+        return cur.lastrowid
+
+    def trash_items(self) -> list[dict]:
+        """Newest first: id, kind, name, deleted_at, parent_name, count (phrases inside)."""
+        with self.lock:
+            rows = [dict(r) for r in self.conn.execute(
+                "SELECT id, kind, name, deleted_at, parent_uid, parent_name, data FROM trash "
+                "ORDER BY deleted_at DESC, id DESC")]
+
+        def count(d):
+            return len(d.get("phrases", [])) + sum(count(c) for c in d.get("folders", []))
+        for r in rows:
+            r["count"] = 1 if r["kind"] == "phrase" else count(json.loads(r.pop("data")))
+            r.pop("data", None)
+        return rows
+
+    def _restore_phrase(self, d: dict, folder_id) -> int:
+        p = Phrase(description=d["description"], content=d.get("content", ""), folder_id=folder_id,
+                   content_format=d.get("content_format", "text"), output_mode=OutputMode(d.get("output_mode", "auto")),
+                   apps_include=d.get("apps_include", ""), apps_exclude=d.get("apps_exclude", ""),
+                   enabled=bool(d.get("enabled", True)), sort=d.get("sort", 0), tags=list(d.get("tags", [])),
+                   triggers=[Trigger.from_dict(t) for t in d.get("triggers", [])],
+                   use_count=d.get("use_count", 0), last_used=d.get("last_used"), created=d.get("created"),
+                   notes=d.get("notes", ""), output_target=d.get("output_target", "current"),
+                   output_target_arg=d.get("output_target_arg", ""))
+        self.add_phrase(p)
+        with self.lock, self.conn:
+            uid = d.get("uid")
+            if uid and not self.conn.execute("SELECT 1 FROM phrases WHERE uid=?", (uid,)).fetchone():
+                self.conn.execute("UPDATE phrases SET uid=? WHERE id=?", (uid, p.id))
+            self.conn.execute("UPDATE phrases SET modified=? WHERE id=?", (d.get("modified") or _now(), p.id))
+            for lang, (c, cf) in (d.get("versions") or {}).items():
+                self.conn.execute("INSERT OR REPLACE INTO phrase_versions VALUES (?,?,?,?,?)",
+                                  (p.id, lang, c, cf, _now()))
+            for c in d.get("comments", []):
+                self.conn.execute("INSERT INTO phrase_comments (phrase_id,author,created,text,resolved) "
+                                  "VALUES (?,?,?,?,?)", (p.id, c["author"], c["created"], c["text"], c["resolved"]))
+            for h in d.get("history", []):
+                self.conn.execute("INSERT INTO phrase_history (phrase_id,saved,description,content) VALUES (?,?,?,?)",
+                                  (p.id, h["saved"], h["description"], h["content"]))
+            # what was waiting for approval before it was deleted still waits
+            self.conn.execute("DELETE FROM phrase_quarantine WHERE phrase_id=?", (p.id,))
+            if d.get("quarantine"):
+                self.conn.execute("INSERT INTO phrase_quarantine VALUES (?,?,?)", (p.id, d["quarantine"], _now()))
+        return p.id
+
+    def _restore_folder(self, d: dict, parent_id) -> int:
+        f = Folder(name=d["name"], parent_id=parent_id,
+                   **{k: d[k] for k in ("sort", "enabled", "apps_include", "apps_exclude", "password_hash",
+                                        "show_in_popup", "notes", "output_target", "output_target_arg",
+                                        "abbrev_prefix", "is_template", "text_before", "text_after") if k in d})
+        self.add_folder(f)
+        with self.lock, self.conn:
+            uid = d.get("uid")
+            if uid and not self.conn.execute("SELECT 1 FROM folders WHERE uid=?", (uid,)).fetchone():
+                self.conn.execute("UPDATE folders SET uid=? WHERE id=?", (uid, f.id))
+        if d.get("triggers"):
+            self.set_folder_triggers(f.id, [Trigger.from_dict(t) for t in d["triggers"]])
+        for c in d.get("folders", []):
+            self._restore_folder(c, f.id)
+        for p in d.get("phrases", []):
+            self._restore_phrase(p, f.id)
+        return f.id
+
+    @_editable
+    def restore_trash(self, trash_id: int) -> tuple[str, int]:
+        """Put an item back into its folder (or the top level if that folder is gone).
+        Returns (kind, new id)."""
+        with self.lock:
+            r = self.conn.execute("SELECT kind, parent_uid, data FROM trash WHERE id=?", (trash_id,)).fetchone()
+            if r is None:
+                raise KeyError(trash_id)
+            parent = None
+            if r["parent_uid"]:
+                row = self.conn.execute("SELECT id FROM folders WHERE uid=?", (r["parent_uid"],)).fetchone()
+                parent = row[0] if row else None
+            d = json.loads(r["data"])
+            new_id = self._restore_folder(d, parent) if r["kind"] == "folder" else self._restore_phrase(d, parent)
+            with self.conn:
+                self.conn.execute("DELETE FROM trash WHERE id=?", (trash_id,))
+        self._changed(r["kind"], new_id)
+        return r["kind"], new_id
+
+    def delete_trash(self, trash_id: int | None = None) -> None:
+        """Delete one trash entry for good, or empty the trash (None)."""
+        with self.lock, self.conn:
+            if trash_id is None:
+                self.conn.execute("DELETE FROM trash")
+            else:
+                self.conn.execute("DELETE FROM trash WHERE id=?", (trash_id,))
+        self._changed("trash")
+
+    def purge_trash(self, days: int | None = None) -> int:
+        """Delete trash entries older than `days` (setting trash.days, default 30; 0 = keep)."""
+        if days is None:
+            try:
+                days = int(self.setting("trash.days", str(self.TRASH_DAYS)) or self.TRASH_DAYS)
+            except ValueError:
+                days = self.TRASH_DAYS
+        if days <= 0:
+            return 0
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+        with self.lock, self.conn:
+            n = self.conn.execute("DELETE FROM trash WHERE deleted_at < ?", (cutoff,)).rowcount
+        return n
+
+    # ------------------------------------------------------------ comments (FR-DAT-03)
+    def comments(self, phrase_id: int) -> list[dict]:
+        with self.lock:
+            return [dict(r) for r in self.conn.execute(
+                "SELECT id, author, created, text, resolved FROM phrase_comments WHERE phrase_id=? ORDER BY id",
+                (phrase_id,))]
+
+    def comment_counts(self) -> dict[int, int]:
+        """phrase id -> number of open (unresolved) comments."""
+        with self.lock:
+            return {r[0]: r[1] for r in self.conn.execute(
+                "SELECT phrase_id, count(*) FROM phrase_comments WHERE resolved=0 GROUP BY phrase_id")}
+
+    @_editable
+    def add_comment(self, phrase_id: int, text: str, author: str | None = None) -> int:
+        text = (text or "").strip()
+        if not text:
+            raise ValueError("A comment needs some text.")
+        if author is None:
+            import getpass
+            try:
+                author = getpass.getuser()
+            except Exception:
+                author = ""
+        with self.lock, self.conn:
+            cur = self.conn.execute("INSERT INTO phrase_comments (phrase_id,author,created,text) VALUES (?,?,?,?)",
+                                    (phrase_id, author, _now(), text))
+        self._changed("phrase", phrase_id)
+        return cur.lastrowid
+
+    @_editable
+    def resolve_comment(self, comment_id: int, resolved: bool = True) -> None:
+        with self.lock, self.conn:
+            r = self.conn.execute("SELECT phrase_id FROM phrase_comments WHERE id=?", (comment_id,)).fetchone()
+            self.conn.execute("UPDATE phrase_comments SET resolved=? WHERE id=?", (int(resolved), comment_id))
+        self._changed("phrase", r[0] if r else None)
+
+    @_editable
+    def delete_comment(self, comment_id: int) -> None:
+        with self.lock, self.conn:
+            r = self.conn.execute("SELECT phrase_id FROM phrase_comments WHERE id=?", (comment_id,)).fetchone()
+            self.conn.execute("DELETE FROM phrase_comments WHERE id=?", (comment_id,))
+        self._changed("phrase", r[0] if r else None)
+
+    # ------------------------------------------------------------ phrase links (FR-DAT-04)
+    def phrase_uid(self, phrase_id: int) -> str | None:
+        with self.lock:
+            return self._uid("phrases", phrase_id)
+
+    def phrase_by_uid(self, uid: str):
+        with self.lock:
+            r = self.conn.execute("SELECT id FROM phrases WHERE uid=?", (uid,)).fetchone()
+        return self.get_phrase(r[0]) if r else None
+
+    def create_link(self, phrase_id: int, folder_id: int | None) -> Phrase:
+        """A phrase that always inserts the current text of phrase_id (follows its edits)."""
+        target = self.get_phrase(phrase_id)
+        if target is None:
+            raise KeyError(phrase_id)
+        uid = self.phrase_uid(phrase_id)
+        return self.add_phrase(Phrase(description=target.description, content=f"{{#insert -uid {uid}}}",
+                                      folder_id=folder_id))
+
+    # ------------------------------------------------------------ folder text (FR-DAT-05)
+    def folder_wrap(self, folder_id: int | None) -> tuple[str, str]:
+        """(text before, text after) a phrase in this folder: the outermost folder's text comes
+        first before the phrase and last after it."""
+        chain = self.folder_chain(folder_id) if folder_id is not None else []
+        before = "".join(f.text_before for f in reversed(chain) if f.text_before)
+        after = "".join(f.text_after for f in chain if f.text_after)
+        return before, after
+
+    # ------------------------------------------------------------ templates (FR-DAT-04)
+    def template_phrases(self) -> list[Phrase]:
+        """Phrases inside template folders (at any depth)."""
+        out = []
+        for p in self.phrases():
+            if p.folder_id is not None and any(f.is_template for f in self.folder_chain(p.folder_id)):
+                out.append(p)
+        return sorted(out, key=lambda p: p.description.lower())
+
+    def new_from_template(self, template_id: int, folder_id: int | None) -> Phrase:
+        """A new phrase with the template's text, format, output options, tags, notes and language
+        versions (not its triggers: an abbreviation should not be shared by two phrases)."""
+        t = self.get_phrase(template_id)
+        if t is None:
+            raise KeyError(template_id)
+        p = Phrase(description=t.description, content=t.content, folder_id=folder_id,
+                   content_format=t.content_format, output_mode=t.output_mode, apps_include=t.apps_include,
+                   apps_exclude=t.apps_exclude, tags=list(t.tags), notes=t.notes,
+                   output_target=t.output_target, output_target_arg=t.output_target_arg)
+        self.add_phrase(p)
+        for lang, (c, cf) in self.phrase_versions(template_id).items():
+            self.set_phrase_version(p.id, lang, c, cf)
+        if self.quarantine_origin(template_id):             # a template that waits for approval
+            self.quarantine(p.id, self.quarantine_origin(template_id))
+        return p
+
     # ------------------------------------------------------------ bulk
     def export_dict(self) -> dict:
         """Full portable snapshot (used by io_formats and backups)."""
@@ -1233,7 +1682,7 @@ class Store:
         finally:
             self._qlocal.bypass -= 1
 
-    def restore_from(self, path: str | Path, untrusted: str | None = None) -> None:
+    def restore_from(self, path: str | Path, untrusted: str | None = None, passphrase: str | None = None) -> None:
         """Replace all data with a backup file, in place on the open connection.
 
         untrusted="synced"/"imported": the file came from elsewhere (cloud pull, a phrase file
@@ -1249,6 +1698,10 @@ class Store:
         with self.lock:                   # raw values: API keys stay encrypted
             rows = list(self.conn.execute("SELECT key, value FROM settings"))
             keep_device = {k: v for k, v in rows if is_device_setting(k)} if untrusted else {}
+            # this PC's trash stays (it is not synced, and an item in it must not arrive from elsewhere)
+            keep_trash = ([tuple(r) for r in self.conn.execute(
+                "SELECT id, kind, name, deleted_at, parent_uid, parent_name, data FROM trash")]
+                if untrusted else None)
             # settings the administrator locked keep this PC's value, whatever the file holds:
             # a backup, an opened file or a sync pull must not unlock them (security R27)
             keep_locked = {k: v for k, v in rows if pol.setting_locked(k)}
@@ -1258,11 +1711,12 @@ class Store:
                 keep_pw = {u: h for u, h in self.conn.execute(
                     "SELECT uid, password_hash FROM folders WHERE password_hash IS NOT NULL AND password_hash<>''")}
         with self.lock:
-            src = vault.connect(path, self.vault_key) if vault.is_encrypted(path) else sqlite3.connect(str(path))
+            src = self._open_copy(path, passphrase)
             if self.vault_key is not None:        # in memory: load the image (a backup would copy WAL mode)
                 data = src.serialize()
                 src.close()
                 self.conn.deserialize(vault.no_wal(data))
+                vault.memory_temp(self.conn)
             else:
                 src.backup(self.conn)
                 src.close()
@@ -1286,6 +1740,8 @@ class Store:
                         self.conn.execute("DELETE FROM settings WHERE key=?", (k,))
                 for k, v in keep_device.items():
                     self.conn.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (k, v))
+                self.conn.execute("DELETE FROM trash")
+                self.conn.executemany("INSERT INTO trash VALUES (?,?,?,?,?,?,?)", keep_trash or [])
                 for u, h in keep_pw.items():
                     self.conn.execute("UPDATE folders SET password_hash=? WHERE uid=?", (h, u))
             after = self.phrase_fingerprints()
@@ -1301,6 +1757,19 @@ class Store:
             self.flush()
         for kind in ("folder", "phrase", "setting", "var", "clipboard", "sticky"):
             self._changed(kind)
+
+    def _open_copy(self, path: str | Path, passphrase: str | None = None):
+        """A connection to a backup or synced copy. An encrypted one made under an earlier key
+        (before the passphrase changed, or encryption was turned off and on) opens with its own
+        DPAPI entry or passphrase (R72); vault.NeedPassphrase asks the caller for it."""
+        if not vault.is_encrypted(path):
+            return sqlite3.connect(str(path))
+        if self.vault_key is not None and passphrase is None:
+            try:
+                return vault.connect(path, self.vault_key)
+            except vault.VaultError:
+                pass
+        return vault.connect(path, passphrase=passphrase)
 
     def backup_to(self, path: str | Path, keep_encryption: bool = False) -> None:
         """A copy of the database. keep_encryption: an encrypted phrase file's copy is encrypted
