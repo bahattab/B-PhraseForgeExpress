@@ -171,6 +171,19 @@ Settings > Display > User Interface Language > Arabic turns the whole interface 
 The Arabic user guide is [docs/USER_GUIDE.ar.md](docs/USER_GUIDE.ar.md) (also under Help in the program).
 Phrases can hold one version per language; dates can be Hijri with Arabic digits.
 
+## Phrase libraries
+
+Phrases > **Libraries** mounts other PhraseForge phrase files next to your own, for example a
+team file on a shared folder. Each library is its own top-level folder; its abbreviations,
+hotkeys and phrase menu work like your own.
+- **Read only:** use the phrases; edits inside it are refused with a message.
+- **Read and write:** your edits are saved to the library file at once; other PCs pick them up
+  within about 30 seconds (and changes made by others reach you the same way).
+- When two places have the same abbreviation, your own phrase wins, then the library higher
+  in the list.
+- Phrases a library adds or changes need your approval before they run programs or other
+  privileged macros. Libraries are not part of your cloud sync: each PC mounts its own.
+
 ## Trash, templates and comments
 
 - **Trash:** Delete moves a phrase or folder (with everything in it) to Phrases > **Trash**.

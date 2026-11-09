@@ -224,7 +224,7 @@ DEVICE_SETTING_PREFIXES = (
     "sync.", "gdrive.", "backup.cloud_", "backup.directory", "ocr.cli_path", "ocr.log_file",
     "app.start_with_windows", "app.first_run_done", "ui.item_colors", "ui.trigger_extras",
     "updates.last_check", "updates.notified_version", "net.", "onenote.exe",
-    "filesearch.actions", "filesearch.commands", "filesearch.roots", "sound.", "shared.", "recorder.", "dynamic.",
+    "filesearch.actions", "filesearch.commands", "filesearch.roots", "sound.", "shared.", "recorder.", "dynamic.", "library.",
     *sorted(SECRET_SETTINGS))
 DEVICE_SETTING_SUFFIXES = ("_url", "_endpoint", "_path", "_file", ".file", ".exe", "_dir", "_directory")
 
@@ -295,6 +295,9 @@ def _editable(fn):
     def wrapper(self, *args, **kwargs):
         if policy.current().editing_disabled and not getattr(self._qlocal, "bypass", 0):
             raise policy.PolicyError(policy.current().notice("Editing phrases"))
+        if self.write_guards and not getattr(self._qlocal, "unguarded", 0):
+            for guard in list(self.write_guards):   # e.g. a read-only phrase library (libraries.py)
+                guard(fn.__name__, args, kwargs)
         return fn(self, *args, **kwargs)
     return wrapper
 
@@ -308,6 +311,11 @@ class Store:
         self._qlocal = threading.local()     # quarantine_writes() context, per thread
         self.vault_key = None                # vault.Key while the file on disk is encrypted
         self._flusher = None
+        # set by libraries.LibraryManager: guards that refuse edits, the trigger precedence of a
+        # phrase, and hooks that keep this PC's library folders across a restore
+        self.write_guards: list = []
+        self.trigger_rank = None
+        self.restore_hooks: list = []
         if self.path != ":memory:" and vault.is_encrypted(self.path):
             data, self.vault_key = vault.read(self.path, passphrase=passphrase)
             self.conn = vault.memory_db(data)
@@ -928,6 +936,16 @@ class Store:
                     sql += " AND kind=?"
                 extra = [self._row_trigger(r) for r in self.conn.execute(sql, args).fetchall()]
         out = [t for t in out if self.phrase_folder_enabled(t.phrase_id)]
+        if self.trigger_rank is not None and out:
+            # the same abbreviation or hotkey in several places: personal phrases win over
+            # library phrases, an earlier library over a later one (FR-DAT-06)
+            rank = {t.phrase_id: self.trigger_rank(t.phrase_id) for t in out}
+            best: dict = {}
+            for t in out:
+                k = (TriggerKind(t.kind).value, t.value if t.case_sensitive else t.value.lower())
+                best[k] = min(best.get(k, rank[t.phrase_id]), rank[t.phrase_id])
+            out = [t for t in out if rank[t.phrase_id] == best[(TriggerKind(t.kind).value,
+                                                               t.value if t.case_sensitive else t.value.lower())]]
         for t in extra:
             if t.folder_id is not None:
                 chain = self.folder_chain(t.folder_id)
@@ -1531,6 +1549,16 @@ class Store:
         }
 
     @contextmanager
+    def unguarded(self):
+        """Writes on this thread inside the block skip the write guards (a library mirroring
+        itself)."""
+        self._qlocal.unguarded = getattr(self._qlocal, "unguarded", 0) + 1
+        try:
+            yield
+        finally:
+            self._qlocal.unguarded -= 1
+
+    @contextmanager
     def policy_bypass(self):
         """Phrase changes on this thread inside the block are allowed even when the policy
         disables editing: a sync pull is how an administrator hands out phrases."""
@@ -1550,6 +1578,7 @@ class Store:
         While the policy disables editing only a sync pull may replace the phrases."""
         if policy.current().editing_disabled and untrusted != "synced" and not getattr(self._qlocal, "bypass", 0):
             raise policy.PolicyError(policy.current().notice("Editing phrases"))
+        kept = [(h, h.before_restore()) for h in list(self.restore_hooks)] if untrusted else []
         before = self.phrase_fingerprints() if untrusted else {}
         keep_q = self.quarantined() if untrusted else {}
         pol = policy.current()
@@ -1612,6 +1641,11 @@ class Store:
         if self.vault_key is not None:    # a backup copy may not count as a change: save now
             self._saved_changes = -1
             self.flush()
+        for h, state in kept:              # this PC's library folders come back (libraries.py)
+            try:
+                h.after_restore(state)
+            except Exception as e:
+                log.warning("could not keep a phrase library across the restore: %s", e)
         for kind in ("folder", "phrase", "setting", "var", "clipboard", "sticky"):
             self._changed(kind)
 
