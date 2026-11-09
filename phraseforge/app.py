@@ -1924,7 +1924,11 @@ def main(argv: list[str] | None = None) -> int:
         QMessageBox.critical(None, "PhraseForge", f"{e}\n\n{paths.db_path()}")
         instance.release()
         return 1
-    configure_logging(store)          # diagnostic mode from the start
+    configure_logging(store)
+    try:
+        store.purge_trash()               # trash entries older than trash.days (default 30)
+    except Exception as e:
+        log.warning("could not empty old trash entries: %s", e)          # diagnostic mode from the start
     from phraseforge.ui.theme import apply_theme
     from phraseforge.ui import i18n
     apply_theme(qapp, store.setting("ui.theme", "system"), i18n.resolve_language(store.setting("ui.language", "auto")))
