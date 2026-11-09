@@ -148,6 +148,12 @@ changes" to be asked which copy to keep instead (also used for the very first sy
 that already has phrases, and for a cloud copy from a version before 0.7).
 Clipboard history and PC-specific settings are never uploaded.
 
+**End-to-end encryption:** tick "Encrypt what is uploaded" and enter a sync passphrase (the same
+on every PC). The sync copy and the cloud backups are then encrypted (AES-256-GCM) before they
+leave the PC, so Google Drive or the sync folder only holds scrambled data. The passphrase is
+stored on each PC protected by Windows; nobody can recover it. While encryption is on, a cloud
+copy that is not encrypted is never taken in: use "Upload this PC's phrases" to replace it.
+
 ## Encrypting the phrase file
 
 Settings > Phrase File/Database > **Encryption...** encrypts the phrase file on disk (AES-256-GCM).

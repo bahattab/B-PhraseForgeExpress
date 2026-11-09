@@ -204,7 +204,7 @@ def needs_rehash(stored: str) -> bool:
 # database file does not reveal them (other platforms: stored base64-encoded only).
 SECRET_SETTINGS = frozenset({"ai.openai_key", "ai.anthropic_key", "ai.openrouter_key", "ai.deepl_key",
                              "ai.gemini_key", "ai.opencode_key", "ai.kilocode_key", "ai.mistral_key",
-                             "net.proxy_password", "shared.password"})
+                             "net.proxy_password", "shared.password", "sync.passphrase"})
 # Settings sealed the same way, by prefix: a dynamic folder's ODBC connection string can
 # hold a password (dynamic.conn.<folder id>, security R46).
 SECRET_PREFIXES = ("dynamic.conn.",)

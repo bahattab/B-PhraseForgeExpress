@@ -17,6 +17,15 @@ Sync rule per run, with `last_rev`/`last_hash` remembered from the previous sync
                                            CONFLICT, nothing is overwritten and the caller asks
                                            the user to keep "this PC" or "cloud" (resolve()).
 
+End-to-end encryption (FR-SYN-03): with sync.encrypt = 1 every file uploaded (the sync copy
+and the backups) is encrypted with the sync passphrase (vault.py: AES-256-GCM, key from
+scrypt), which the user enters on each PC; Google Drive or the sync folder only ever holds
+ciphertext. The passphrase is kept on each PC sealed by Windows (sync.passphrase). While
+encryption is on, a cloud copy that is not encrypted is never taken (anyone with access to the
+folder could have written it): an unchanged one is replaced by an encrypted upload, a changed
+one stops the sync with a message. A PC without the passphrase never overwrites an encrypted
+copy.
+
 What syncs: folders, phrases, triggers, tags, variables, history, statistics and
 shared settings. What never leaves this PC: clipboard history and device-only
 settings (sign-in, sync state, paths, start-with-Windows).
@@ -143,6 +152,10 @@ class GDriveRemote:
 
 
 # ---------------------------------------------------------------- engine
+class SyncError(RuntimeError):
+    """Sync cannot go on until the user acts (passphrase missing or wrong, unencrypted copy)."""
+
+
 @dataclass
 class SyncResult:
     action: str                 # pushed | pulled | merged | unchanged | conflict
@@ -219,6 +232,48 @@ class CloudSync:
         self.store.set_setting("sync.last_hash", h)
         self.store.set_setting("sync.last_time", datetime.now().isoformat(timespec="seconds"))
 
+    # ---------------------------------------------------- end-to-end encryption
+    @property
+    def passphrase(self) -> str | None:
+        if self.store.setting("sync.encrypt", "0") != "1":
+            return None
+        pw = self.store.setting("sync.passphrase", "")
+        if not pw:
+            raise SyncError("Encryption is on but no sync passphrase is set on this PC "
+                            "(Settings > Backup & Sync).")
+        return pw
+
+    HASH_KEY_SALT = b"PhraseForge.sync.prophash.v1"   # fixed: every PC must get the same key
+
+    def _prop_hash(self, h: str) -> str:
+        """The content hash shown in the cloud's file properties; keyed when encrypted, so the
+        hash of a guessed phrase list cannot be checked against it. The key comes from the
+        passphrase through scrypt (slow on purpose), never from a fast hash of it."""
+        pw = self.passphrase
+        if not pw:
+            return h
+        import hmac
+        if getattr(self, "_hash_key_for", None) != pw:
+            from phraseforge import vault
+            self._hash_key = hashlib.scrypt(pw.encode("utf-8"), salt=self.HASH_KEY_SALT, n=vault.SCRYPT_N,
+                                            r=vault.SCRYPT_R, p=vault.SCRYPT_P, maxmem=256 * 1024 * 1024, dklen=32)
+            self._hash_key_for = pw
+        return hmac.new(self._hash_key, h.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    def _upload(self, local: Path, name: str, props: dict) -> None:
+        pw = self.passphrase
+        if not pw:
+            self.remote.put(local, name, props)
+            return
+        from phraseforge import vault
+        fd, enc = tempfile.mkstemp(prefix="pf-enc-", suffix=".db")
+        os.close(fd)
+        try:
+            vault.write(enc, Path(local).read_bytes(), vault.Key.new(pw, use_dpapi=False))
+            self.remote.put(Path(enc), name, {**props, "enc": "1"})
+        finally:
+            Path(enc).unlink(missing_ok=True)
+
     # ---------------------------------------------------- backup
     def backup_now(self, keep: int = 10) -> str:
         snap = self._snapshot()
@@ -226,7 +281,7 @@ class CloudSync:
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
             safe_dev = "".join(c for c in self.device if c.isalnum() or c in "-_") or "pc"
             name = f"{BACKUP_PREFIX}{stamp}-{safe_dev}.db"
-            self.remote.put(snap, name, {"kind": "backup", "device": self.device, "created": stamp})
+            self._upload(snap, name, {"kind": "backup", "device": self.device, "created": stamp})
         finally:
             snap.unlink(missing_ok=True)
         backups = sorted((f for f in self.remote.list() if f.name.startswith(BACKUP_PREFIX)),
@@ -242,9 +297,28 @@ class CloudSync:
     def download(self, name: str) -> Path:
         fd, tmp = tempfile.mkstemp(prefix="pf-pull-", suffix=".db")
         os.close(fd)
-        self.remote.get(name, Path(tmp))
-        _check_db(Path(tmp))
-        return Path(tmp)
+        path = Path(tmp)
+        try:
+            self.remote.get(name, path)
+            from phraseforge import vault
+            pw = self.passphrase
+            if vault.is_encrypted(path):
+                if not pw:
+                    raise SyncError("The cloud copy is encrypted. Turn on encryption and enter the sync "
+                                    "passphrase in Settings > Backup & Sync.")
+                try:
+                    data, _key = vault.read(path, passphrase=pw)
+                except vault.WrongPassphrase:
+                    raise SyncError("The sync passphrase on this PC does not open the cloud copy.") from None
+                path.write_bytes(vault.no_wal(data))
+            elif pw:
+                raise SyncError(f"{name} in the cloud is not encrypted, but encryption is on here: it was "
+                                "not used. Upload this PC's phrases to replace it, or turn encryption off.")
+            _check_db(path)
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
+        return path
 
     # ---------------------------------------------------- sync
     def sync(self) -> SyncResult:
@@ -255,12 +329,23 @@ class CloudSync:
         remote_rev = int(remote.props.get("rev", 0)) if remote else 0
         local_changed = local_hash != last_hash
         remote_changed = remote is not None and remote_rev != last_rev
+        pw = self.passphrase
+        if remote is not None and remote.props.get("enc") == "1" and not pw:
+            raise SyncError("The cloud copy is encrypted. Turn on encryption and enter the sync "
+                            "passphrase in Settings > Backup & Sync.")
+        if remote is not None and pw and remote.props.get("enc") != "1":
+            if not remote_changed and last_hash:
+                return self._push(remote_rev + 1, local_hash)      # encrypt what is already there
+            raise SyncError("The cloud copy is not encrypted, but encryption is on here, so it was not "
+                            "used. Upload this PC's phrases to replace it (Settings > Backup & Sync), "
+                            "or turn encryption off.")
+        local_cmp = self._prop_hash(local_hash)
         if remote is not None and not last_hash:
             # first sync on this PC: an empty PC just takes the cloud copy;
             # a PC that already has phrases must choose (handled as a conflict below)
             if not self.store.phrases() and not self.store.folders():
                 local_changed = False
-            elif remote.props.get("hash") == local_hash:
+            elif remote.props.get("hash") == local_cmp:
                 self._remember(remote_rev, local_hash)
                 return SyncResult("unchanged", "Already in sync", remote_rev=remote_rev)
 
@@ -270,7 +355,7 @@ class CloudSync:
             path = self.download(SYNC_NAME)
             return SyncResult("pulled", f"Updated from {remote.props.get('device', 'cloud')}", path, remote_rev)
         if remote_changed and local_changed:
-            if remote.props.get("hash") == local_hash:     # same data reached both sides
+            if remote.props.get("hash") == local_cmp:     # same data reached both sides
                 self._remember(remote_rev, local_hash)
                 return SyncResult("unchanged", "Already in sync", remote_rev=remote_rev)
             self.backup_now(int(self.store.setting("backup.cloud_keep", "10") or 10))
@@ -309,7 +394,7 @@ class CloudSync:
                 return None
             _strip(mine)
             rev = remote_rev + 1
-            self.remote.put(mine, SYNC_NAME, {"rev": rev, "hash": h, "device": self.device,
+            self._upload(mine, SYNC_NAME, {"rev": rev, "hash": self._prop_hash(h), "device": self.device,
                                               "modified": datetime.now().isoformat(timespec="seconds")})
             out, mine = mine, None
             who = remote.props.get("device", "another PC")
@@ -322,7 +407,7 @@ class CloudSync:
     def _push(self, rev: int, local_hash: str) -> SyncResult:
         snap = self._snapshot()
         try:
-            self.remote.put(snap, SYNC_NAME, {"rev": rev, "hash": local_hash, "device": self.device,
+            self._upload(snap, SYNC_NAME, {"rev": rev, "hash": self._prop_hash(local_hash), "device": self.device,
                                               "modified": datetime.now().isoformat(timespec="seconds")})
             self._save_base(snap, rev)
         finally:
