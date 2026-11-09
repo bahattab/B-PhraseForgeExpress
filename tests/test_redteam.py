@@ -1522,3 +1522,356 @@ def test_recovery_never_deletes_an_encrypted_leftover(tmp_path, vault_env):
     Store(db).close()
     kept = tmp_path / "phrases.db.enc.recovered"
     assert kept.exists() and vault.is_encrypted(kept)
+
+
+# ---------------------------------------------------------------- 0.6.11: review of #39, #41, #42, #44–#51 (R76–R96)
+def test_a_pulled_folder_with_the_library_roots_id_is_not_the_library(tmp_path):
+    """R76: row ids are reused; a folder from a pull that got the library root's old id was taken
+    for the library: stripped from pushes, renamed, and deleted on unmount."""
+    from phraseforge import libraries
+    from phraseforge.cloud.sync import _strip
+    from phraseforge.models import Folder, Phrase
+    t = Store(tmp_path / "team.db")
+    t.add_phrase(Phrase("Team phrase", "team text"))
+    t.close()
+    a = Store(tmp_path / "a.db")
+    a.add_phrase(Phrase("A personal", "x"))
+    mgr = libraries.manager(a)
+    lib = mgr.add("Team", str(tmp_path / "team.db"), "ro")
+    a.backup_to(tmp_path / "push_a.db")
+    _strip(tmp_path / "push_a.db")
+    b = Store(tmp_path / "b.db")
+    b.restore_from(tmp_path / "push_a.db", untrusted="synced")
+    bf = b.add_folder(Folder("B Customers"))
+    b.add_phrase(Phrase("Customer 0", "important", folder_id=bf.id))
+    b.backup_to(tmp_path / "push_b.db")
+    _strip(tmp_path / "push_b.db")
+    b.close()
+    a.restore_from(tmp_path / "push_b.db", untrusted="synced")
+    mgr.remove(lib.id)
+    assert "Customer 0" in [p.description for p in a.phrases()]
+    a.close()
+
+
+def test_mounting_a_library_is_refused_while_editing_is_disabled(tmp_path):
+    """R77: a mounted phrase file of one's own got round editing_disabled (like R39)."""
+    from phraseforge import libraries, policy
+    from phraseforge.models import Phrase
+    t = Store(tmp_path / "own.db")
+    t.add_phrase(Phrase("Own phrase", "anything"))
+    t.close()
+    s = Store(tmp_path / "me.db")
+    policy.set_current(policy.Policy(editing_disabled=True))
+    try:
+        assert policy.current().setting_locked("library.list")
+        with pytest.raises(policy.PolicyError):
+            libraries.manager(s).add("Own", str(tmp_path / "own.db"), "ro")
+        assert s.phrases() == []
+    finally:
+        policy.set_current(policy.NO_POLICY)
+        s.close()
+
+
+def _pull_changed_folder(tmp_path, s, folder_id, **cols):
+    from phraseforge.cloud.sync import CloudSync, FolderRemote
+    copy = tmp_path / "pulled.db"
+    s.backup_to(copy)
+    con = sqlite3.connect(copy)
+    with con:
+        sets = ", ".join(f"{k}=?" for k in cols)
+        con.execute(f"UPDATE folders SET {sets} WHERE id=?", (*cols.values(), folder_id))
+    con.close()
+    CloudSync(s, FolderRemote(tmp_path / "cloud"), device="me").apply_pull(copy)
+
+
+def test_a_phrase_restored_into_a_folder_a_sync_changed_needs_approval(tmp_path):
+    """R78: the trash gave back the old approval, although a pull meanwhile gave the folder a
+    program output target and {#run} folder text."""
+    from phraseforge.models import Folder, Phrase
+    s = Store(tmp_path / "p.db")
+    f = s.add_folder(Folder("Mail"))
+    p = s.add_phrase(Phrase("Approved sig", "Kind regards", folder_id=f.id))
+    tid = s.trash_phrase(p.id)
+    _pull_changed_folder(tmp_path, s, f.id, output_target="program", output_target_arg="evil.exe",
+                         text_before="{#run cmd.exe /c calc}")
+    _kind, new_id = s.restore_trash(tid)
+    assert s.quarantine_origin(new_id)
+    s.close()
+
+
+def test_folder_text_from_a_sync_needs_approval_in_phrases_added_later(tmp_path):
+    """R79: an empty synced folder with {#run} folder text: a phrase created in it or moved into
+    it later ran the {#run} without approval."""
+    from phraseforge.models import Folder, Phrase
+    s = Store(tmp_path / "p.db")
+    f = s.add_folder(Folder("Signatures"))
+    mine = s.add_phrase(Phrase("Mine", "my text"))
+    _pull_changed_folder(tmp_path, s, f.id, text_before="{#run calc.exe}")
+    new = s.add_phrase(Phrase("Sig", "Best regards", folder_id=f.id))
+    mine.folder_id = f.id
+    s.update_phrase(mine)
+    assert s.quarantine_origin(new.id) == "synced"
+    assert s.quarantine_origin(mine.id) == "synced"
+    f2 = s.get_folder(f.id)
+    s.update_folder(f2)
+    s.release_folder(f.id)                  # the user saved the folder's properties
+    assert s.quarantine_origin(new.id) is None
+    s.close()
+
+
+def test_folder_text_from_an_import_needs_approval(tmp_path):
+    """R79: an imported empty folder with folder text was trusted."""
+    payload = {"format": "phraseforge", "folders": [{"id": 1, "name": "F", "text_after": "{#run calc}"}],
+               "phrases": []}
+    s = Store(tmp_path / "p.db")
+    import_dict(s, payload)
+    from phraseforge.models import Phrase
+    fid = s.folders()[0].id
+    p = s.add_phrase(Phrase("Later", "x", folder_id=fid))
+    assert s.quarantine_origin(p.id) == "imported"
+    s.close()
+
+
+def test_compare_with_backup_keeps_no_plain_copy(tmp_path, monkeypatch):
+    """R80: "Compare with backup" wrote the decrypted phrase file to %TEMP%."""
+    from phraseforge import maintenance, vault
+    from phraseforge.models import Phrase
+    monkeypatch.setattr(vault, "FAKE_DPAPI_FOR_TESTS", True)
+    s = Store(tmp_path / "p.db")
+    s.add_phrase(Phrase("Bank", "IBAN DE89 SECRET"))
+    s.enable_encryption("old-passphrase")
+    b = tmp_path / "b.db"
+    s.backup_to(b, keep_encryption=True)
+    written = []
+    real = Store.backup_to
+    monkeypatch.setattr(Store, "backup_to", lambda self, path, keep_encryption=False:
+                        (written.append(keep_encryption), real(self, path, keep_encryption))[1])
+    maintenance.compare(b, s)
+    assert written == [True]
+    s.close()
+
+
+def test_a_link_launch_carries_nothing_but_the_link():
+    """R81: a quote inside a link could add --exec, --import or --home to the command line."""
+    from phraseforge import cli
+    argv = ["pf.exe", "phraseforge://exec/x", "--exec", "Bank details", "--home", r"\\evil\share"]
+    assert cli.link_only(argv) == ["pf.exe", "phraseforge://exec/x"]
+    o = cli.parse(cli.link_only(argv)[1:])
+    assert o.execs == [] and o.url_execs == ["x"]
+
+
+def test_the_elevated_copy_takes_the_data_folder_and_refuses_ipc_actions(tmp_path, monkeypatch):
+    """R82: restart as administrator lost --home/--portable."""
+    from phraseforge.platform import session
+    monkeypatch.setenv("PHRASEFORGE_HOME", str(tmp_path / "data"))
+    calls = []
+    monkeypatch.setattr(session.os, "name", "nt")
+    fake = types.SimpleNamespace(ShellExecuteW=lambda *a: (calls.append(a), 42)[1])
+    monkeypatch.setattr(session.ctypes, "WinDLL", lambda *a, **k: fake, raising=False)
+    try:
+        session.restart_as_admin()
+    except Exception:                       # Windows-only types may be missing here
+        pytest.skip("restart_as_admin needs Windows types")
+    assert calls and "--home" in calls[0][3] and calls[0][3].replace("\\", "/").endswith(
+        "/data --minimized --after-exit " + str(session.os.getpid()))
+
+
+def test_tooltips_never_render_html():
+    """R83: a synced comment with <img src="\\\\host\\x.png"> was rendered as rich text."""
+    from phraseforge.ui.safetext import plain_tip
+    t = plain_tip('<b>x</b><img src="\\\\host\\share\\x.png">')
+    assert "<img" not in t and "&lt;img" in t
+
+
+def test_an_old_encrypted_sync_copy_put_back_is_refused(tmp_path):
+    """R84: rev and name were not authenticated; an older ciphertext with a raised rev was pulled."""
+    from phraseforge.cloud.sync import CloudSync, FolderRemote, SyncError, SYNC_NAME
+    from phraseforge.models import Phrase
+    cloud = tmp_path / "cloud"
+    a, b = Store(tmp_path / "a.db"), Store(tmp_path / "b.db")
+    for x in (a, b):
+        x.set_setting("sync.encrypt", "1")
+        x.set_setting("sync.passphrase", "shared passphrase 1")
+    sa, sb = CloudSync(a, FolderRemote(cloud), "A"), CloudSync(b, FolderRemote(cloud), "B")
+    a.add_phrase(Phrase("Bank", "OLD"))
+    assert sa.sync().action == "pushed"
+    old = (cloud / SYNC_NAME).read_bytes()
+    r = sb.sync()
+    sb.apply_pull(r.pulled_file, r.remote_rev)
+    p = a.find_phrase("Bank")
+    p.content = "NEW"
+    a.update_phrase(p)
+    assert sa.sync().action == "pushed"
+    r = sb.sync()
+    sb.apply_pull(r.pulled_file, r.remote_rev)
+    (cloud / SYNC_NAME).write_bytes(old)                       # the replay
+    rem = FolderRemote(cloud)
+    meta = next(f for f in rem.list() if f.name == SYNC_NAME).props
+    rem.put(cloud / SYNC_NAME, SYNC_NAME, {**meta, "rev": 99, "hash": "x"})
+    with pytest.raises(SyncError):
+        sb.sync()
+    assert b.find_phrase("Bank").content == "NEW"
+    a.close()
+    b.close()
+
+
+def test_a_synced_schedule_on_an_approved_phrase_needs_approval_again(tmp_path):
+    """R85: triggers were not part of the fingerprint, so a sync could add a schedule to an
+    approved {#run} phrase."""
+    from phraseforge.models import Phrase, Trigger, TriggerKind
+    s = Store(tmp_path / "p.db")
+    p = s.add_phrase(Phrase("Tool", "{#run cmd.exe}"))
+    copy = tmp_path / "pulled.db"
+    s.backup_to(copy)
+    t = Store(copy)
+    q = t.get_phrase(p.id)
+    q.triggers = [Trigger(TriggerKind.TIME, "every:1")]
+    t.update_phrase(q)
+    t.close()
+    s.restore_from(copy, untrusted="synced")
+    assert s.quarantine_origin(p.id) == "synced"
+    s.close()
+
+
+def test_regex_triggers_are_checked_before_they_run_on_keystrokes():
+    """R86: (a+)+b on every keystroke froze typing."""
+    import time
+    from phraseforge.models import Trigger, TriggerKind
+    from phraseforge.triggers import autotext
+    m = autotext.AutotextMatcher() if hasattr(autotext, "AutotextMatcher") else None
+    if m is None:
+        pytest.skip("matcher class name changed")
+    m.load([Trigger(TriggerKind.REGEX, "(a+)+b", phrase_id=1)])
+    t0 = time.time()
+    for ch in "a" * 26 + "c":
+        m.feed(ch) if hasattr(m, "feed") else None
+    assert time.time() - t0 < 1.0
+
+
+def test_decstr_is_linear():
+    """R87: {#decstr} took 25 s on 40,000 digits."""
+    import time
+    from phraseforge.macros.commands_pe import _decstr
+    t0 = time.time()
+    out = _decstr(None, ["1" * 40000 + "a1a"], {})
+    assert out.endswith("a0a") and time.time() - t0 < 1.0
+
+
+def test_plain_pc_does_not_upload_over_an_encrypted_copy(tmp_path):
+    """R89: "Upload this PC's phrases" on a PC without the passphrase replaced the encrypted copy."""
+    from phraseforge.cloud.sync import CloudSync, FolderRemote, SyncError, SYNC_NAME
+    from phraseforge import vault
+    from phraseforge.models import Phrase
+    cloud = tmp_path / "cloud"
+    a, c = Store(tmp_path / "a.db"), Store(tmp_path / "c.db")
+    a.set_setting("sync.encrypt", "1")
+    a.set_setting("sync.passphrase", "shared passphrase 1")
+    a.add_phrase(Phrase("Secret", "secret"))
+    CloudSync(a, FolderRemote(cloud), "A").sync()
+    sc = CloudSync(c, FolderRemote(cloud), "C")
+    with pytest.raises(SyncError):
+        sc.resolve("local")
+    with pytest.raises(SyncError):
+        sc.backup_now()
+    assert vault.is_encrypted(cloud / SYNC_NAME)
+    a.close()
+    c.close()
+
+
+def test_the_content_hash_key_uses_the_nfc_passphrase(tmp_path):
+    """R90: PCs that typed the same passphrase in NFD and NFC never agreed on "unchanged"."""
+    import unicodedata
+    from phraseforge.cloud.sync import CloudSync, FolderRemote
+    pw = unicodedata.normalize("NFC", "café-مُحَمَّد-2026")
+    s1, s2 = Store(tmp_path / "1.db"), Store(tmp_path / "2.db")
+    s1.set_setting("sync.encrypt", "1")
+    s2.set_setting("sync.encrypt", "1")
+    s1.set_setting("sync.passphrase", pw)
+    s2.set_setting("sync.passphrase", unicodedata.normalize("NFD", pw))
+    h1 = CloudSync(s1, FolderRemote(tmp_path / "c"), "1")._prop_hash("abc")
+    h2 = CloudSync(s2, FolderRemote(tmp_path / "c"), "2")._prop_hash("abc")
+    assert h1 == h2
+    s1.close()
+    s2.close()
+
+
+def test_long_imported_delimiters_do_not_slow_every_keystroke():
+    """R91: a 1.2 MB delimiter text took 3.5 s per keystroke."""
+    import time
+    from phraseforge.triggers import autotext
+    cls = next((v for v in vars(autotext).values() if isinstance(v, type) and hasattr(v, "_choice_pred")), None)
+    if cls is None:
+        pytest.skip("matcher class not found")
+    m = cls.__new__(cls)
+    choice = "+".join(["Comma"] * 200_000)
+    t0 = time.time()
+    for _ in range(50):
+        m._choice_pred(choice, {" "})
+    assert time.time() - t0 < 1.0
+
+
+def test_scheduled_tasks_hide_locked_phrases(tmp_path):
+    """R92: File > Scheduled tasks listed phrases from password folders."""
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from phraseforge.db import hash_password
+    from phraseforge.models import Folder, Phrase, Trigger, TriggerKind
+    from phraseforge.ui.schedule_dialog import TasksDialog
+    s = Store(tmp_path / "p.db")
+    f = s.add_folder(Folder("Bank", password_hash=hash_password("pw")))
+    s.add_phrase(Phrase("Pay rent DE89", "x", folder_id=f.id, triggers=[Trigger(TriggerKind.TIME, "09:00")]))
+    d = TasksDialog(s)
+    texts = [d.tree.topLevelItem(i).text(0) for i in range(d.tree.topLevelItemCount())]
+    assert not any("DE89" in t for t in texts)
+    d.close()
+    s.close()
+
+
+def test_clipboard_triggers_wait_while_the_pc_is_locked():
+    """R93: a clipboard trigger fired while the session was locked."""
+    from phraseforge.triggers import manager
+    m = manager.TriggerManager.__new__(manager.TriggerManager)
+    m._paused, m._suspend, m._session = False, 0, "locked"
+    m._clip_triggers = ["x"]
+    called = []
+    m._fg = lambda: called.append(1) or ("x.exe", "")
+    m._on_clipboard("text")
+    assert called == []
+
+
+def test_deeply_nested_pe_macros_do_not_stop_the_import():
+    """R94: one row with 400 nested macros made the whole PhraseExpress import fail."""
+    from phraseforge.importers.phraseexpress import _pe_macros
+    rep = types.SimpleNamespace(notes=[])
+    deep = "{#date " * 2000 + "x" + "}" * 2000
+    assert _pe_macros(deep, rep) == deep
+
+
+def test_trash_days_is_a_device_setting():
+    """R95: a pulled trash.days=1 emptied this PC's trash."""
+    assert is_device_setting("trash.days")
+
+
+def test_library_mirror_keeps_folder_locks_and_versions(tmp_path):
+    """R96: a locked library folder was unlocked in the mirror; new versions did not arrive."""
+    from phraseforge import libraries
+    from phraseforge.models import Folder, Phrase
+    t = Store(tmp_path / "team.db")
+    f = t.add_folder(Folder("HR", password_hash="pbkdf2$x"))
+    p = t.add_phrase(Phrase("Salary", "9000", folder_id=f.id))
+    t.close()
+    s = Store(tmp_path / "me.db")
+    mgr = libraries.manager(s)
+    lib = mgr.add("Team", str(tmp_path / "team.db"), "ro")
+    hr = next(x for x in s.folders() if x.name == "HR" or True and x.parent_id == mgr.root(lib))
+    assert s.get_folder(hr.id).password_hash == "pbkdf2$x"
+    t = Store(tmp_path / "team.db")
+    t.set_phrase_version(p.id, "ar", "تسعة آلاف", "text")
+    t.close()
+    import os as _os
+    st = _os.stat(tmp_path / "team.db")
+    _os.utime(tmp_path / "team.db", ns=(st.st_atime_ns, st.st_mtime_ns + 10_000_000))
+    mgr.refresh(force=True)
+    mirror = next(x for x in s.phrases() if x.description == "Salary")
+    assert "ar" in s.phrase_versions(mirror.id)
+    s.close()

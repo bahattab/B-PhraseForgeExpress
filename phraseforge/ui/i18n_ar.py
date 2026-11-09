@@ -1653,4 +1653,9 @@ AR_EXTRA = {
     "The phrase file opened without its passphrase although this PC asks for it at every start: an older copy of the file was put back. Check your phrases.": "فُتح ملف العبارات دون عبارة مروره مع أن هذا الجهاز يطلبها عند كل تشغيل: أُعيدت نسخة أقدم من الملف. راجع عباراتك.",
     "The encrypted phrase file is damaged.": "ملف العبارات المشفّر تالف.",
     "The encrypted phrase file has unsupported key settings.": "ملف العبارات المشفّر يستخدم إعدادات مفتاح غير مدعومة.",
+    "comes from a phrase library": "تأتي من مكتبة عبارات",
+    "was restored from the trash after its folder or variables changed": "استُعيدت من سلة المحذوفات بعد أن تغيّر مجلدها أو متغيراتها",
+    "comes from the shared database": "تأتي من قاعدة البيانات المشتركة",
+    "A link asks to insert the phrase \"{name}\" into the window in front. Insert it?": "يطلب رابطٌ إدراج العبارة «{name}» في النافذة الأمامية. هل تُدرجها؟",
+    "{exe} runs as administrator, so PhraseForge cannot type into it. Click here to restart PhraseForge as administrator (programs your phrases start then run as administrator too).": "يعمل {exe} بصلاحيات المسؤول، فلا يستطيع PhraseForge الكتابة فيه. انقر هنا لإعادة تشغيل PhraseForge بصلاحيات المسؤول (وعندها تعمل البرامج التي تشغّلها عباراتك بصلاحيات المسؤول أيضًا).",
 }

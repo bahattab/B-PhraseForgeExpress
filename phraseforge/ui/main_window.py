@@ -1845,7 +1845,9 @@ class MainWindow(QMainWindow):
             return
         dlg = FolderDialog(f, self)
         if dlg.exec() == QDialog.Accepted:
-            self.store.update_folder(dlg.apply())
+            g = dlg.apply()
+            self.store.update_folder(g)
+            self.store.release_folder(g.id)     # the user has seen and saved its text (R79)
             self.refresh_tree()
 
     def properties_selected(self) -> None:

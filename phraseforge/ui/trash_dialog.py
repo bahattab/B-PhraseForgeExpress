@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
 )
 
 from phraseforge.ui.i18n import tr
+from phraseforge.ui.safetext import plain_tip
 
 
 def _when(iso: str | None) -> str:
@@ -111,7 +112,7 @@ class TemplatePicker(QDialog):
         for p in self.templates:
             it = QListWidgetItem(p.description)
             it.setData(Qt.UserRole, p.id)
-            it.setToolTip(p.content[:300])
+            it.setToolTip(plain_tip(p.content[:300]))
             self.list.addItem(it)
         self.list.itemDoubleClicked.connect(lambda *_: self.accept())
         self.list.currentItemChanged.connect(self._preview)
@@ -189,7 +190,7 @@ class CommentsDialog(QDialog):
             it = QTreeWidgetItem([text, c["author"] or "", _when(c["created"])])
             it.setData(0, Qt.UserRole, c["id"])
             it.setData(1, Qt.UserRole, c["resolved"])
-            it.setToolTip(0, c["text"])
+            it.setToolTip(0, plain_tip(c["text"][:2000]))
             self.list.addTopLevelItem(it)
         self.list.resizeColumnToContents(1)
         self.list.resizeColumnToContents(2)

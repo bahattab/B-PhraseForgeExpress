@@ -204,7 +204,8 @@ class NativeKeyboardHook:
         except Exception:      # never leave the DLL waiting because of an error
             log.exception("keyboard hook callback failed")
         if raw.status & ST_WAITED and not self._lib.pf_reply(raw.seq, 1 if swallow else 0):
-            log.info("key %#x answered after the %d ms budget; it was passed on", raw.vk, self.budget_ms)
+            # never the key itself: one key per stall built a log of what was typed (R93)
+            log.debug("a key was answered after the %d ms budget; it was passed on", self.budget_ms)
 
     def _read_loop(self) -> None:
         raw = PFEvent()

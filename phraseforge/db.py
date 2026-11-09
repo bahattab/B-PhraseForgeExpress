@@ -94,6 +94,8 @@ CREATE TABLE IF NOT EXISTS phrase_versions (
 CREATE TABLE IF NOT EXISTS phrase_quarantine (
   phrase_id INTEGER PRIMARY KEY REFERENCES phrases(id) ON DELETE CASCADE,
   origin TEXT DEFAULT 'imported', added TEXT);
+CREATE TABLE IF NOT EXISTS folder_quarantine (
+  uid TEXT PRIMARY KEY, origin TEXT DEFAULT 'imported', added TEXT);
 CREATE TABLE IF NOT EXISTS trash (
   id INTEGER PRIMARY KEY, kind TEXT NOT NULL, name TEXT, deleted_at TEXT NOT NULL,
   parent_uid TEXT, parent_name TEXT, data TEXT NOT NULL);
@@ -226,6 +228,7 @@ DEVICE_SETTING_PREFIXES = (
     "app.start_with_windows", "app.first_run_done", "ui.item_colors", "ui.trigger_extras",
     "updates.last_check", "updates.notified_version", "net.", "onenote.exe",
     "filesearch.actions", "filesearch.commands", "filesearch.roots", "sound.", "shared.", "recorder.", "dynamic.", "library.", "autoskip.", "schedule.",
+    "trash.",                            # the trash is this PC's: a pulled trash.days=1 emptied it (R95)
     *sorted(SECRET_SETTINGS))
 DEVICE_SETTING_SUFFIXES = ("_url", "_endpoint", "_path", "_file", ".file", ".exe", "_dir", "_directory")
 
@@ -894,6 +897,7 @@ class Store:
         (an imported variable it reads, its folder's output target)."""
         stack = self._qlocal.__dict__.setdefault("stack", [])
         before = self.phrase_fingerprints() if not stack else None
+        fbefore = self.folder_risks() if not stack else None
         stack.append(origin)
         try:
             yield
@@ -904,6 +908,7 @@ class Store:
                 changed = [pid for pid, fp in before.items() if after.get(pid, fp) != fp]
                 for pid in changed:
                     self.quarantine(pid, origin)
+                self._quarantine_folders(fbefore, origin)
 
     def _quarantine_if_untrusted(self, phrase_id: int) -> None:
         """Caller holds the lock (inside the write transaction)."""
@@ -922,24 +927,96 @@ class Store:
             self.conn.execute("DELETE FROM phrase_quarantine WHERE phrase_id=?", (phrase_id,))
 
     def quarantine_origin(self, phrase_id: int | None) -> str | None:
-        """"imported" / "synced" if the phrase is not approved on this PC, else None."""
+        """"imported" / "synced" if the phrase is not approved on this PC, else None. A phrase in a
+        folder whose text before/after or output target came from elsewhere counts as not approved
+        either, also when it was created or moved there on this PC (security R78, R79)."""
         if phrase_id is None:
             return None
         with self.lock:
             r = self.conn.execute("SELECT origin FROM phrase_quarantine WHERE phrase_id=?", (phrase_id,)).fetchone()
-        return r[0] if r else None
+            if r:
+                return r[0]
+            f = self.conn.execute("SELECT folder_id FROM phrases WHERE id=?", (phrase_id,)).fetchone()
+            return self._folder_chain_origin(f[0] if f else None)
+
+    # --- folders whose risky fields (text before/after, output target) came from elsewhere
+    FOLDER_RISK = "text_before, text_after, output_target, output_target_arg"
+
+    def folder_risks(self) -> dict[str, str]:
+        """folder uid -> its risky fields, for folders that have any."""
+        with self.lock:
+            out = {}
+            for r in self.conn.execute(f"SELECT uid, {self.FOLDER_RISK} FROM folders"):
+                tb, ta, tgt, arg = r[1] or "", r[2] or "", r[3] or "current", r[4] or ""
+                if r[0] and (tb or ta or tgt != "current" or arg):
+                    out[r[0]] = json.dumps([tb, ta, tgt, arg], ensure_ascii=False)
+            return out
+
+    def _quarantine_folders(self, before: dict[str, str], origin: str, keep: dict[str, str] | None = None) -> None:
+        """Folders whose risky fields are new or changed since `before` wait for approval."""
+        after = self.folder_risks()
+        with self.lock, self.conn:
+            if keep is not None:          # a restored file: this PC's list, not the file's
+                self.conn.execute("DELETE FROM folder_quarantine")
+                self.conn.executemany("INSERT OR REPLACE INTO folder_quarantine VALUES (?,?,?)",
+                                      [(u, o, _now()) for u, o in keep.items()])
+            for uid, risk in after.items():
+                if before.get(uid) != risk:
+                    self.conn.execute("INSERT OR REPLACE INTO folder_quarantine VALUES (?,?,?)",
+                                      (uid, origin, _now()))
+
+    def _folder_chain_origin(self, folder_id) -> str | None:
+        """Caller holds the lock."""
+        seen = set()
+        while folder_id is not None and folder_id not in seen:
+            seen.add(folder_id)
+            r = self.conn.execute("SELECT f.parent_id, q.origin FROM folders f LEFT JOIN folder_quarantine q "
+                                  "ON q.uid=f.uid WHERE f.id=?", (folder_id,)).fetchone()
+            if r is None:
+                return None
+            if r[1]:
+                return r[1]
+            folder_id = r[0]
+        return None
+
+    def folder_quarantined(self) -> dict[str, str]:
+        with self.lock:
+            return {r[0]: r[1] for r in self.conn.execute("SELECT uid, origin FROM folder_quarantine")}
+
+    def release_folder(self, folder_id: int) -> None:
+        """The user saved the folder's properties themselves, so they have seen its text."""
+        with self.lock, self.conn:
+            self.conn.execute("DELETE FROM folder_quarantine WHERE uid=(SELECT uid FROM folders WHERE id=?)",
+                              (folder_id,))
+
+    def release_folder_chain(self, phrase_id: int) -> None:
+        """Approved "always": the approval dialog listed the folders' text and output target too."""
+        with self.lock:
+            f = self.conn.execute("SELECT folder_id FROM phrases WHERE id=?", (phrase_id,)).fetchone()
+            fid, seen = (f[0] if f else None), set()
+            uids = []
+            while fid is not None and fid not in seen:
+                seen.add(fid)
+                r = self.conn.execute("SELECT parent_id, uid FROM folders WHERE id=?", (fid,)).fetchone()
+                if r is None:
+                    break
+                uids.append((r[1],))
+                fid = r[0]
+        with self.lock, self.conn:
+            self.conn.executemany("DELETE FROM folder_quarantine WHERE uid=?", uids)
 
     def quarantined(self) -> dict[int, str]:
         with self.lock:
             return {r[0]: r[1] for r in self.conn.execute("SELECT phrase_id, origin FROM phrase_quarantine")}
 
-    def phrase_fingerprints(self) -> dict[int, str]:
+    def phrase_fingerprints(self, only: int | None = None) -> dict[int, str]:
         """phrase id -> hash of everything that runs: the content of every language version and
         where the output goes (the phrase's and its folders' output target, which can start a
         program). A sync that changes any of it quarantines the phrase again."""
         with self.lock:
             rows = self.conn.execute("SELECT id, content, content_format, folder_id, output_target, "
-                                     "output_target_arg FROM phrases").fetchall()
+                                     "output_target_arg FROM phrases" + (" WHERE id=?" if only is not None else ""),
+                                     (only,) if only is not None else ()).fetchall()
             global_vars = {r[0]: r[1] for r in self.conn.execute(
                 "SELECT name, value FROM vars WHERE scope='global'")}
             folders = {r[0]: (r[1], r[2] or "", r[3] or "", bool(r[4]), r[5] or "", r[6] or "")
@@ -949,6 +1026,14 @@ class Store:
             for r in self.conn.execute(
                     "SELECT phrase_id, lang, content, content_format FROM phrase_versions ORDER BY phrase_id, lang"):
                 versions.setdefault(r[0], []).append((r[1], r[2], r[3]))
+            # triggers that start the phrase without the user asking for it: a sync that adds a
+            # schedule to an approved {#run} phrase must ask again (security R85)
+            auto: dict[int, list] = {}
+            for r in self.conn.execute(
+                    "SELECT phrase_id, kind, value, mode, exec_mode, enabled FROM triggers WHERE phrase_id IS NOT NULL "
+                    "AND kind IN ('autotext','regex','clipboard','clipboard_regex','time','app_focus') "
+                    "ORDER BY phrase_id, kind, value"):
+                auto.setdefault(r[0], []).append([r[1], r[2] or "", r[3] or "", r[4] or "", int(r[5] or 0)])
         out = {}
         for r in rows:
             chain, fid, seen, folder_texts = [], r[3], set(), []
@@ -963,7 +1048,7 @@ class Store:
                 fid = parent
             texts = [r[1] or ""] + [v[1] or "" for v in versions.get(r[0], [])] + folder_texts
             blob = json.dumps([r[1], r[2], versions.get(r[0], []), r[4] or "", r[5] or "", chain,
-                               _read_vars(texts, global_vars)], ensure_ascii=False)
+                               _read_vars(texts, global_vars), auto.get(r[0], [])], ensure_ascii=False)
             out[r[0]] = hashlib.sha256(blob.encode("utf-8")).hexdigest()
         return out
 
@@ -1421,6 +1506,7 @@ class Store:
         d["versions"] = {k: list(v) for k, v in self.phrase_versions(pid).items()}
         d["uid"] = self._uid("phrases", pid)
         d["quarantine"] = self.quarantine_origin(pid)
+        d["fingerprint"] = self.phrase_fingerprints(only=pid).get(pid, "")
         d["comments"] = [dict(r) for r in self.conn.execute(
             "SELECT author, created, text, resolved FROM phrase_comments WHERE phrase_id=? ORDER BY id", (pid,))]
         d["history"] = [dict(r) for r in self.conn.execute(
@@ -1514,6 +1600,11 @@ class Store:
             self.conn.execute("DELETE FROM phrase_quarantine WHERE phrase_id=?", (p.id,))
             if d.get("quarantine"):
                 self.conn.execute("INSERT INTO phrase_quarantine VALUES (?,?,?)", (p.id, d["quarantine"], _now()))
+        # what it runs changed while it was in the trash (a sync changed its folder or a variable
+        # it reads): the old approval does not cover that (security R78)
+        if (not d.get("quarantine") and "fingerprint" in d
+                and d["fingerprint"] != self.phrase_fingerprints(only=p.id).get(p.id)):
+            self.quarantine(p.id, "restored")
         return p.id
 
     def _restore_folder(self, d: dict, parent_id) -> int:
@@ -1571,6 +1662,7 @@ class Store:
                 days = self.TRASH_DAYS
         if days <= 0:
             return 0
+        days = min(days, 3650)
         from datetime import timedelta
         cutoff = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
         with self.lock, self.conn:
@@ -1728,6 +1820,8 @@ class Store:
         kept = [(h, h.before_restore()) for h in list(self.restore_hooks)] if untrusted else []
         before = self.phrase_fingerprints() if untrusted else {}
         keep_q = self.quarantined() if untrusted else {}
+        fbefore = self.folder_risks() if untrusted else {}
+        keep_fq = self.folder_quarantined() if untrusted else {}
         pol = policy.current()
         with self.lock:                   # raw values: API keys stay encrypted
             rows = list(self.conn.execute("SELECT key, value FROM settings"))
@@ -1785,6 +1879,7 @@ class Store:
                     origin = keep_q.get(pid) or (untrusted if before.get(pid) != fp else None)
                     if origin:
                         self.conn.execute("INSERT INTO phrase_quarantine VALUES (?,?,?)", (pid, origin, _now()))
+            self._quarantine_folders(fbefore, untrusted, keep=keep_fq)
         self._seal_plain_secrets()        # an old backup may hold plain-text keys
         if self.vault_key is not None:    # a backup copy may not count as a change: save now
             self._saved_changes = -1

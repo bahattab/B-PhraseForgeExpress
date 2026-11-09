@@ -1314,7 +1314,8 @@ class PhraseForgeApp(QObject):
         """Tray message for an elevated window; clicking it restarts PhraseForge as administrator."""
         from phraseforge.ui.i18n import tr
         text = tr("{exe} runs as administrator, so PhraseForge cannot type into it. "
-                  "Click here to restart PhraseForge as administrator.").replace("{exe}", exe or "?")
+                  "Click here to restart PhraseForge as administrator (programs your phrases start then "
+                  "run as administrator too).").replace("{exe}", exe or "?")
         self.tray.notify(tr("Cannot type into an administrator window"), text, ms=8000,
                          on_click=self._restart_as_admin)
 
@@ -1969,6 +1970,8 @@ def approved_for(app, p, req: ExpansionRequest) -> bool:
     answer = app.host._ui(lambda: dialogs.approve_phrase(p.description, origin, reasons))
     if answer == dialogs.ALLOW_ALWAYS:
         app.store.release_quarantine(p.id)
+        if hasattr(app.store, "release_folder_chain"):
+            app.store.release_folder_chain(p.id)
     if answer in (dialogs.ALLOW_ONCE, dialogs.ALLOW_ALWAYS):
         req.context.allow_privileged = True
         return True
@@ -1983,8 +1986,9 @@ def quiet_http_loggers() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    argv = paths.apply_command_line(list(argv if argv is not None else sys.argv))   # --portable, --home
     from phraseforge import cli
+    argv = cli.link_only(list(argv if argv is not None else sys.argv))           # a link: nothing else (R81)
+    argv = paths.apply_command_line(argv)                                      # --portable, --home
     try:
         options = cli.parse(argv[1:])
     except cli.UsageError as e:
@@ -2087,6 +2091,13 @@ def main(argv: list[str] | None = None) -> int:
             app.tray.notify("PhraseForge", str(e))
             return
         if later.actions:
+            from phraseforge.platform import session
+            if session.running_as_admin() and (later.imports or later.opens or later.execs or later.url_execs):
+                # any program of this user can start PhraseForge with switches: an elevated copy
+                # does not import, mount or run phrases for it (security R82)
+                app.tray.notify("PhraseForge", "PhraseForge runs as administrator: --import, --open, "
+                                "--exec and links are not accepted from other programs.")
+                return
             for problem in cli.run_actions(app, later):
                 app.tray.notify("PhraseForge", problem)
         elif not (later.has("minimized") or later.has("hidden")):

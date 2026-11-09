@@ -275,7 +275,8 @@ class CloudSync:
         import hmac
         if getattr(self, "_hash_key_for", None) != pw:
             from phraseforge import vault
-            self._hash_key = hashlib.scrypt(pw.encode("utf-8"), salt=self.HASH_KEY_SALT, n=vault.SCRYPT_N,
+            # NFC like the vault, so PCs that typed the passphrase differently still agree (R90)
+            self._hash_key = hashlib.scrypt(vault._nfc(pw).encode("utf-8"), salt=self.HASH_KEY_SALT, n=vault.SCRYPT_N,
                                             r=vault.SCRYPT_R, p=vault.SCRYPT_P, maxmem=256 * 1024 * 1024, dklen=32)
             self._hash_key_for = pw
         return hmac.new(self._hash_key, h.encode("utf-8"), hashlib.sha256).hexdigest()
@@ -289,13 +290,15 @@ class CloudSync:
         fd, enc = tempfile.mkstemp(prefix="pf-enc-", suffix=".db")
         os.close(fd)
         try:
-            vault.write(enc, Path(local).read_bytes(), vault.Key.new(pw, use_dpapi=False))
+            meta = {"name": name, "kind": props.get("kind", "sync"), "rev": int(props.get("rev", 0) or 0)}
+            vault.write(enc, Path(local).read_bytes(), vault.Key.new(pw, use_dpapi=False), meta=meta)
             self.remote.put(Path(enc), name, {**props, "enc": "1"})
         finally:
             Path(enc).unlink(missing_ok=True)
 
     # ---------------------------------------------------- backup
     def backup_now(self, keep: int = 10) -> str:
+        self._refuse_plain_over_encrypted()
         snap = self._snapshot()
         try:
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -314,7 +317,9 @@ class CloudSync:
         return sorted((f for f in self.remote.list() if f.name.startswith(BACKUP_PREFIX)),
                       key=lambda f: f.name, reverse=True)
 
-    def download(self, name: str) -> Path:
+    def download(self, name: str, allow_older: bool = False) -> Path:
+        """allow_older: the user asked for this copy (a cloud backup, "take the cloud copy"); a
+        sync copy older than the one this PC synced last is refused otherwise (a replay, R84)."""
         fd, tmp = tempfile.mkstemp(prefix="pf-pull-", suffix=".db")
         os.close(fd)
         path = Path(tmp)
@@ -330,6 +335,16 @@ class CloudSync:
                     data, _key = vault.read(path, passphrase=pw)
                 except vault.WrongPassphrase:
                     raise SyncError("The sync passphrase on this PC does not open the cloud copy.") from None
+                meta = vault.header_of(path).get("meta") or {}     # authenticated: read() checked it
+                if meta:
+                    if meta.get("name") != name:
+                        raise SyncError(f"{name} in the cloud holds another file ({meta.get('name')}): it was "
+                                        "not used.")
+                    last = int(self.store.setting("sync.last_rev", "0") or 0)
+                    if name == SYNC_NAME and not allow_older and int(meta.get("rev", 0) or 0) < last:
+                        raise SyncError("The cloud copy is older than the one this PC synced last (it may have "
+                                        "been put back by someone with access to the sync folder): it was not "
+                                        "used. To use it anyway, take the cloud copy in Settings > Backup & Sync.")
                 path.write_bytes(vault.no_wal(data))
             elif pw:
                 raise SyncError(f"{name} in the cloud is not encrypted, but encryption is on here: it was "
@@ -440,9 +455,21 @@ class CloudSync:
         remote = next((f for f in self.remote.list() if f.name == SYNC_NAME), None)
         rev = int(remote.props.get("rev", 0)) if remote else 0
         if keep == "local":
+            self._refuse_plain_over_encrypted(remote)
             return self._push(rev + 1, content_hash(self.store))
-        path = self.download(SYNC_NAME)
+        path = self.download(SYNC_NAME, allow_older=True)     # the user chose the cloud copy
         return SyncResult("pulled", "Replaced with the cloud copy", path, rev)
+
+    def _refuse_plain_over_encrypted(self, remote=None) -> None:
+        """A PC without the sync passphrase never replaces an encrypted cloud copy with a plain
+        one, nor adds plain backups next to it (security R89)."""
+        if self.passphrase:
+            return
+        if remote is None:
+            remote = next((f for f in self.remote.list() if f.name == SYNC_NAME), None)
+        if remote is not None and str(remote.props.get("enc", "")) == "1":
+            raise SyncError("The cloud copy is encrypted, but encryption is off on this PC, so nothing was "
+                            "uploaded. Turn on encryption and enter the sync passphrase in Settings > Backup & Sync.")
 
     def _local_backup(self) -> None:
         """A copy of this PC's phrases next to the phrase file, made before a pull replaces them:

@@ -43,6 +43,7 @@ log = logging.getLogger(__name__)
 SYNC_SOURCE_SETTINGS = frozenset({
     "sync.provider", "sync.folder_path", "sync.gdrive_folder",
     "shared.enabled", "shared.engine", "shared.server", "shared.port", "shared.database", "shared.root_name",
+    "library.list",                    # mounted phrase libraries (security R77)
 })
 
 

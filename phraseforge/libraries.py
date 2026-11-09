@@ -44,6 +44,30 @@ LIST_KEY = "library.list"
 ROOT_KEY = "library.root."           # + library id -> folder id of its root on this PC
 STAMP_KEY = "library.stamp."         # + library id -> "mtime:size" of the file at the last read
 ERROR_KEY = "library.error."
+# + library id -> uid of the root folder. Row ids are reused: a folder that came with a sync pull
+# can get the root's old id, and was then taken for the library (stripped from pushes, deleted on
+# unmount). The uid must match too (security R76).
+ROOT_UID_KEY = "library.rootuid."
+
+
+def _root_of(store, lib_id: str) -> int | None:
+    v = store.setting(ROOT_KEY + lib_id, "")
+    if not v.isdigit() or store.get_folder(int(v)) is None:
+        return None
+    want = store.setting(ROOT_UID_KEY + lib_id, "")
+    if want:
+        with store.lock:
+            have = store._uid("folders", int(v))
+        if have != want:
+            return None
+    return int(v)
+
+
+def _set_root(store, lib_id: str, folder_id: int) -> None:
+    store.set_setting(ROOT_KEY + lib_id, str(folder_id))
+    with store.lock:
+        uid = store._uid("folders", folder_id) or ""
+    store.set_setting(ROOT_UID_KEY + lib_id, uid)
 TABLES = """
 CREATE TABLE IF NOT EXISTS library_items (
   lib TEXT NOT NULL, kind TEXT NOT NULL, uid TEXT NOT NULL, local_id INTEGER NOT NULL,
@@ -53,7 +77,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS library_items_local ON library_items (kind, lo
 PHRASE_FIELDS = ("description", "content", "content_format", "output_mode", "apps_include", "apps_exclude",
                  "enabled", "sort", "notes", "output_target", "output_target_arg")
 FOLDER_FIELDS = ("name", "sort", "enabled", "apps_include", "apps_exclude", "show_in_popup", "notes",
-                 "output_target", "output_target_arg", "abbrev_prefix", "is_template", "text_before", "text_after")
+                 "output_target", "output_target_arg", "abbrev_prefix", "is_template", "text_before", "text_after",
+                 "password_hash")             # a locked folder stays locked in the mirror (R96)
 
 
 class LibraryError(Exception):
@@ -98,9 +123,9 @@ def _save(store, libs: list[Library]) -> None:
 def root_ids(store) -> dict[str, int]:
     out = {}
     for lib in libraries(store):
-        v = store.setting(ROOT_KEY + lib.id, "")
-        if v.isdigit() and store.get_folder(int(v)) is not None:
-            out[lib.id] = int(v)
+        r = _root_of(store, lib.id)
+        if r is not None:
+            out[lib.id] = r
     return out
 
 
@@ -171,8 +196,7 @@ class LibraryManager:
         return next((x for x in self.libraries() if x.id == lib_id), None)
 
     def root(self, lib: Library) -> int | None:
-        v = self.store.setting(ROOT_KEY + lib.id, "")
-        return int(v) if v.isdigit() and self.store.get_folder(int(v)) is not None else None
+        return _root_of(self.store, lib.id)
 
     def library_of_folder(self, folder_id: int | None) -> Library | None:
         if folder_id is None:
@@ -211,7 +235,14 @@ class LibraryManager:
         return f"{int(st.st_mtime_ns)}:{st.st_size}"
 
     # ------------------------------------------------ mounting
+    def _check_policy(self) -> None:
+        """Mounting a phrase file of one's own would get round editing_disabled (security R77)."""
+        from phraseforge import policy
+        if policy.current().editing_disabled:
+            raise policy.PolicyError(policy.current().notice("Mounting phrase libraries"))
+
     def add(self, name: str, path: str, mode: str = "ro", create: bool = False) -> Library:
+        self._check_policy()
         path = str(Path(path))
         if any(Path(x.path) == Path(path) for x in self.libraries()):
             raise LibraryError("This phrase file is already mounted.")
@@ -224,6 +255,11 @@ class LibraryManager:
             Store(path).close()
         elif not Path(path).is_file():
             raise LibraryError("The phrase file was not found.")
+        from phraseforge import vault
+        if vault.is_encrypted(path) and not getattr(self.store, "encrypted", False):
+            # its phrases would be kept decrypted in this PC's plain phrase file (R96)
+            raise LibraryError("This phrase file is encrypted, but yours is not: encrypt your phrase file first "
+                               "(Settings > Encryption), then mount it.")
         lib = Library(secrets.token_hex(6), name.strip() or Path(path).stem, path, "rw" if mode == "rw" else "ro")
         self._read(lib)                                  # a valid phrase file? (raises otherwise)
         _save(self.store, self.libraries() + [lib])
@@ -241,11 +277,13 @@ class LibraryManager:
                 self.store.delete_folder(root)
             with self.store.lock, self.store.conn:
                 self.store.conn.execute("DELETE FROM library_items WHERE lib=?", (lib_id,))
-                for k in (ROOT_KEY, STAMP_KEY, ERROR_KEY):
+                for k in (ROOT_KEY, ROOT_UID_KEY, STAMP_KEY, ERROR_KEY):
                     self.store.conn.execute("DELETE FROM settings WHERE key=?", (k + lib_id,))
         _save(self.store, [x for x in self.libraries() if x.id != lib_id])
 
     def set_mode(self, lib_id: str, mode: str) -> None:
+        if mode == "rw":
+            self._check_policy()
         libs = self.libraries()
         for x in libs:
             if x.id == lib_id:
@@ -294,7 +332,7 @@ class LibraryManager:
         root = self.root(lib)
         if root is None:
             f = self.store.add_folder(Folder(name=lib.name))
-            self.store.set_setting(ROOT_KEY + lib.id, str(f.id))
+            _set_root(self.store, lib.id, f.id)
             with self.store.lock, self.store.conn:
                 self.store.conn.execute("DELETE FROM library_items WHERE lib=?", (lib.id,))
             root = f.id
@@ -351,8 +389,8 @@ class LibraryManager:
                 if u in pmap:
                     if self._differs(store.get_phrase(pmap[u]), new, store):
                         store.update_phrase(new, record_history=False)
-                        self._set_versions(new.id, rec)
                         changed += 1
+                    self._set_versions(new.id, rec)      # a new language version alone counts too (R96)
                 else:
                     store.add_phrase(new)
                     self._set_versions(new.id, rec)
@@ -579,12 +617,11 @@ class LibraryManager:
         with store.lock:
             store.conn.executescript(TABLES)
         for lib_id, snap, rows in kept:
-            v = store.setting(ROOT_KEY + lib_id, "")
-            if v.isdigit() and store.get_folder(int(v)) is not None:
+            if _root_of(store, lib_id) is not None:
                 continue                                  # it came through (not a stripped copy)
             with self._mirroring():
                 root = store._restore_folder(snap, None)
-            store.set_setting(ROOT_KEY + lib_id, str(root))
+            _set_root(store, lib_id, root)
             with store.lock, store.conn:
                 store.conn.execute("DELETE FROM library_items WHERE lib=?", (lib_id,))
                 for lib, kind, uid, local_uid in rows:

@@ -12,6 +12,7 @@ from phraseforge.ui.i18n import tr
 from phraseforge.ui.iconset import icon
 from phraseforge.ui.icons import app_icon
 from phraseforge.ui.popup import HEADER_H, ROW_H, SELECT, _Band, _Footer
+from phraseforge.ui.safetext import plain_tip
 
 ROLE_ID, ROLE_TEXT, ROLE_PINNED = Qt.UserRole, Qt.UserRole + 1, Qt.UserRole + 2
 
@@ -80,7 +81,7 @@ class ClipboardWindow(QFrame):
             it.setData(ROLE_ID, e.id)
             it.setData(ROLE_TEXT, e.text)
             it.setData(ROLE_PINNED, e.pinned)
-            it.setToolTip(e.text[:1000] + (f"\n— {e.source_app}" if e.source_app else ""))
+            it.setToolTip(plain_tip(e.text[:1000] + (f"\n— {e.source_app}" if e.source_app else "")))
             self.list.addItem(it)
         if self.list.count():
             self.list.setCurrentRow(0)

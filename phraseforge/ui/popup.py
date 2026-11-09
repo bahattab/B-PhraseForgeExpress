@@ -45,6 +45,7 @@ from phraseforge.db import Store
 from phraseforge.security import LOCKS
 from phraseforge.ui.i18n import tr
 from phraseforge.ui.iconset import icon
+from phraseforge.ui.safetext import plain_tip
 
 ROLE_KIND = Qt.UserRole          # "folder" | "phrase" | "clip" | "special" | "empty"
 ROLE_ID = Qt.UserRole + 1        # folder id / phrase id / clipboard entry id / special key
@@ -604,7 +605,7 @@ class _Panel(QFrame):
         elif self.popup.show_preview:
             tip = clip_text[:600] if kind in ("clip", "note") else self.popup.preview_text(kind, ident)
             if tip:
-                it.setToolTip(tip)
+                it.setToolTip(plain_tip(tip))
         self.list.addItem(it)
         return it
 
@@ -921,7 +922,7 @@ class PhrasePopup(_Panel):
                 it = panel.list.item(i)
                 if it.data(ROLE_KIND) == "phrase" and self.show_preview:
                     tip = self.preview_text("phrase", it.data(ROLE_ID))
-                    it.setToolTip(tip or "")
+                    it.setToolTip(plain_tip(tip))
 
     def cycle_language(self, step: int) -> None:
         order = [""] + self.languages

@@ -445,12 +445,21 @@ def _decstr(rt, args, opts):
     except ValueError as e:
         raise MacroError("-by must be a whole number") from e
     text = _text(args)
-    m = re.search(r"(\d+)(\D*)$", text)
-    if not m:
+    # scan from the end: the regex (\d+)(\D*)$ took 25 s on 40,000 digits (security R87)
+    end = len(text)
+    while end and not text[end - 1].isdecimal():
+        end -= 1
+    start = end
+    while start and text[start - 1].isdecimal():
+        start -= 1
+    if start == end:
         return text
-    digits = m.group(1)
-    value = max(0, int(digits) - by)
-    return text[:m.start()] + str(value).zfill(len(digits)) + m.group(2)
+    digits = text[start:end]
+    try:
+        value = max(0, int(digits) - by)
+    except ValueError as e:                  # more digits than int() reads (4300)
+        raise MacroError("the number is too long") from e
+    return text[:start] + str(value).zfill(len(digits)) + text[end:]
 
 
 @macro("checktext", "Text", '{#checktext text -contains x | -startswith x | -endswith x | -regex p | -empty} -i',
@@ -514,7 +523,7 @@ def _sapi_speak(text: str, voice: str = "", rate: int = 0) -> None:
                 sp.Voice = v
                 break
     sp.Rate = max(-10, min(10, rate))
-    sp.Speak(text, 1)                                  # 1 = asynchronous: output goes on
+    sp.Speak(text, 1 | 16)       # asynchronous; SVSFIsNotXML: the text is never read as SAPI XML (R94)
 
 
 SPEAKER = _sapi_speak                                  # tests replace this

@@ -70,6 +70,14 @@ def parse_url(url: str) -> tuple[str, str] | None:
     return None
 
 
+def link_only(argv: list[str]) -> list[str]:
+    """A launch that carries a phraseforge:// link comes from a link (a web page, a document),
+    not from the user: only the link is used. A quote inside the link could otherwise add
+    --exec, --import or --home to the command line Windows builds from "%1" (security R81)."""
+    links = [a for a in argv[1:] if a.lower().startswith(URL_SCHEME + ":")]
+    return argv[:1] + links[:1] if links else argv
+
+
 def parse(argv: list[str]) -> Options:
     """argv without the program name. Raises UsageError for a switch missing its value."""
     o = Options()
@@ -106,7 +114,8 @@ def forwarded(o: Options) -> list[str]:
     for name, values in (("import", o.imports), ("open", o.opens), ("exec", o.execs), ("edit", o.edits)):
         for v in values:
             out += [f"--{name}", v]
-    out += [f"{URL_SCHEME}://exec/{v}" for v in o.url_execs]   # stays a link: still asked first
+    from urllib.parse import quote               # decoded once already: encode again (R81)
+    out += [f"{URL_SCHEME}://exec/{quote(v, safe='')}" for v in o.url_execs]   # stays a link: still asked first
     return out
 
 
@@ -126,6 +135,17 @@ def find_phrase(store, key: str):
     return p or store.find_phrase(key)
 
 
+def _active(store, p) -> bool:
+    """A disabled phrase, or one in a disabled folder, is not run from a switch or a link (R81)."""
+    return bool(p.enabled) and all(f.enabled for f in store.folder_chain(p.folder_id))
+
+
+def _link_phrase(store, key: str):
+    """A link names its phrase by uid only: a web page must not reach "IBAN" by guessing names."""
+    key = (key or "").strip()
+    return store.phrase_by_uid(key) if key and hasattr(store, "phrase_by_uid") else None
+
+
 def _confirm_link(app, phrase) -> bool:
     """A web page can open phraseforge:// links, so a link never inserts a phrase unasked."""
     ask = getattr(app, "confirm_link_exec", None)
@@ -133,8 +153,12 @@ def _confirm_link(app, phrase) -> bool:
         return bool(ask(phrase))
     from PySide6.QtWidgets import QMessageBox
     from phraseforge.ui.i18n import tr
-    return QMessageBox.question(None, "PhraseForge", tr('A link asks to insert the phrase "{name}". Insert it?')
-                                .replace("{name}", phrase.description)) == QMessageBox.Yes
+    # No is the default: the dialog pops up while the user may be typing, and Enter must not insert
+    return QMessageBox.question(
+        None, "PhraseForge",
+        tr('A link asks to insert the phrase "{name}" into the window in front. Insert it?')
+        .replace("{name}", phrase.description),
+        QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes
 
 
 def run_actions(app, o: Options) -> list[str]:
@@ -164,14 +188,14 @@ def run_actions(app, o: Options) -> list[str]:
             problems.append(f"could not open {path}: {e}")
     for key in o.execs:
         p = find_phrase(app.store, key)
-        if p is None:
+        if p is None or not _active(app.store, p):
             problems.append(f"no phrase {key!r}")
             continue
         from phraseforge.host import ExpansionRequest
         app.on_expand_request(ExpansionRequest(phrase_id=p.id))
     for key in o.url_execs:
-        p = find_phrase(app.store, key)
-        if p is None:
+        p = _link_phrase(app.store, key)
+        if p is None or not _active(app.store, p):
             problems.append(f"no phrase {key!r}")
         elif _confirm_link(app, p):
             from phraseforge.host import ExpansionRequest

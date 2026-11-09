@@ -95,7 +95,8 @@ def _folder_path(state, uid) -> str:
 def _current_copy(store) -> Path:
     fd, name = tempfile.mkstemp(prefix="pf-cmp-", suffix=".db")
     os.close(fd)
-    store.backup_to(name)
+    # an encrypted phrase file's copy stays encrypted: a plain one in %TEMP% held every phrase (R80)
+    store.backup_to(name, keep_encryption=True)
     return Path(name)
 
 
@@ -112,7 +113,11 @@ def compare(older: str | Path, newer=None, key=None) -> list[Change]:
         b = merge.read_state(newer, key, allow_rowids=True)
     finally:
         if tmp is not None:
-            tmp.unlink(missing_ok=True)
+            from phraseforge import vault
+            if vault.is_encrypted(tmp):
+                tmp.unlink(missing_ok=True)
+            else:
+                vault.wipe(tmp)
     out: list[Change] = []
     fpath_a = {u: _folder_path(a, u) for u in a.folders}
     fpath_b = {u: _folder_path(b, u) for u in b.folders}
