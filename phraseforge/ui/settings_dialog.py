@@ -108,6 +108,14 @@ def _b(v) -> bool:
 OCR_AUTO_HINT = ("Auto: PhraseForge reads the capture with each installed OCR language and keeps "
                  "the one that fits, for example Arabic or English.")
 
+def _plugin_translators() -> list[tuple[str, str]]:
+    """Enabled plugins that translate, or that write text and so can translate too."""
+    from phraseforge.plugins import engines
+    seen = dict(engines.choices("translator"))
+    seen.update(dict(engines.choices("ai_engine")))
+    return [(label, pid) for label, pid in seen.items()]
+
+
 class DataCombo(QComboBox):
     """Combo of (text, value) items. setCurrentText also accepts the stored value."""
 
@@ -1042,6 +1050,8 @@ class SettingsDialog(QDialog):
     # ---- AI
     @staticmethod
     def _key_setting(provider: str) -> str:
+        if provider.startswith("plugin:"):          # a plugin's declared secret "api_key" (sealed, this PC only)
+            return f"plugins.secret.{provider[7:]}.api_key"
         return f"ai.{provider}_url" if provider in LOCAL_ENGINES else f"ai.{provider}_key"
 
     def _page_ai(self) -> QWidget:
@@ -1051,7 +1061,9 @@ class SettingsDialog(QDialog):
                                   "is required, it can be obtained from the service provider."))
         lay.addSpacing(8)
         lay.addWidget(QLabel("Engine:"))
-        self.ai_provider = self.bind("ai.provider", DataCombo([(t, v) for t, v, _ in PROVIDERS]))
+        from phraseforge.plugins import engines as _engines
+        self.ai_provider = self.bind("ai.provider", DataCombo([(t, v) for t, v, _ in PROVIDERS]
+                                                              + _engines.choices("ai_engine")))
         self.ai_provider.setFixedWidth(181)
         self.ai_visit = QPushButton()
         self.ai_visit.setObjectName("WideButton")
@@ -1091,7 +1103,7 @@ class SettingsDialog(QDialog):
         self.ai_key.setEchoMode(QLineEdit.Normal if local else QLineEdit.Password)
         self.ai_key.setText(self._ai_keys[prov])
         self.ai_key_label.setText(LOCAL_ENGINES.get(prov, "Your API key:"))
-        name = next(t for t, v, _ in PROVIDERS if v == prov).split(" (")[0]
+        name = next((t for t, v, _ in PROVIDERS if v == prov), self.ai_provider.currentText()).split(" (")[0]
         self.ai_visit.setText(f"Visit {name}")
         self.ai_status.setText("")
         self.ai_status_icon.clear()
@@ -1099,7 +1111,7 @@ class SettingsDialog(QDialog):
             self._update_translation_status()
 
     def _visit_provider(self) -> None:
-        url = next(u for _, v, u in PROVIDERS if v == self.ai_provider.value())
+        url = next((u for _, v, u in PROVIDERS if v == self.ai_provider.value()), "")
         QDesktopServices.openUrl(QUrl(url))
 
     def _test_ai(self) -> None:
@@ -1267,12 +1279,13 @@ class SettingsDialog(QDialog):
         lay.addSpacing(8)
         lay.addWidget(QLabel("Translation Engine:"))
         self.tr_provider = self.bind("translation.provider",
-                                     DataCombo([(t, v) for t, v, _ in TRANSLATION_PROVIDERS]))
+                                     DataCombo([(t, v) for t, v, _ in TRANSLATION_PROVIDERS]
+                                               + _plugin_translators()))
         self.tr_provider.setFixedWidth(181)
         self.tr_visit = QPushButton("Visit provider")
         self.tr_visit.setObjectName("WideButton")
         self.tr_visit.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(next(
-            u for _, v, u in TRANSLATION_PROVIDERS if v == self.tr_provider.value()))))
+            (u for _, v, u in TRANSLATION_PROVIDERS if v == self.tr_provider.value()), "https://"))))
         lay.addWidget(_row(self.tr_provider, self.tr_visit))
         self.tr_key_label = QLabel("API key:")
         lay.addWidget(self.tr_key_label)
