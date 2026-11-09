@@ -195,6 +195,16 @@ Settings > Display > User Interface Language > Arabic turns the whole interface 
 The Arabic user guide is [docs/USER_GUIDE.ar.md](docs/USER_GUIDE.ar.md) (also under Help in the program).
 Phrases can hold one version per language; dates can be Hijri with Arabic digits.
 
+## Maintenance
+
+File > **Maintenance** has three tabs:
+- **Duplicates:** phrases with the same text in any folder, and abbreviations used by more than
+  one phrase. Select the extra ones and move them to the Trash.
+- **Compare with backup:** what was added, removed or changed since a backup (or between two
+  backup files, encrypted ones included). "Bring back the backup's version" adds the old phrase
+  again next to the current one (it needs approval again before privileged macros run).
+- **Database:** check the phrase file for damage, and compact it.
+
 ## Phrase libraries
 
 Phrases > **Libraries** mounts other PhraseForge phrase files next to your own, for example a
