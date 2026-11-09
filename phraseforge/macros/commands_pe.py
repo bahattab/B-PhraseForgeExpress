@@ -538,3 +538,10 @@ def _speak(rt, args, opts):
     except Exception as e:                                # no SAPI, no voice
         raise MacroError(f"cannot speak: {e}") from e
     return ""
+
+
+@macro("pe_unsupported", "Phrases", '{#pe_unsupported "original macro"}',
+       "Placeholder the PhraseExpress import leaves for a macro PhraseForge does not have: shows the "
+       "original in brackets so the phrase can be fixed by hand.")
+def _pe_unsupported(rt, args, opts):
+    return f"[PhraseExpress macro not supported: {_text(args)}]"

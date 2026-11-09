@@ -53,6 +53,13 @@ their behaviour itself (compat: approximate): `explode`, `numlist`, `settemp`/`g
 `convertlayout` (main key block of en/ar/ru/de/fr only), `speak`. Phrases imported from PhraseExpress that use other parameters may need
 editing.
 
+Phrases imported from PhraseExpress go through `macros/pe_compat.py` first: PhraseExpress
+names are renamed (`{#uppercase}` → `{#upper}`, `{#cond}` → `{#if}`, …), key blocks become
+`{#key ctrl+shift+a}`, `-count` on keys becomes `-repeat`, and Delphi date formats
+(`-f "dd.mm.yyyy hh:nn"`) become `-format "dd.MM.yyyy HH:mm"`. A macro PhraseForge does not
+have is kept as `{#pe_unsupported "..."}`, which shows the original in brackets when the phrase
+runs, and the import summary lists it.
+
 ## Commands
 
 
@@ -257,6 +264,7 @@ editing.
 | `contents` | `{#contents "Phrase description"}` | The text of another phrase as it is written, without running its macros. |
 | `dictionary` | `{#dictionary word -from "Phrase description" -default ""}` | Look a word up in a phrase used as a dictionary: one "word=translation" per line (or a tab between them). Case does not matter. Unknown words give -default (or the word itself with -keep). |
 | `headfootfilled` | `{#headfootfilled}` | 1 when the folders of this phrase add text before or after it (folder header/footer), else 0. |
+| `pe_unsupported` | `{#pe_unsupported "original macro"}` | Placeholder the PhraseExpress import leaves for a macro PhraseForge does not have: shows the original in brackets so the phrase can be fixed by hand. |
 
 ### Files & data
 
