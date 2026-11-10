@@ -157,6 +157,64 @@ def _post(url: str, headers: dict, payload: dict, timeout: float) -> dict:
     return r.json()
 
 
+MAX_STREAM_CHARS = 4 * 1024 * 1024      # a streamed reply longer than this is cut off
+
+
+def _stream_lines(url: str, headers: dict, payload: dict, timeout: float):
+    """POST and yield the response's lines as they arrive (SSE or NDJSON)."""
+    from phraseforge.net import client_kwargs
+    try:
+        with httpx.Client(timeout=httpx.Timeout(timeout, connect=min(timeout, 15)), **client_kwargs()) as c, \
+                c.stream("POST", url, headers=headers, json=payload) as r:
+            if r.status_code >= 400:
+                r.read()
+                raise AIError(f"HTTP {r.status_code}: {r.text[:300]}")
+            yield from r.iter_lines()
+    except httpx.HTTPError as e:
+        raise AIError(str(e)) from e
+
+
+def _sse_events(lines):
+    """JSON objects from Server-Sent Events "data: {...}" lines; stops at "data: [DONE]"."""
+    for line in lines:
+        if not line.startswith("data:"):
+            continue
+        body = line[5:].strip()
+        if body == "[DONE]":
+            return
+        try:
+            obj = json.loads(body)
+        except ValueError:
+            continue
+        if isinstance(obj, dict):
+            yield obj
+
+
+class _Collector:
+    """Keeps the streamed text, passes each piece on, never lets the display break the call."""
+
+    def __init__(self, on_delta):
+        self.on_delta = on_delta
+        self.parts: list[str] = []
+        self.size = 0
+
+    def add(self, piece) -> None:
+        if not isinstance(piece, str) or not piece:
+            return
+        self.size += len(piece)
+        if self.size > MAX_STREAM_CHARS:
+            raise AIError("the reply is too long")
+        self.parts.append(piece)
+        try:
+            self.on_delta(piece)
+        except Exception:      # noqa: BLE001 - a closed window must not end the answer
+            pass
+
+    @property
+    def text(self) -> str:
+        return "".join(self.parts)
+
+
 def _with_system(history: list[dict], system: str) -> list[dict]:
     return ([{"role": "system", "content": system}] if system else []) + history
 
@@ -261,8 +319,9 @@ def chat(settings: dict[str, str], history: list[dict], provider: str = "", mode
          images: list[bytes] | None = None, on_delta=None) -> str:
     """A conversation: history is [{"role": "user"|"assistant", "content": "..."}, ...]
     (oldest first, ending with the user's turn). Returns the assistant's reply.
-    on_delta(text): called with each piece of the reply as a plugin engine streams it ($/progress);
-    the built-in engines answer in one piece and do not call it."""
+    on_delta(text): called with each piece of the reply as it is written: plugin engines ($/progress),
+    OpenAI-compatible services, Anthropic and Ollama stream; GPT4All answers in one piece and does
+    not call it."""
     history = [{"role": m["role"], "content": m["content"]} for m in history
                if m.get("role") in ("user", "assistant")]
     if not history or history[-1]["role"] != "user":
@@ -295,9 +354,23 @@ def chat(settings: dict[str, str], history: list[dict], provider: str = "", mode
         payload = {"model": model, "max_tokens": max_tokens, "messages": history}
         if system:
             payload["system"] = system
-        data = _post("https://api.anthropic.com/v1/messages",
-                     {"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-                     payload, timeout_s)
+        headers = {"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
+        if on_delta is not None:          # https://docs.anthropic.com/en/api/messages-streaming
+            out, usage = _Collector(on_delta), {}
+            for ev in _sse_events(_stream_lines("https://api.anthropic.com/v1/messages", headers,
+                                                dict(payload, stream=True), timeout_s)):
+                kind = ev.get("type")
+                if kind == "content_block_delta" and (ev.get("delta") or {}).get("type") == "text_delta":
+                    out.add(ev["delta"].get("text"))
+                elif kind == "message_start":
+                    usage.update(((ev.get("message") or {}).get("usage")) or {})
+                elif kind == "message_delta":
+                    usage.update(ev.get("usage") or {})
+                elif kind == "error":
+                    raise AIError(str((ev.get("error") or {}).get("message", ev))[:300])
+            _record(provider, model, {"usage": usage}, len(images or []))
+            return out.text
+        data = _post("https://api.anthropic.com/v1/messages", headers, payload, timeout_s)
         _record(provider, model, data, len(images or []))
         return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
 
@@ -313,6 +386,24 @@ def chat(settings: dict[str, str], history: list[dict], provider: str = "", mode
 
     if provider == "ollama":
         base = (settings.get("ai.ollama_url") or "http://localhost:11434").rstrip("/")
+        if on_delta is not None:          # NDJSON: one {"message": {"content": ...}} per line, then done
+            out, last = _Collector(on_delta), {}
+            for line in _stream_lines(f"{base}/api/chat", {}, {"model": model, "stream": True,
+                                                              "messages": _with_system(history, system)}, timeout_s):
+                try:
+                    msg = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                if msg.get("error"):
+                    raise AIError(str(msg["error"])[:300])
+                out.add((msg.get("message") or {}).get("content"))
+                if msg.get("done"):
+                    last = msg
+                    break
+            _record(provider, model, last, len(images or []))
+            return out.text
         data = _post(f"{base}/api/chat", {}, {"model": model, "stream": False,
                                                "messages": _with_system(history, system)}, timeout_s)
         _record(provider, model, data, len(images or []))
@@ -326,6 +417,22 @@ def chat(settings: dict[str, str], history: list[dict], provider: str = "", mode
         raise AIError(f"{name} API key is not set (Settings > AI)")
     if not model:
         raise AIError(f"Enter the model to use with {name} in Settings > AI > Model.")
+    if on_delta is not None:              # OpenAI-style SSE: choices[0].delta.content per event
+        out, usage = _Collector(on_delta), {}
+        payload = {"model": model, "messages": _with_system(history, system), "stream": True}
+        if provider == "openai":
+            payload["stream_options"] = {"include_usage": True}
+        for ev in _sse_events(_stream_lines(url, {"Authorization": f"Bearer {key}"}, payload, timeout_s)):
+            if ev.get("error"):
+                err = ev["error"]
+                raise AIError(str(err.get("message", err) if isinstance(err, dict) else err)[:300])
+            for ch in ev.get("choices") or []:
+                if isinstance(ch, dict):
+                    out.add((ch.get("delta") or {}).get("content"))
+            if isinstance(ev.get("usage"), dict):
+                usage = ev["usage"]
+        _record(provider, model, {"usage": usage}, len(images or []))
+        return out.text
     data = _post(url, {"Authorization": f"Bearer {key}"},
                  {"model": model, "messages": _with_system(history, system)}, timeout_s)
     _record(provider, model, data, len(images or []))
