@@ -78,7 +78,10 @@ PhraseForge also:
   and starts again when you are back;
 - shows a message when a program that runs as administrator comes to the front: Windows
   does not let a normal program read or type keys there. Click the message to restart
-  PhraseForge as administrator. Phrases are not half-typed into such a window.
+  PhraseForge as administrator. Phrases are not half-typed into such a window;
+- holds back the keys you press while it types a phrase and types them right after the
+  phrase, so they never land in the middle of it. Settings > Text Insertion can drop them
+  instead, or let them through; holding back stops by itself after 10 seconds.
 
 ## Screen OCR and sticky notes
 

@@ -95,6 +95,45 @@ def finish_char(vk: int, text: str) -> str | None:
     return text
 
 
+LLKHF_UP = 0x80
+VK_PACKET = 0xE7
+REPLAY_MAGIC = 0x50465252          # same marker as pfhook.dll: keys sent again after output
+MAX_BLOCKED = 512
+
+
+def keys_to_send(keys: list[tuple[int, int, int]], replay: bool) -> list[tuple[int, int, int]]:
+    """Held-back keys (vk, scan, LLKHF flags) to send when output ends (FR-TRG-06). replay:
+    all of them in order. Discard: only releases of keys pressed before output started, so a
+    key the user was holding does not stay down."""
+    if replay:
+        return list(keys)
+    pressed, out = set(), []
+    for vk, scan, flags in keys:
+        if not flags & LLKHF_UP:
+            pressed.add(vk)
+        elif vk not in pressed and vk != VK_PACKET:
+            out.append((vk, scan, flags))
+    return out
+
+
+def send_held_keys(keys: list[tuple[int, int, int]]) -> int:
+    from phraseforge.platform._win32 import INPUT, KEYBDINPUT
+    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE = 0x1, 0x2, 0x4
+    if not keys:
+        return 0
+    arr = (INPUT * len(keys))()
+    for i, (vk, scan, flags) in enumerate(keys):
+        f = KEYEVENTF_KEYUP if flags & LLKHF_UP else 0
+        if vk == VK_PACKET:
+            ki = KEYBDINPUT(0, scan, f | KEYEVENTF_UNICODE, 0, REPLAY_MAGIC)
+        else:
+            ki = KEYBDINPUT(vk, scan, f | (KEYEVENTF_EXTENDEDKEY if flags & LLKHF_EXTENDED else 0), 0,
+                            REPLAY_MAGIC)
+        arr[i].type = 1
+        arr[i].ki = ki
+    return user32.SendInput(len(keys), arr, ctypes.sizeof(INPUT))
+
+
 class KeyboardHook:
     """Calls on_key(KeyEvent) for every key event; return True to swallow it.
     Events we injected ourselves (dwExtraInfo == INJECT_MAGIC) are passed
@@ -108,6 +147,41 @@ class KeyboardHook:
         self._hook = None
         self._proc = HOOKPROC(self._callback)   # keep a reference
         self._ready = threading.Event()
+        self._block_lock = threading.Lock()
+        self._blocking = False
+        self._block_until = 0.0
+        self._held: list[tuple[int, int, int]] = []
+
+    # FR-TRG-06 (same contract as NativeKeyboardHook; best effort, the callback runs Python)
+    def begin_block(self, max_ms: int = 10000) -> None:
+        import time
+        with self._block_lock:
+            if not self._blocking:
+                self._held = []
+            self._blocking = True
+            self._block_until = time.monotonic() + max(0.1, max_ms / 1000)
+
+    def end_block(self, replay: bool = True) -> int:
+        sent = 0
+        while True:
+            with self._block_lock:
+                batch, self._held = self._held, []
+                if not batch:
+                    self._blocking = False
+                    break
+            sent += send_held_keys(keys_to_send(batch, replay))
+        return sent
+
+    def _hold_back(self, kb) -> bool:
+        import time
+        with self._block_lock:
+            if not self._blocking:
+                return False
+            if time.monotonic() < self._block_until and len(self._held) < MAX_BLOCKED:
+                self._held.append((kb.vkCode, kb.scanCode, kb.flags))
+                return True
+            self._blocking = False
+            return False
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -148,6 +222,9 @@ class KeyboardHook:
         if ncode == 0:
             try:
                 kb = ctypes.cast(lparam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+                if (self._blocking and kb.dwExtraInfo not in (INJECT_MAGIC, REPLAY_MAGIC)
+                        and self._hold_back(kb)):
+                    return 1
                 injected = bool(kb.flags & LLKHF_INJECTED)
                 if kb.dwExtraInfo != INJECT_MAGIC and (not injected or self.pass_foreign_injected):
                     down = wparam in (WM_KEYDOWN, WM_SYSKEYDOWN)

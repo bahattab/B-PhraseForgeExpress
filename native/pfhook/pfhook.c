@@ -13,6 +13,9 @@
  * so a hotkey never leaks into the target program. Rules marked ALWAYS (Caps Lock when it
  * is disabled) are swallowed here in every mode.
  *
+ * While PhraseForge types a phrase (pf_block_begin / pf_block_end, PRD FR-TRG-06), the
+ * user's keys are held back in order and sent again afterwards, or dropped.
+ *
  * Build (x64 Developer Command Prompt):
  *   cl /nologo /O2 /W4 /LD pfhook.c /Fe:pfhook.dll user32.lib
  */
@@ -20,10 +23,12 @@
 #include <windows.h>
 
 #define PF_API __declspec(dllexport)
-#define PF_VERSION 1
+#define PF_VERSION 2
 
 #define RING_SIZE 1024u                 /* power of two */
 #define MAX_RULES 256
+#define MAX_BLOCKED 512
+#define REPLAY_MAGIC ((ULONG_PTR)0x50465252u)   /* "PFRR": keys we replay after output (FR-TRG-06) */
 
 /* PFEvent.status bits */
 #define ST_DOWN      0x01u
@@ -53,7 +58,10 @@ typedef struct {
     UINT64 events, waited, timeouts, dropped, native_swallowed, late_replies;
     UINT32 max_us, p99_us, degraded, running;
     UINT32 hist[32];                    /* bucket b: callback time < 2^b microseconds */
+    UINT64 blocked, replayed;           /* keys held back during output, keys sent again (v2) */
 } PFStats;
+
+typedef struct { UINT32 vk, scan, flags; } PFKey;
 
 static PFEvent g_ring[RING_SIZE];
 static volatile LONG g_head, g_tail;    /* head: hook thread writes; tail: reader writes */
@@ -71,6 +79,15 @@ static SRWLOCK g_rules_lock = SRWLOCK_INIT;
 static PFRule g_rules[MAX_RULES];
 static int g_nrules;
 static BYTE g_swallow_up[256];          /* key-up of a natively swallowed key-down */
+
+/* FR-TRG-06: while PhraseForge types a phrase, the user's keys are held back here and
+ * sent again afterwards, so they cannot land in the middle of the phrase. */
+static SRWLOCK g_block_lock = SRWLOCK_INIT;
+static volatile LONG g_block;
+static ULONGLONG g_block_until;         /* safety: stop holding keys back after this tick */
+static PFKey g_blocked[MAX_BLOCKED];
+static int g_nblocked;
+PF_API UINT32 pf_block_end(int replay);
 
 static HHOOK g_hook;
 static HANDLE g_thread, g_ready;
@@ -176,6 +193,60 @@ static void record_time(LARGE_INTEGER t0) {
     g_stats.hist[b]++;
 }
 
+/* Hold a key back while output runs. Returns 1 when held (swallow it). Past the time limit
+ * or a full buffer, blocking ends by itself and keys pass again. */
+static int hold_back(const KBDLLHOOKSTRUCT *kb) {
+    int held = 0;
+    AcquireSRWLockExclusive(&g_block_lock);
+    if (g_block) {
+        if (GetTickCount64() < g_block_until && g_nblocked < MAX_BLOCKED) {
+            g_blocked[g_nblocked].vk = kb->vkCode;
+            g_blocked[g_nblocked].scan = kb->scanCode;
+            g_blocked[g_nblocked].flags = kb->flags;
+            g_nblocked++;
+            g_stats.blocked++;
+            held = 1;
+        } else {
+            InterlockedExchange(&g_block, 0);
+        }
+    }
+    ReleaseSRWLockExclusive(&g_block_lock);
+    return held;
+}
+
+static void fill_input(INPUT *in, const PFKey *k) {
+    ZeroMemory(in, sizeof *in);
+    in->type = INPUT_KEYBOARD;
+    in->ki.dwExtraInfo = REPLAY_MAGIC;
+    if (k->vk == VK_PACKET) {             /* a Unicode character from an IME or on-screen keyboard */
+        in->ki.wScan = (WORD)k->scan;
+        in->ki.dwFlags = KEYEVENTF_UNICODE;
+    } else {
+        in->ki.wVk = (WORD)k->vk;
+        in->ki.wScan = (WORD)k->scan;
+        if (k->flags & LLKHF_EXTENDED) in->ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+    }
+    if (k->flags & LLKHF_UP) in->ki.dwFlags |= KEYEVENTF_KEYUP;
+}
+
+/* replay = 0 (discard): send only key releases whose press was not held back, so a key the
+ * user was already holding when output started does not stay down. */
+static UINT32 send_keys(const PFKey *keys, int n, int replay) {
+    INPUT in[MAX_BLOCKED];
+    BYTE pressed[256];
+    int i, m = 0;
+    ZeroMemory(pressed, sizeof pressed);
+    for (i = 0; i < n; i++) {
+        UINT32 vk = keys[i].vk & 0xFF;
+        if (!replay) {
+            if (!(keys[i].flags & LLKHF_UP)) { pressed[vk] = 1; continue; }
+            if (pressed[vk] || keys[i].vk == VK_PACKET) continue;
+        }
+        fill_input(&in[m++], &keys[i]);
+    }
+    return m ? SendInput((UINT)m, in, sizeof(INPUT)) : 0;
+}
+
 static LRESULT CALLBACK hook_proc(int code, WPARAM wp, LPARAM lp) {
     KBDLLHOOKSTRUCT *kb;
     PFEvent ev;
@@ -185,6 +256,7 @@ static LRESULT CALLBACK hook_proc(int code, WPARAM wp, LPARAM lp) {
     if (code != HC_ACTION) return CallNextHookEx(NULL, code, wp, lp);
     kb = (KBDLLHOOKSTRUCT *)lp;
     if (kb->dwExtraInfo == g_magic) return CallNextHookEx(NULL, code, wp, lp);   /* our own output */
+    if (g_block && kb->dwExtraInfo != REPLAY_MAGIC && hold_back(kb)) return 1;
     if ((kb->flags & LLKHF_INJECTED) && !g_pass_foreign) return CallNextHookEx(NULL, code, wp, lp);
     QueryPerformanceCounter(&t0);
     down = (wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN);
@@ -305,6 +377,7 @@ PF_API DWORD pf_start(void) {
 
 PF_API void pf_stop(void) {
     if (!g_thread) return;
+    pf_block_end(1);                            /* never keep the user's keys */
     InterlockedExchange(&g_running, 0);
     PostThreadMessageW(g_tid, WM_QUIT, 0, 0);
     WaitForSingleObject(g_thread, 3000);
@@ -339,6 +412,38 @@ PF_API int pf_reply(UINT32 seq, int swallow) {
     InterlockedExchange(&g_reply_seq, (LONG)seq);
     SetEvent(g_reply);
     return 1;
+}
+
+/* FR-TRG-06: hold the user's keys back from now on, for at most max_ms. */
+PF_API void pf_block_begin(UINT32 max_ms) {
+    if (max_ms < 100) max_ms = 100;
+    if (max_ms > 120000) max_ms = 120000;
+    AcquireSRWLockExclusive(&g_block_lock);
+    if (!g_block) g_nblocked = 0;
+    g_block_until = GetTickCount64() + max_ms;
+    InterlockedExchange(&g_block, 1);
+    ReleaseSRWLockExclusive(&g_block_lock);
+}
+
+/* Stop holding keys back. replay = 1 sends them again in order (marked REPLAY_MAGIC, so the
+ * hook lets them through and PhraseForge sees them as typing); 0 drops them. Keys typed while
+ * the replay is being sent are held too and sent after it. Returns the number of keys sent. */
+PF_API UINT32 pf_block_end(int replay) {
+    static PFKey batch[MAX_BLOCKED];      /* only one caller at a time: PhraseForge's output lock */
+    UINT32 sent = 0;
+    for (;;) {
+        int n;
+        AcquireSRWLockExclusive(&g_block_lock);
+        n = g_nblocked;
+        if (n) CopyMemory(batch, g_blocked, sizeof(PFKey) * (SIZE_T)n);
+        g_nblocked = 0;
+        if (!n) InterlockedExchange(&g_block, 0);
+        ReleaseSRWLockExclusive(&g_block_lock);
+        if (!n) break;
+        sent += send_keys(batch, n, replay);
+    }
+    g_stats.replayed += sent;
+    return sent;
 }
 
 PF_API void pf_stats(PFStats *out) {

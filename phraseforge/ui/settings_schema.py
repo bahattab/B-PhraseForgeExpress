@@ -217,6 +217,8 @@ SCHEMA: dict[str, str] = {
     "output.rich_formats": "html",      # html | rtf_html | rtf: clipboard formats of formatted phrases
     "output.format": "auto",           # auto | plain | rich | html
     "output.restore_clipboard": DEFAULT_SETTINGS["output.restore_clipboard"],
+    "output.block_keys": "replay",      # replay | discard | off: keys typed while a phrase is typed
+    "output.block_max_s": "10",         # stop holding keys back after this many seconds
     "output.per_app_method": "1",
     "output.app_methods": "{}",        # {"winword.exe": "type" | "paste"}
     "output.force_focus": "1",

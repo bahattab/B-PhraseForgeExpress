@@ -147,6 +147,15 @@ def smart_target(t: Trigger, phrase) -> str:
     return text.split("\n", 1)[0][:60]
 
 
+def _block_ms(value: str) -> int:
+    """output.block_max_s as milliseconds: 1..120 s, default 10 s."""
+    try:
+        secs = float(value or 10)
+    except ValueError:
+        secs = 10.0
+    return int(min(120.0, max(1.0, secs)) * 1000)
+
+
 def _parse_programs(text: str) -> set[str]:
     return {p.strip().lower() for p in re.split(r"[,;\n]+", text or "") if p.strip()}
 
@@ -228,11 +237,29 @@ class TriggerManager:
         return self._suspend > 0
 
     def set_busy(self, busy: bool) -> None:
-        """Pass as OutputExecutor(busy_callback=...): ignore input while we type."""
+        """Pass as OutputExecutor(busy_callback=...): ignore input while we type.
+        FR-TRG-06: the keys the user types meanwhile are held back by the hook and sent again
+        when the outermost output ends (Settings > Text Insertion), so they cannot land in
+        the middle of the phrase."""
         with self._suspend_lock:
+            before = self._suspend
             self._suspend = max(0, self._suspend + (1 if busy else -1))
+            after = self._suspend
+        mode = self._opt.get("block_keys", "replay")
+        hook = self._hook
+        blocks = mode in ("replay", "discard") and hook is not None and hasattr(hook, "begin_block")
+        if busy and before == 0 and blocks:
+            try:
+                hook.begin_block(self._opt.get("block_max_ms", 10000))
+            except Exception:
+                log.exception("keys not held back during output")
         if not busy:
             self.matcher.reset()
+            if after == 0 and blocks:
+                try:
+                    hook.end_block(replay=mode == "replay")     # replayed keys feed the fresh matcher
+                except Exception:
+                    log.exception("held-back keys not sent again")
 
     @contextlib.contextmanager
     def suspend(self):
@@ -284,6 +311,9 @@ class TriggerManager:
             min_chars = 3
         self._opt = {
             "disable_capslock": s("features.disable_capslock", "0") == "1",
+            # FR-TRG-06: keys typed while PhraseForge types a phrase: replay | discard | off
+            "block_keys": (s("output.block_keys", "replay") or "replay").lower(),
+            "block_max_ms": _block_ms(s("output.block_max_s", "10")),
             "capitalize": s("autocorrect.capitalize_sentences", "0") == "1",
             "two_caps": s("autocorrect.two_initial_capitals", "0") == "1",
             "undo": s("features.detect_unwanted_replacements", "0") == "1",
