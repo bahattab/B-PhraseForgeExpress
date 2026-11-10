@@ -108,7 +108,7 @@ class BuiltinChatEngine(Engine):
     def generate(self, settings: dict, messages: list[dict], params: dict) -> str:
         return ai.chat(settings, messages, self.provider, params.get("model", ""), params.get("system", ""),
                        float(params.get("timeout", 120)), int(params.get("max_tokens", 1024)),
-                       bool(params.get("raw_system", False)))
+                       bool(params.get("raw_system", False)), on_delta=params.get("on_delta"))
 
     def translate(self, settings: dict, text: str, src: str, to: str) -> str:
         system = ai.translation_system(settings, to, src)
