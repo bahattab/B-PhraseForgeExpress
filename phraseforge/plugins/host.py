@@ -136,7 +136,7 @@ class PluginProcess:
             try:
                 self._proc, self._job = sandbox.launch(args, str(self.folder), env,
                                                        lambda p: _windows_job(p, self.memory_mb))
-            except OSError as e:                       # fail closed: never run it outside the sandbox
+            except Exception as e:                     # noqa: BLE001 - fail closed: never run it outside the sandbox
                 self._error(f"the plugin could not be started in its sandbox: {e}")
                 raise PluginError(f"the plugin could not be started in its sandbox: {e}") from None
         else:

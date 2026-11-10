@@ -23,9 +23,8 @@ def integrity():
     import ctypes
     from ctypes import wintypes
     k32, adv = ctypes.windll.kernel32, ctypes.windll.advapi32
-    k32.GetCurrentProcess.restype = wintypes.HANDLE
     tok = wintypes.HANDLE()
-    adv.OpenProcessToken(k32.GetCurrentProcess(), 0x0008, ctypes.byref(tok))
+    adv.OpenProcessToken(wintypes.HANDLE(k32.GetCurrentProcess()), 0x0008, ctypes.byref(tok))
     buf = ctypes.create_string_buffer(64)
     n = wintypes.DWORD()
     adv.GetTokenInformation(tok, 25, buf, 64, ctypes.byref(n))
@@ -75,7 +74,8 @@ def test_sandbox_can_be_switched_off(tmp_path):
         out = proc.call("probe", {"target": str(tmp_path / "user-file.txt")}, timeout=30)
     finally:
         proc.stop()
-    assert out["integrity"] == "0x2000" and out["target"] == "written"
+    # Medium (0x2000) on a normal desktop, High (0x3000) on elevated CI runners
+    assert int(out["integrity"], 16) >= 0x2000 and out["target"] == "written"
 
 
 def test_off_windows_the_plugin_runs_normally(tmp_path):

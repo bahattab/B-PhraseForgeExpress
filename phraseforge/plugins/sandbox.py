@@ -108,9 +108,9 @@ def launch(args: list[str], cwd: str, env: dict[str, str], job_factory) -> tuple
 
     # ---- a Low copy of our own token
     TOKEN_ALL = 0x0001 | 0x0002 | 0x0008 | 0x0080 | 0x0100   # ASSIGN_PRIMARY|DUPLICATE|QUERY|ADJUST_DEFAULT|ADJUST_SESSIONID
-    k32.GetCurrentProcess.restype = wintypes.HANDLE
     tok = wintypes.HANDLE()
-    if not adv.OpenProcessToken(k32.GetCurrentProcess(), TOKEN_ALL, ctypes.byref(tok)):
+    # GetCurrentProcess() returns the pseudo-handle -1; pass it as a HANDLE (a bare 64-bit int overflows)
+    if not adv.OpenProcessToken(wintypes.HANDLE(k32.GetCurrentProcess()), TOKEN_ALL, ctypes.byref(tok)):
         fail("OpenProcessToken")
     low = wintypes.HANDLE()
     try:
@@ -139,9 +139,15 @@ def launch(args: list[str], cwd: str, env: dict[str, str], job_factory) -> tuple
     pipes = [os.pipe() for _ in range(3)]                    # (read, write)
     child_fds = [pipes[0][0], pipes[1][1], pipes[2][1]]
     parent_fds = [pipes[0][1], pipes[1][0], pipes[2][0]]
-    child_handles = [msvcrt.get_osfhandle(fd) for fd in child_fds]
-    for h in child_handles:
-        k32.SetHandleInformation(wintypes.HANDLE(h), 1, 1)  # HANDLE_FLAG_INHERIT
+    try:
+        child_handles = [msvcrt.get_osfhandle(fd) for fd in child_fds]
+        for h in child_handles:
+            k32.SetHandleInformation(wintypes.HANDLE(h), 1, 1)  # HANDLE_FLAG_INHERIT
+    except BaseException:
+        for fd in child_fds + parent_fds:
+            os.close(fd)
+        k32.CloseHandle(low)
+        raise
 
     class STARTUPINFOW(ctypes.Structure):
         _fields_ = [("cb", wintypes.DWORD), ("lpReserved", wintypes.LPWSTR), ("lpDesktop", wintypes.LPWSTR),
@@ -164,9 +170,11 @@ def launch(args: list[str], cwd: str, env: dict[str, str], job_factory) -> tuple
     attrs = ctypes.create_string_buffer(size.value)
     handle_list = (wintypes.HANDLE * 3)(*child_handles)
     pi = PROCESS_INFORMATION()
+    initialized = False
     try:
         if not k32.InitializeProcThreadAttributeList(attrs, 1, 0, ctypes.byref(size)):
             fail("InitializeProcThreadAttributeList")
+        initialized = True
         if not k32.UpdateProcThreadAttribute(attrs, 0, ctypes.c_size_t(0x20002),   # PROC_THREAD_ATTRIBUTE_HANDLE_LIST
                                              handle_list, ctypes.sizeof(handle_list), None, None):
             fail("UpdateProcThreadAttribute")
@@ -186,18 +194,31 @@ def launch(args: list[str], cwd: str, env: dict[str, str], job_factory) -> tuple
             os.close(fd)
         raise
     finally:
-        k32.DeleteProcThreadAttributeList(attrs)
+        if initialized:
+            k32.DeleteProcThreadAttributeList(attrs)
         k32.CloseHandle(low)
         for fd in child_fds:
             os.close(fd)
 
     proc = LowProcess(int(pi.hProcess), pi.dwProcessId, open(parent_fds[0], "wb", buffering=0),
                       open(parent_fds[1], "rb"), open(parent_fds[2], "rb"))
-    job = job_factory(proc)
-    if not job:                                         # no limits: do not let it run
+
+    def abandon(msg):
         k32.TerminateProcess(pi.hProcess, 1)
         k32.CloseHandle(pi.hThread)
-        raise SandboxError("the plugin could not be put in its job object")
-    k32.ResumeThread(pi.hThread)
+        for f in (proc.stdin, proc.stdout, proc.stderr):
+            f.close()
+        k32.CloseHandle(pi.hProcess)
+        proc._handle = 0
+        raise SandboxError(msg)
+
+    try:
+        job = job_factory(proc)
+    except Exception as e:                              # noqa: BLE001
+        abandon(f"the plugin could not be put in its job object ({e})")
+    if not job:                                         # no limits: do not let it run
+        abandon("the plugin could not be put in its job object")
+    if k32.ResumeThread(pi.hThread) == 0xFFFFFFFF:
+        abandon(f"ResumeThread failed (error {ctypes.get_last_error()})")
     k32.CloseHandle(pi.hThread)
     return proc, job
