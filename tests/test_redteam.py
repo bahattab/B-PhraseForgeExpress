@@ -2122,3 +2122,106 @@ def test_only_images_are_sent_to_any_ai_engine():
     from phraseforge import ai
     with pytest.raises(ai.AIError):
         ai._with_images([{"role": "user", "content": "x"}], [b"-----BEGIN PRIVATE KEY-----"], "ollama")
+
+
+# ---------------------------------------------------------------- 0.6.14: review of #55 (R114–R117)
+def _AIHost():
+    from tests.fakehost import FakeHost
+
+    class H(FakeHost):
+        made = 0
+
+        def __init__(self):
+            super().__init__()
+            self.sent = []
+
+        def ai_image(self, prompt, **_k):
+            self.made += 1
+            return __file__
+
+        def ai_vision(self, prompt, images, **_k):
+            self.sent.append(len(images))
+            return "ok"
+    return H()
+
+
+def _expand(host, content, allow=True):
+    from phraseforge.macros.engine import ExpansionContext, MacroEngine
+    return MacroEngine(host).expand_to_text(content, ExpansionContext(allow_privileged=allow))
+
+
+def test_unapproved_phrase_cannot_make_paid_images():
+    """R114: {#loop 1000}{#aiimage}{#endloop} in an imported phrase made 1000 billed images."""
+    host = _AIHost()
+    out = _expand(host, "{#loop 1000}{#aiimage -prompt cat}{#endloop}", allow=False)
+    assert host.made == 0 and "blocked" in out
+    assert security.scan_privileged("{#aiimage -prompt cat}")
+
+
+def test_approved_phrase_makes_few_images():
+    """R114: even an approved phrase stops after a few images."""
+    from phraseforge.macros.commands import MAX_AIIMAGE_PER_EXPANSION
+    host = _AIHost()
+    _expand(host, "{#loop 50}{#aiimage -prompt cat}{#endloop}")
+    assert host.made == MAX_AIIMAGE_PER_EXPANSION
+
+
+def test_ai_images_are_limited_in_number_and_size(tmp_path):
+    """R115: 40 parts of 5 MB each loaded 200 MB for one {#ai}."""
+    f = tmp_path / "a.png"
+    f.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * (5 * 1024 * 1024))
+    host = _AIHost()
+    out = _expand(host, '{#ai x -provider openai -image "%s"}' % "|".join([f"file:{f}"] * 40))
+    assert host.sent == [] and "at most" in out
+    out = _expand(host, '{#ai x -provider openai -image "%s"}' % "|".join([f"file:{f}"] * 5))
+    assert host.sent == [] and "20 MB" in out
+
+
+def test_ollama_pull_survives_bad_numbers(monkeypatch):
+    """R116: a progress line with "completed": "x" ended the download thread with ValueError."""
+    import json
+    import httpx
+    from phraseforge import ai
+
+    class R:
+        status_code = 200
+        def iter_lines(self):
+            yield "5"
+            yield json.dumps({"status": "pulling", "completed": "x", "total": None})
+            yield json.dumps({"status": "success"})
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+
+    class C:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def stream(self, *a, **k): return R()
+    monkeypatch.setattr(httpx, "Client", C)
+    seen = []
+    ai.ollama_pull({}, "m", lambda st, d, t: seen.append((st, d, t)))
+    assert seen[0] == ("pulling", 0, 0)
+
+
+def test_ollama_models_rejects_non_json(monkeypatch):
+    """R117: a server that is not Ollama raised ValueError out of the Settings button."""
+    import httpx
+    from unittest import mock
+    from phraseforge import ai
+
+    class C:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def get(self, *a, **k):
+            r = mock.Mock(status_code=200)
+            r.json.side_effect = ValueError("not json")
+            return r
+    monkeypatch.setattr(httpx, "Client", C)
+    with pytest.raises(ai.AIError):
+        ai.ollama_models({})
+
+
+def test_capitalised_image_option_is_scanned():
+    """{#ai -Image file:\\\\host\\x.png}: the run-time check blocked it, but nobody was asked."""
+    assert security.scan_privileged(r"{#ai x -Image file:\\host\s\a.png}")

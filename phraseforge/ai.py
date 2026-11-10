@@ -389,7 +389,19 @@ def ollama_models(settings: dict[str, str], timeout_s: float = 10) -> list[str]:
         raise AIError(str(e)) from e
     if r.status_code >= 400:
         raise AIError(f"HTTP {r.status_code}: {r.text[:300]}")
-    return sorted(m.get("name", "") for m in r.json().get("models", []) if m.get("name"))
+    try:
+        models = r.json().get("models", [])
+        return sorted(str(m["name"]) for m in models if isinstance(m, dict) and m.get("name"))
+    except (ValueError, AttributeError, TypeError) as e:     # not Ollama's JSON (R117)
+        raise AIError("the server did not answer like Ollama") from e
+
+
+def _count(v) -> int:
+    """A byte count from Ollama's progress line; anything else is 0 (R116)."""
+    try:
+        return max(0, int(v or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 def ollama_pull(settings: dict[str, str], model: str, progress=None, cancelled=lambda: False,
@@ -415,10 +427,12 @@ def ollama_pull(settings: dict[str, str], model: str, progress=None, cancelled=l
                     msg = json.loads(line)
                 except ValueError:
                     continue
+                if not isinstance(msg, dict):
+                    continue
                 if msg.get("error"):
                     raise AIError(str(msg["error"]))
                 if progress:
-                    progress(str(msg.get("status", "")), int(msg.get("completed") or 0), int(msg.get("total") or 0))
+                    progress(str(msg.get("status", "")), _count(msg.get("completed")), _count(msg.get("total")))
                 if msg.get("status") == "success":
                     return
     except httpx.HTTPError as e:
