@@ -23,6 +23,8 @@ from phraseforge.plugins.manifest import Manifest
 GRACE_S = 2.0
 MEMORY_MB = 512
 MAX_LINE = 16 * 1024 * 1024        # one JSON-RPC message (R108)
+MAX_STREAM = 4 * 1024 * 1024       # text a call may stream through $/progress
+MAX_CALL_FACTOR = 10               # a streaming call ends after timeout * this, however lively
 ENV_KEEP = ("SYSTEMROOT", "WINDIR", "TEMP", "TMP", "PATH", "LANG", "PATHEXT", "COMSPEC")
 
 
@@ -154,7 +156,7 @@ class PluginProcess:
                 except Exception:                          # noqa: BLE001 - ValueError, RecursionError, ...
                     self._error(f"not JSON: {raw[:200]!r}")
                     continue
-                if isinstance(msg, dict) and "id" in msg:
+                if isinstance(msg, dict) and ("id" in msg or msg.get("method") == "$/progress"):
                     replies.put(msg)
         except Exception as e:                             # noqa: BLE001 - the reader must not die silently
             self._error(f"reading the plugin failed: {e}")
@@ -206,15 +208,18 @@ class PluginProcess:
             raise OSError(str(e)) from None
 
     # ------------------------------------------------------------ calls
-    def call(self, method: str, params: dict | None = None, timeout: float = 5.0):
+    def call(self, method: str, params: dict | None = None, timeout: float = 5.0, on_progress=None):
+        """on_progress(text): called for each {"method": "$/progress", "params": {"id": <this
+        call's id>, "text": "..."}} the plugin sends before its answer (streamed AI replies).
+        Each piece restarts the timeout, up to timeout * MAX_CALL_FACTOR in all."""
         if not self._lock.acquire(timeout=timeout):        # another call still waits on it
             raise PluginTimeout("busy")
         try:
-            return self._call(method, params, timeout)
+            return self._call(method, params, timeout, on_progress)
         finally:
             self._lock.release()
 
-    def _call(self, method: str, params: dict | None, timeout: float):
+    def _call(self, method: str, params: dict | None, timeout: float, on_progress=None):
         if not self.running:
             self._start()
         self._next_id += 1
@@ -225,6 +230,8 @@ class PluginProcess:
             self.stop()
             raise PluginError(f"the plugin stopped: {e}") from None
         deadline = time.monotonic() + timeout
+        hard_end = time.monotonic() + timeout * MAX_CALL_FACTOR
+        streamed = 0
         while True:
             left = deadline - time.monotonic()
             if left <= 0:
@@ -239,6 +246,23 @@ class PluginProcess:
                 self.stop()
                 self._error(f"{method}: the plugin ended")
                 raise PluginError("the plugin ended")
+            if msg.get("method") == "$/progress":
+                pp = msg.get("params") if isinstance(msg.get("params"), dict) else {}
+                text = pp.get("text")
+                if pp.get("id") != rid or not isinstance(text, str):
+                    continue                           # for an earlier call, or not text
+                streamed += len(text)
+                if streamed > MAX_STREAM:
+                    self._cancel(rid)
+                    self._error(f"{method}: streamed more than {MAX_STREAM // (1024 * 1024)} MB, stopped")
+                    raise PluginError("the plugin sent too much text")
+                if on_progress is not None:
+                    try:
+                        on_progress(text)
+                    except Exception:                  # noqa: BLE001 - a display error must not end the call
+                        pass
+                deadline = min(time.monotonic() + timeout, hard_end)
+                continue
             if msg.get("id") != rid:
                 continue                               # a late answer to a cancelled call
             if "error" in msg:

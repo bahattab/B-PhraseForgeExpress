@@ -244,11 +244,13 @@ class Conversation:
         self.context = context
         self.history: list[dict] = []
         self.cache = _CACHE if cache is None else cache
+        self.on_delta = None              # set by the window to show a streamed reply as it comes
         if chat_fn is None:
             from phraseforge import ai
 
             def chat_fn(history, system):
-                return ai.chat(settings, history, system=system, raw_system=True, max_tokens=2000)
+                return ai.chat(settings, history, system=system, raw_system=True, max_tokens=2000,
+                               on_delta=self.on_delta)
         self.chat_fn = chat_fn
 
     def send(self, text: str, use_cache: bool = True) -> str:

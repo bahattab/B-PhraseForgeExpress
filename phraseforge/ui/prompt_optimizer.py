@@ -184,14 +184,23 @@ class PromptOptimizerWindow(QWidget):
         from phraseforge.ui.ai_ui import run_busy
         self.send_btn.setEnabled(False)
         self.status.setText(tr("Thinking…"))
+        pieces: list[str] = []                 # filled by the worker thread, shown by tick()
+        self.conv.on_delta = pieces.append
+
+        def tick():
+            if pieces:
+                live = "".join(pieces)
+                self.status.setText(tr("Writing…") + " " + (live[-200:] if len(live) > 200 else live)
+                                    .replace("\n", " "))
         try:
-            reply = run_busy(lambda: self.conv.send(msg))
+            reply = run_busy(lambda: self.conv.send(msg), tick=tick)
         except Exception as e:      # noqa: BLE001 - shown to the user
             self.status.setText(tr("The AI engine could not answer:") + f" {e}")
             if not self.quiet:
                 QMessageBox.warning(self, "Prompt Optimizer", f"{e}\n\n" + tr("Check the engine in Settings > AI."))
             return None
         finally:
+            self.conv.on_delta = None
             self.send_btn.setEnabled(True)
         if text is None:
             self.input.clear()

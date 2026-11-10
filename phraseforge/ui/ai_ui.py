@@ -9,9 +9,9 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from phraseforge.ui.i18n import tr
 
 
-def run_busy(fn):
+def run_busy(fn, tick=None):
     """Run fn on a background thread while the window stays responsive; return its result
-    or raise its error."""
+    or raise its error. tick() runs on the UI thread every 50 ms meanwhile (live text)."""
     box: dict = {}
 
     def run():
@@ -26,6 +26,8 @@ def run_busy(fn):
         while t.is_alive():
             QApplication.processEvents()
             t.join(0.05)
+            if tick is not None:
+                tick()
     finally:
         QApplication.restoreOverrideCursor()
     if "error" in box:
