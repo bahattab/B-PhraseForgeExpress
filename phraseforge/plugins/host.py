@@ -103,7 +103,7 @@ def _close_job(job) -> None:
 
 
 class PluginProcess:
-    def __init__(self, manifest: Manifest, folder: str | Path, memory_mb: int = MEMORY_MB):
+    def __init__(self, manifest: Manifest, folder: str | Path, memory_mb: int = MEMORY_MB, sandbox: bool = True):
         self.manifest = manifest
         self.folder = Path(folder)
         self.memory_mb = memory_mb
@@ -114,6 +114,7 @@ class PluginProcess:
         self._replies: queue.Queue = queue.Queue()
         self._next_id = 0
         self._proxy = None                                 # netproxy.FilterProxy (FR-PLG-05)
+        self.sandbox = sandbox                             # Windows: run at Low integrity (sandbox.py)
 
     # ------------------------------------------------------------ process
     @property
@@ -127,14 +128,22 @@ class PluginProcess:
             self._proxy = FilterProxy(self.manifest.id, self.manifest.permissions.network, self._error)
             self._proxy.start()
         env = dict(_env(), **self._proxy.env())
-        self._proc = subprocess.Popen(command(self.manifest, self.folder), cwd=str(self.folder), env=env,
-                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                      creationflags=flags)
-        _close_job(self._job)
-        self._job = _windows_job(self._proc, self.memory_mb)
-        if sys.platform == "win32" and self._job is None:  # no isolation: do not run it (R110)
-            self.stop()
-            raise PluginError("the plugin could not be started in its limited job")
+        args = command(self.manifest, self.folder)
+        if self.sandbox and sys.platform == "win32":
+            from phraseforge.plugins import sandbox
+            low_tmp = str(sandbox.low_temp_dir())
+            env.update(TEMP=low_tmp, TMP=low_tmp)
+            try:
+                self._proc, self._job = sandbox.launch(args, str(self.folder), env,
+                                                       lambda p: _windows_job(p, self.memory_mb))
+            except OSError as e:                       # fail closed: never run it outside the sandbox
+                self._error(f"the plugin could not be started in its sandbox: {e}")
+                raise PluginError(f"the plugin could not be started in its sandbox: {e}") from None
+        else:
+            self._proc = subprocess.Popen(args, cwd=str(self.folder), env=env,
+                                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                          creationflags=flags, bufsize=0)
+            self._job = _windows_job(self._proc, self.memory_mb)
         self._replies = queue.Queue()
         proc, replies = self._proc, self._replies
         threading.Thread(target=self._read, args=(proc, replies), daemon=True,

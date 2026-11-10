@@ -109,3 +109,15 @@ its params. The plugin may then send any number of notifications before its norm
 The pieces are shown live (Prompt Optimizer). The final reply must still carry the whole text.
 Each piece restarts the call's timeout, but a call ends after ten times its timeout in any case,
 and after 4 MB of streamed text. `examples/plugins/echo-ai` streams word by word.
+
+## Sandbox (Windows)
+
+Plugins run at **Low integrity**: PhraseForge starts them with a copy of your Windows token whose
+integrity level is lowered. Windows then refuses the plugin any change to your files, folders,
+settings (HKCU), the PhraseForge database and other programs. Its temp folder is
+`%USERPROFILE%\AppData\LocalLow\PhraseForge\Temp`, the one place it can write. A plugin that cannot
+be started this way does not run.
+
+Not covered: a sandboxed plugin can still **read** what you can read, and could open network
+connections itself instead of through its proxy. Install only plugins you trust. The sandbox can be
+switched off for one PC with the setting `plugins.sandbox = 0` (not synced).

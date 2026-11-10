@@ -165,7 +165,7 @@ class PluginManager:
             p = self._procs.get(pid)
             if p is None:
                 m = self.installed()[pid]
-                p = self._procs[pid] = PluginProcess(m, self.root / pid)
+                p = self._procs[pid] = PluginProcess(m, self.root / pid, sandbox=self.store.setting("plugins.sandbox", "1") != "0")
             return p
 
     def stop(self, pid: str) -> None:
