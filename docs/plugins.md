@@ -96,3 +96,16 @@ proxy. It only opens HTTPS tunnels (port 443) to the hosts in `permissions.netwo
 else, and plain HTTP, is refused and listed in the plugin's errors. Use a normal HTTP library
 that honours these variables (urllib, requests, httpx). A plugin that opens sockets itself is not
 stopped by this: install only plugins you trust.
+
+## Streaming an answer
+
+When PhraseForge can show an answer while it is written, `generate` gets `"stream": true` in
+its params. The plugin may then send any number of notifications before its normal reply:
+
+```json
+{"jsonrpc": "2.0", "method": "$/progress", "params": {"id": <the request's id>, "text": "next piece"}}
+```
+
+The pieces are shown live (Prompt Optimizer). The final reply must still carry the whole text.
+Each piece restarts the call's timeout, but a call ends after ten times its timeout in any case,
+and after 4 MB of streamed text. `examples/plugins/echo-ai` streams word by word.

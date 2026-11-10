@@ -258,9 +258,11 @@ def complete(settings: dict[str, str], prompt: str, provider: str = "", model: s
 
 def chat(settings: dict[str, str], history: list[dict], provider: str = "", model: str = "", system: str = "",
          timeout_s: float = 120, max_tokens: int = 1024, raw_system: bool = False,
-         images: list[bytes] | None = None) -> str:
+         images: list[bytes] | None = None, on_delta=None) -> str:
     """A conversation: history is [{"role": "user"|"assistant", "content": "..."}, ...]
-    (oldest first, ending with the user's turn). Returns the assistant's reply."""
+    (oldest first, ending with the user's turn). Returns the assistant's reply.
+    on_delta(text): called with each piece of the reply as a plugin engine streams it ($/progress);
+    the built-in engines answer in one piece and do not call it."""
     history = [{"role": m["role"], "content": m["content"]} for m in history
                if m.get("role") in ("user", "assistant")]
     if not history or history[-1]["role"] != "user":
@@ -276,6 +278,7 @@ def chat(settings: dict[str, str], history: list[dict], provider: str = "", mode
         if images:
             history = _with_images(history, images, "openai")
         return eng.generate(settings, history, {"model": model, "max_tokens": max_tokens, "timeout": timeout_s,
+                                                "on_delta": on_delta,
                                                 "system": system if raw_system else full_system(settings, system)})
     if provider not in DEFAULT_MODELS:
         raise AIError(f"unknown AI provider '{provider}'")

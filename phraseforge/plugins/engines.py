@@ -168,7 +168,8 @@ class PluginEngine(Engine):
         self.provider = PLUGIN_PREFIX + manifest.id
         self.kind = "ai_engine" if "ai_engine" in manifest.kinds else "translator"
 
-    def _call(self, method: str, params: dict | None = None, timeout: float = AI_TIMEOUT_S, settings=None):
+    def _call(self, method: str, params: dict | None = None, timeout: float = AI_TIMEOUT_S, settings=None,
+              on_progress=None):
         from phraseforge import policy
         from phraseforge.plugins.host import PluginError, PluginTimeout
         if not self.mgr.is_enabled(self.manifest.id):
@@ -183,7 +184,7 @@ class PluginEngine(Engine):
                 secrets[name] = typed
         p["secrets"] = secrets
         try:
-            return self.mgr.process(self.manifest.id).call(method, p, timeout=timeout)
+            return self.mgr.process(self.manifest.id).call(method, p, timeout=timeout, on_progress=on_progress)
         except PluginTimeout:
             raise ai.AIError(f"plugin {self.manifest.id}: timeout") from None
         except Exception as e:                    # noqa: BLE001 - uninstalled meanwhile, bad answer, ...
@@ -230,8 +231,12 @@ class PluginEngine(Engine):
             return super().generate(settings, messages, params)
         clean = {k: v for k, v in params.items() if k in ("model", "system", "max_tokens", "length", "accuracy",
                                                           "variation")}
+        on_delta = params.get("on_delta")
+        if on_delta is not None:
+            clean["stream"] = True                # the plugin may send $/progress pieces first
         return self._text(self._call("generate", {"messages": messages, "params": clean},
-                                     timeout=float(params.get("timeout", AI_TIMEOUT_S)), settings=settings))
+                                     timeout=float(params.get("timeout", AI_TIMEOUT_S)), settings=settings,
+                                     on_progress=on_delta))
 
     def translate(self, settings: dict, text: str, src: str, to: str) -> str:
         if "translator" not in self.manifest.kinds:

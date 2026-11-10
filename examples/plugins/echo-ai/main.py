@@ -22,10 +22,24 @@ def handle(method, p):
         msgs = p.get("messages") or []
         last = msgs[-1]["content"] if msgs else ""
         system = (p.get("params") or {}).get("system", "")
-        return {"text": f"echo: {last}" + (" (with instructions)" if system else "")}
+        text = f"echo: {last}" + (" (with instructions)" if system else "")
+        if (p.get("params") or {}).get("stream"):          # stream it word by word first
+            for word in text.split(" "):
+                progress(CURRENT_ID, word + " ")
+        return {"text": text}
     if method == "translate":
         return {"text": f"[{p.get('to')}] {p.get('text')}"}
     raise ValueError(f"unknown method {method}")
+
+
+CURRENT_ID = None
+
+
+def progress(call_id, piece):
+    """Send part of an answer before the answer itself ($/progress, shown live by PhraseForge)."""
+    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "method": "$/progress",
+                                 "params": {"id": call_id, "text": piece}}) + "\n")
+    sys.stdout.flush()
 
 
 for line in sys.stdin:
@@ -35,6 +49,7 @@ for line in sys.stdin:
         continue
     if "id" not in msg:
         continue
+    CURRENT_ID = msg["id"]
     try:
         reply = {"jsonrpc": "2.0", "id": msg["id"], "result": handle(msg.get("method"), msg.get("params") or {})}
     except Exception as e:  # noqa: BLE001
