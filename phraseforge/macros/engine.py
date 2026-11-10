@@ -324,14 +324,20 @@ class MacroEngine:
             return [TextAction(call.raw)]                 # unknown: kept as text, like any unknown macro
         if policy.current().macro_disabled(call.name) or policy.current().macro_disabled(pid + ".*"):
             return [TextAction(f"[{call.name}: disabled by your administrator]")]
-        if m.permissions.privileged and not getattr(rt.ctx, "allow_privileged", True):
+        if not getattr(rt.ctx, "allow_privileged", True):    # every plugin (R97)
             return [TextAction(f"[{call.name}: blocked, phrase not approved on this PC]")]
+        # a plugin that timed out once in this phrase is not waited for again: three hanging
+        # calls (or a {#loop}) took 24 s and more (R109)
+        timed_out = rt.__dict__.setdefault("_plugin_timeouts", set())
+        if pid in timed_out:
+            return [TextAction(f"[{call.name}: plugin timeout]")]
         args = [self.eval_token(t, rt) for t in call.args]
         opts = {k: self.eval_token(v, rt) for k, v in call.opts.items()}
         from phraseforge.plugins.host import PluginError, PluginTimeout
         try:
             return [TextAction(mgr.call_macro(pid, name, args, opts))]
         except PluginTimeout:
+            timed_out.add(pid)
             return [TextAction(f"[{call.name}: plugin timeout]")]
         except (PluginError, OSError) as e:
             return [TextAction(f"[{call.name}: {e}]")]

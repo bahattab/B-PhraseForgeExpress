@@ -22,6 +22,7 @@ from phraseforge.plugins.manifest import Manifest
 
 GRACE_S = 2.0
 MEMORY_MB = 512
+MAX_LINE = 16 * 1024 * 1024        # one JSON-RPC message (R108)
 ENV_KEEP = ("SYSTEMROOT", "WINDIR", "TEMP", "TMP", "PATH", "LANG", "PATHEXT", "COMSPEC")
 
 
@@ -78,11 +79,25 @@ def _windows_job(proc: subprocess.Popen, memory_mb: int) -> object | None:
         info.Basic.LimitFlags = 0x2000 | 0x100 | 0x8      # KILL_ON_JOB_CLOSE | PROCESS_MEMORY | ACTIVE_PROCESS
         info.Basic.ActiveProcessLimit = 1                  # no child processes
         info.ProcessMemoryLimit = memory_mb * 1024 * 1024
-        k32.SetInformationJobObject(wintypes.HANDLE(job), 9, ctypes.byref(info), ctypes.sizeof(info))
-        k32.AssignProcessToJobObject(wintypes.HANDLE(job), wintypes.HANDLE(int(proc._handle)))
+        # the results are checked: a plugin that is not in its job runs without the limits (R110)
+        if not job or not k32.SetInformationJobObject(wintypes.HANDLE(job), 9, ctypes.byref(info),
+                                                      ctypes.sizeof(info)) \
+                or not k32.AssignProcessToJobObject(wintypes.HANDLE(job), wintypes.HANDLE(int(proc._handle))):
+            if job:
+                k32.CloseHandle(wintypes.HANDLE(job))
+            return None
         return job
-    except Exception:                                      # noqa: BLE001 - isolation is best effort
+    except Exception:                                      # noqa: BLE001
         return None
+
+
+def _close_job(job) -> None:
+    if job and sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.WinDLL("kernel32").CloseHandle(ctypes.c_void_p(job))
+        except Exception:                                  # noqa: BLE001
+            pass
 
 
 class PluginProcess:
@@ -106,8 +121,12 @@ class PluginProcess:
         flags = 0x08000000 if sys.platform == "win32" else 0       # CREATE_NO_WINDOW
         self._proc = subprocess.Popen(command(self.manifest, self.folder), cwd=str(self.folder), env=_env(),
                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                      creationflags=flags, bufsize=0)
+                                      creationflags=flags)
+        _close_job(self._job)
         self._job = _windows_job(self._proc, self.memory_mb)
+        if sys.platform == "win32" and self._job is None:  # no isolation: do not run it (R110)
+            self.stop()
+            raise PluginError("the plugin could not be started in its limited job")
         self._replies = queue.Queue()
         proc, replies = self._proc, self._replies
         threading.Thread(target=self._read, args=(proc, replies), daemon=True,
@@ -115,25 +134,42 @@ class PluginProcess:
         threading.Thread(target=self._drain_stderr, args=(proc,), daemon=True).start()
 
     def _read(self, proc, replies) -> None:
-        for raw in proc.stdout:
-            try:
-                msg = json.loads(raw.decode("utf-8"))
-            except ValueError:
-                self._error(f"not JSON: {raw[:200]!r}")
-                continue
-            if isinstance(msg, dict) and "id" in msg:
-                replies.put(msg)
+        try:
+            while True:
+                raw = proc.stdout.readline(MAX_LINE + 1)   # bounded: a reply without an end grew forever (R108)
+                if not raw:
+                    break
+                if len(raw) > MAX_LINE:
+                    self._error(f"a reply longer than {MAX_LINE // (1024 * 1024)} MB: the plugin was stopped")
+                    proc.kill()
+                    break
+                try:
+                    msg = json.loads(raw.decode("utf-8"))
+                except Exception:                          # noqa: BLE001 - ValueError, RecursionError, ...
+                    self._error(f"not JSON: {raw[:200]!r}")
+                    continue
+                if isinstance(msg, dict) and "id" in msg:
+                    replies.put(msg)
+        except Exception as e:                             # noqa: BLE001 - the reader must not die silently
+            self._error(f"reading the plugin failed: {e}")
         replies.put(None)                                  # the process ended
 
     def _drain_stderr(self, proc) -> None:
-        for line in proc.stderr:
-            self._error(line.decode("utf-8", "replace").rstrip()[:500])
+        try:
+            while True:
+                line = proc.stderr.readline(4096)          # bounded too (R108)
+                if not line:
+                    break
+                self._error(line.decode("utf-8", "replace").rstrip()[:500])
+        except Exception:                                  # noqa: BLE001
+            pass
 
     def _error(self, text: str) -> None:
         self.errors.append(time.strftime("%Y-%m-%d %H:%M:%S ") + text)
 
     def stop(self) -> None:
         p, self._proc = self._proc, None
+        job, self._job = self._job, None
         if p is not None and p.poll() is None:
             try:
                 p.stdin.close()
@@ -143,6 +179,7 @@ class PluginProcess:
             if p.poll() is None:
                 p.kill()
                 p.wait(5)
+        _close_job(job)                                    # one handle per start, not leaked (R110)
 
     def _send(self, msg: dict) -> None:
         proc = self._proc
@@ -156,39 +193,46 @@ class PluginProcess:
 
     # ------------------------------------------------------------ calls
     def call(self, method: str, params: dict | None = None, timeout: float = 5.0):
-        with self._lock:
-            if not self.running:
-                self._start()
-            self._next_id += 1
-            rid = self._next_id
+        if not self._lock.acquire(timeout=timeout):        # another call still waits on it
+            raise PluginTimeout("busy")
+        try:
+            return self._call(method, params, timeout)
+        finally:
+            self._lock.release()
+
+    def _call(self, method: str, params: dict | None, timeout: float):
+        if not self.running:
+            self._start()
+        self._next_id += 1
+        rid = self._next_id
+        try:
+            self._send({"jsonrpc": "2.0", "id": rid, "method": method, "params": params or {}})
+        except OSError as e:
+            self.stop()
+            raise PluginError(f"the plugin stopped: {e}") from None
+        deadline = time.monotonic() + timeout
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                self._cancel(rid)
+                self._error(f"{method}: no answer in {timeout:g} s, stopped")
+                raise PluginTimeout("timeout")
             try:
-                self._send({"jsonrpc": "2.0", "id": rid, "method": method, "params": params or {}})
-            except OSError as e:
+                msg = self._replies.get(timeout=left)
+            except queue.Empty:
+                continue
+            if msg is None:
                 self.stop()
-                raise PluginError(f"the plugin stopped: {e}") from None
-            deadline = time.monotonic() + timeout
-            while True:
-                left = deadline - time.monotonic()
-                if left <= 0:
-                    self._cancel(rid)
-                    self._error(f"{method}: no answer in {timeout:g} s, stopped")
-                    raise PluginTimeout("timeout")
-                try:
-                    msg = self._replies.get(timeout=left)
-                except queue.Empty:
-                    continue
-                if msg is None:
-                    self.stop()
-                    self._error(f"{method}: the plugin ended")
-                    raise PluginError("the plugin ended")
-                if msg.get("id") != rid:
-                    continue                               # a late answer to a cancelled call
-                if "error" in msg:
-                    err = msg["error"]
-                    text = err.get("message", str(err)) if isinstance(err, dict) else str(err)
-                    self._error(f"{method}: {text}")
-                    raise PluginError(text)
-                return msg.get("result")
+                self._error(f"{method}: the plugin ended")
+                raise PluginError("the plugin ended")
+            if msg.get("id") != rid:
+                continue                               # a late answer to a cancelled call
+            if "error" in msg:
+                err = msg["error"]
+                text = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+                self._error(f"{method}: {text}")
+                raise PluginError(text)
+            return msg.get("result")
 
     def _cancel(self, rid: int) -> None:
         try:

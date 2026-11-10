@@ -19,7 +19,7 @@ from pathlib import Path
 from phraseforge import paths, policy
 from phraseforge.plugins import install as inst
 from phraseforge.plugins.host import PluginError, PluginProcess, PluginTimeout
-from phraseforge.plugins.manifest import Manifest, ManifestError, Permissions
+from phraseforge.plugins.manifest import Manifest, Permissions
 
 log = logging.getLogger(__name__)
 MACRO_TIMEOUT_S = 5.0
@@ -59,7 +59,7 @@ class PluginManager:
                 continue
             try:
                 m = inst.inspect(d)
-            except ManifestError as e:
+            except Exception as e:        # noqa: BLE001 - one broken plugin must not break all (R103)
                 self.load_errors[d.name] = str(e)
                 continue
             if m.id == d.name:
@@ -77,8 +77,12 @@ class PluginManager:
         return _perm_from(self.store.setting(f"plugins.granted.{pid}", ""))
 
     def allowed_by_policy(self, pid: str) -> bool:
-        allowed = policy.current().plugins_allowed
-        return allowed is None or "*" in allowed or pid in allowed
+        pol = policy.current()
+        allowed = pol.plugins_allowed
+        if allowed is None:
+            # a locked-down PC without an allow-list runs no plugins: they are programs (R102)
+            return not (pol.settings_locked or pol.editing_disabled)
+        return "*" in allowed or pid in allowed
 
     def is_enabled(self, pid: str) -> bool:
         m = self.installed().get(pid)
@@ -90,22 +94,32 @@ class PluginManager:
     # ------------------------------------------------------------ changes
     def preview(self, src) -> tuple[Manifest, list[str]]:
         """The manifest of a package and what it asks for beyond the installed version."""
+        from phraseforge.plugins.manifest import ENGINE_KINDS, ENGINE_LINE, describe_manifest
         m = inst.inspect(src)
         g = self.granted(m.id)
-        new = m.permissions.wider_than(g) if g is not None else m.permissions.describe()
+        if g is None:
+            return m, describe_manifest(m)
+        new = m.permissions.wider_than(g)
+        old = self.installed().get(m.id)
+        if any(k in m.kinds for k in ENGINE_KINDS) and not (old and any(k in old.kinds for k in ENGINE_KINDS)):
+            new.append(ENGINE_LINE)                     # it becomes an AI/translation engine (R112)
         return m, new
 
-    def install(self, src, accept: bool) -> Manifest:
+    def install(self, src, accept: bool, expected: Manifest | None = None) -> Manifest:
         """Install after the user accepted the permissions (accept must be True)."""
         if not accept:
             raise PermissionError("the plugin's permissions were not accepted")
         m = inst.inspect(src)
+        if expected is not None and m != expected:
+            raise PermissionError("the plugin changed after it was shown: install it again")   # R99
         if not self.allowed_by_policy(m.id):
             raise PermissionError("your administrator does not allow this plugin")
+        was = self.installed().get(m.id)
+        keep_off = was is not None and m.id not in self._enabled_ids()   # switched off by the user (R101)
         self.stop(m.id)
         inst.install(src, self.root)
         self.store.set_setting(f"plugins.granted.{m.id}", _perm_json(m.permissions))
-        self.set_enabled(m.id, True)
+        self.set_enabled(m.id, not keep_off)
         return m
 
     def set_enabled(self, pid: str, on: bool) -> None:
@@ -118,6 +132,10 @@ class PluginManager:
         self.set_enabled(pid, False)
         inst.uninstall(pid, self.root)
         self.store.set_setting(f"plugins.granted.{pid}", "")
+        # its secrets go too: another package with the same id must not receive them (R107)
+        with self.store.lock, self.store.conn:
+            self.store.conn.execute("DELETE FROM settings WHERE key LIKE ? ESCAPE '\\'",
+                                    (f"plugins.secret.{pid.replace('_', chr(92) + '_')}.%",))
 
     def set_secret(self, pid: str, name: str, value: str) -> None:
         m = self.installed().get(pid)

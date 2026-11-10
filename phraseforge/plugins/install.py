@@ -19,6 +19,14 @@ from phraseforge.plugins.manifest import Manifest, ManifestError, parse
 MAX_FILES = 2000
 MAX_BYTES = 200 * 1024 * 1024
 MANIFEST = "plugin.toml"
+# Windows file names that are devices (CON, NUL, COM1, ...), with or without an extension
+_RESERVED = {"con", "prn", "aux", "nul"} | {f"com{i}" for i in range(1, 10)} | {f"lpt{i}" for i in range(1, 10)}
+
+
+def _bad_part(part: str) -> bool:
+    """A path part Windows would read differently from Linux (security R104)."""
+    return (":" in part or part.endswith((".", " ")) or part.split(".", 1)[0].lower() in _RESERVED
+            or any(ord(c) < 32 for c in part))
 
 
 def _zip_root(names: list[str]) -> str:
@@ -38,11 +46,17 @@ def _check_zip(z: zipfile.ZipFile) -> str:
     if len(infos) > MAX_FILES:
         raise ManifestError(f"the package holds more than {MAX_FILES} files")
     total = 0
+    seen: set[str] = set()
     for i in infos:
         name = i.filename
         p = PurePosixPath(name)
-        if name.startswith(("/", "\\")) or (p.parts and ":" in p.parts[0]) or ".." in p.parts or "\\" in name:
+        if (name.startswith(("/", "\\")) or ".." in p.parts or "\\" in name
+                or any(_bad_part(x) for x in p.parts)):
             raise ManifestError(f"unsafe path in package: {name}")
+        key = name.rstrip("/").casefold()           # PLUGIN.TOML would overwrite plugin.toml on Windows
+        if key in seen:
+            raise ManifestError(f"two files with the same name in package: {name}")
+        seen.add(key)
         if stat.S_ISLNK(i.external_attr >> 16):
             raise ManifestError(f"the package contains a link: {name}")
         total += i.file_size
@@ -76,7 +90,16 @@ def _is_junction(p: Path) -> bool:
 
 
 def inspect(src: str | Path) -> Manifest:
-    src = Path(src)
+    """Every way a package can be broken gives a ManifestError (R103)."""
+    try:
+        return _inspect(Path(src))
+    except ManifestError:
+        raise
+    except (UnicodeDecodeError, zipfile.BadZipFile, KeyError, OSError, ValueError, RuntimeError) as e:
+        raise ManifestError(f"the plugin cannot be read: {e}") from e
+
+
+def _inspect(src: Path) -> Manifest:
     if src.is_symlink():
         raise ManifestError("the plugin folder is a link")
     if src.is_dir():
@@ -137,6 +160,29 @@ def install(src: str | Path, dest_root: str | Path) -> Manifest:
 
 
 def uninstall(plugin_id: str, dest_root: str | Path) -> None:
-    d = Path(dest_root) / plugin_id
-    if d.is_dir() and d.parent == Path(dest_root):
+    from phraseforge.plugins.manifest import valid_id
+    if not valid_id(plugin_id):                     # never "..", never a path (R105)
+        return
+    root = Path(dest_root).resolve()
+    d = (root / plugin_id).resolve()
+    if d.is_dir() and d.parent == root:
         shutil.rmtree(d)
+
+
+def stage(src: str | Path) -> Path:
+    """A private copy of the package, made once before the user is asked: what is shown is
+    what gets installed, even if the file on a share changes meanwhile (R99)."""
+    src = Path(src)
+    inspect(src)                                     # refuse links and oversize before copying
+    tmp = Path(tempfile.mkdtemp(prefix="pf-plugin-"))
+    if src.is_dir():
+        shutil.copytree(src, tmp / "p", symlinks=True, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".git"))
+        return tmp / "p"
+    shutil.copyfile(src, tmp / "p.pfplugin")
+    return tmp / "p.pfplugin"
+
+
+def unstage(path: str | Path) -> None:
+    p = Path(path)
+    if p.parent.name.startswith("pf-plugin-"):
+        shutil.rmtree(p.parent, ignore_errors=True)

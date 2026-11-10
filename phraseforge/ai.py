@@ -130,6 +130,8 @@ def _with_images(history: list[dict], images: list[bytes], provider: str) -> lis
         return history
     last = dict(history[-1])
     text = last["content"]
+    for b in images:        # checked for every engine: Ollama got any local file (security R113)
+        image_mime(b)
     if provider == "ollama":
         last["images"] = [base64.b64encode(b).decode() for b in images]
     elif provider == "anthropic":

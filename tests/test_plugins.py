@@ -287,7 +287,8 @@ def test_dashed_plugin_id_macros_work(mgr, tmp_path):
     eng = MacroEngine(FakeHost())
     assert eng.expand_to_text("{#my-hello.shout ok}", ExpansionContext()) == "OK"
     from phraseforge.security import PLUGIN_REASON, scan_privileged
-    assert PLUGIN_REASON not in scan_privileged("{#my-hello.shout ok}")      # it asks for nothing privileged
+    # every plugin needs approval in an unapproved phrase: its permissions are not enforced (R97)
+    assert PLUGIN_REASON in scan_privileged("{#my-hello.shout ok}")
     assert PLUGIN_REASON in scan_privileged("{#other-thing.go}")             # unknown: counted
 
 
