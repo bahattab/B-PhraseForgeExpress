@@ -1875,3 +1875,250 @@ def test_library_mirror_keeps_folder_locks_and_versions(tmp_path):
     mirror = next(x for x in s.phrases() if x.description == "Salary")
     assert "ar" in s.phrase_versions(mirror.id)
     s.close()
+
+
+# ---------------------------------------------------------------- 0.6.13: review of #52, #53 (R97–R113)
+HELLO = __import__("pathlib").Path(__file__).resolve().parent.parent / "examples" / "plugins" / "hello"
+
+
+@pytest.fixture
+def plugin_mgr(tmp_path):
+    from phraseforge.plugins import manager as pm
+    s = Store(":memory:")
+    m = pm.PluginManager(s, tmp_path / "plugins")
+    pm.set_current(m)
+    yield m
+    m.stop_all()
+    pm.set_current(None)
+    s.close()
+
+
+def _plugin_dir(tmp_path, name="quiet", toml_extra="", code=None, macros='["go"]'):
+    d = tmp_path / f"src-{name}"
+    d.mkdir()
+    (d / "plugin.toml").write_text(f'id = "{name}"\nname = "{name}"\nversion = "1.0.0"\napi_version = "1.0"\n'
+                                   f'kinds = ["macro"]\nentry = "main.py"\nruntime = "python-subprocess"\n'
+                                   f'macros = {macros}\n{toml_extra}', encoding="utf-8")
+    (d / "main.py").write_text(code or (HELLO / "main.py").read_text(encoding="utf-8"), encoding="utf-8")
+    return d
+
+
+def test_a_plugin_without_declared_permissions_needs_approval(tmp_path, plugin_mgr):
+    """R97: declared permissions are not enforced, yet a plugin declaring none ran from unapproved phrases
+    and the consent text said it may do "nothing"."""
+    from phraseforge.host import ExpansionContext
+    from phraseforge.macros import MacroEngine
+    from phraseforge.security import PLUGIN_REASON, scan_privileged
+    from tests.fakehost import FakeHost
+    plugin_mgr.install(_plugin_dir(tmp_path, macros='["shout"]'), accept=True)
+    assert PLUGIN_REASON in scan_privileged("{#quiet.shout x}")
+    ctx = ExpansionContext()
+    ctx.allow_privileged = False
+    out = MacroEngine(FakeHost()).expand_to_text("{#quiet.shout x}", ctx)
+    assert "blocked" in out
+    m = plugin_mgr.installed()["quiet"]
+    assert not any("nothing" in line for line in m.permissions.describe())
+
+
+def test_ai_through_a_plugin_engine_needs_approval(tmp_path, plugin_mgr):
+    """R98: {#ai -provider plugin:x} / {#translate} sent the clipboard to plugin code from unapproved phrases."""
+    from phraseforge.host import ExpansionContext
+    from phraseforge.macros import MacroEngine
+    from phraseforge.security import scan_privileged
+    from tests.fakehost import FakeHost
+    for text in ('{#ai "x {#clipboard}" -provider plugin:evil}', "{#translate hi -to Arabic -provider plugin:evil}"):
+        assert scan_privileged(text)
+        ctx = ExpansionContext()
+        ctx.allow_privileged = False
+        host = FakeHost()
+        out = MacroEngine(host).expand_to_text(text, ctx)
+        assert "blocked" in out and not any(c[0] == "ai_complete" for c in host.calls)
+    plugin_mgr.store.set_setting("ai.provider", "plugin:evil")       # the engine chosen in Settings
+    assert scan_privileged('{#ai "x"}')
+
+
+def test_the_package_shown_is_the_package_installed(tmp_path, plugin_mgr, monkeypatch):
+    """R99: the package was read again after the consent dialog; a share could swap it meanwhile."""
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from phraseforge.ui.plugins_dialog import PluginsDialog
+    src = _plugin_dir(tmp_path, macros='["shout"]')
+
+    def ask(text):
+        (src / "main.py").write_text("EVIL = 1\n", encoding="utf-8")   # swapped while the dialog is open
+        return True
+    d = PluginsDialog(manager=plugin_mgr, ask=ask)
+    assert d.install_from(str(src))
+    assert "EVIL" not in (plugin_mgr.root / "quiet" / "main.py").read_text(encoding="utf-8")
+    d.close()
+
+
+def test_the_consent_dialog_is_plain_text(monkeypatch):
+    """R100: a name with HTML and <!-- hid the real permission list."""
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    QApplication.instance() or QApplication([])
+    from phraseforge.ui import plugins_dialog as pd
+    seen = []
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: (seen.append(self.textFormat()), QMessageBox.No)[1])
+    assert pd.ask_plain(None, "t", "<b>x</b><!--") is False
+    from PySide6.QtCore import Qt
+    assert seen == [Qt.PlainText]
+    assert pd._plain("a\u202eb\x00c") == "abc"
+
+
+def test_an_update_asks_and_keeps_a_switched_off_plugin_off(tmp_path, plugin_mgr):
+    """R101: a same-id package replaced the code silently and switched the plugin back on."""
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from phraseforge.ui.plugins_dialog import PluginsDialog
+    plugin_mgr.install(_plugin_dir(tmp_path, macros='["shout"]'), accept=True)
+    plugin_mgr.set_enabled("quiet", False)
+    asked = []
+    d = PluginsDialog(manager=plugin_mgr, ask=lambda t: (asked.append(t), True)[1])
+    other = _plugin_dir(tmp_path, name="quiet2", macros='["shout"]')
+    (other / "plugin.toml").write_text((other / "plugin.toml").read_text().replace('id = "quiet2"', 'id = "quiet"'))
+    assert d.install_from(str(other))
+    assert asked and "quiet2" in asked[0]                  # the new name is shown
+    assert not plugin_mgr.is_enabled("quiet")
+    d.close()
+
+
+def test_a_locked_down_pc_without_an_allow_list_runs_no_plugins(plugin_mgr):
+    """R102: settings_locked + editing_disabled still allowed any plugin when plugins_allowed was absent."""
+    from phraseforge import policy
+    policy.set_current(policy.Policy(settings_locked=True, editing_disabled=True))
+    try:
+        assert not plugin_mgr.allowed_by_policy("anything")
+    finally:
+        policy.set_current(policy.NO_POLICY)
+
+
+def test_one_broken_manifest_does_not_break_all_plugins(tmp_path, plugin_mgr):
+    """R103: a non-UTF-8 plugin.toml made installed() (and the trust check) raise."""
+    plugin_mgr.install(_plugin_dir(tmp_path, macros='["shout"]'), accept=True)
+    bad = plugin_mgr.root / "broken"
+    bad.mkdir()
+    (bad / "plugin.toml").write_bytes(b"id = \xff\xfe")
+    assert "quiet" in plugin_mgr.installed() and "broken" in plugin_mgr.load_errors
+
+
+def test_zip_names_follow_windows_rules(tmp_path):
+    """R104: PLUGIN.TOML next to plugin.toml, x:stream, trailing dots and CON were accepted."""
+    import zipfile
+    from phraseforge.plugins import install as inst
+    from phraseforge.plugins.manifest import ManifestError, parse
+    src = _plugin_dir(tmp_path, macros='["shout"]')
+    z = tmp_path / "p.pfplugin"
+    with zipfile.ZipFile(z, "w") as f:
+        f.write(src / "plugin.toml", "plugin.toml")
+        f.write(src / "main.py", "main.py")
+        f.writestr("PLUGIN.TOML", "x")
+    with pytest.raises(ManifestError):
+        inst.inspect(z)
+    with pytest.raises(ManifestError):
+        parse((src / "plugin.toml").read_text().replace('id = "quiet"', 'id = "con"'))
+
+
+def test_uninstall_never_leaves_the_plugins_folder(tmp_path):
+    """R105: uninstall('..') passed the parent check."""
+    from phraseforge.plugins import install as inst
+    root = tmp_path / "data" / "plugins"
+    root.mkdir(parents=True)
+    (tmp_path / "data" / "phrases.db").write_text("x")
+    inst.uninstall("..", root)
+    assert (tmp_path / "data" / "phrases.db").exists()
+
+
+def test_run_plugin_runs_only_an_allowed_plugin_entry(tmp_path, monkeypatch):
+    """R106: --run-plugin ran any Python file, also when the policy allowed no plugins."""
+    script = tmp_path / "not_a_plugin.py"
+    flag = tmp_path / "ran"
+    script.write_text(f"open({str(flag)!r}, 'w').write('x')\n")
+    monkeypatch.setenv("PHRASEFORGE_PLUGIN_API", "1")
+    assert appmod.main(["pf", "--run-plugin", str(script)]) == 2
+    assert not flag.exists()
+
+
+def test_removing_a_plugin_removes_its_secrets(tmp_path, plugin_mgr):
+    """R107: secrets stayed after remove(); a new package with the same id received them."""
+    plugin_mgr.install(_plugin_dir(tmp_path, macros='["shout"]', toml_extra='[permissions]\nsecrets = ["api_key"]\n'),
+                       accept=True)
+    plugin_mgr.set_secret("quiet", "api_key", "sk-REAL")
+    plugin_mgr.remove("quiet")
+    assert not [k for (k,) in plugin_mgr.store.conn.execute("SELECT key FROM settings WHERE key LIKE 'plugins.secret.%'")]
+
+
+def test_a_broken_reply_does_not_kill_the_reader(tmp_path):
+    """R108: a deeply nested JSON reply raised RecursionError in the reader thread."""
+    from phraseforge.plugins import install as inst
+    from phraseforge.plugins.host import PluginProcess
+    code = ("import sys, json\n"
+            "for line in sys.stdin:\n"
+            "    m = json.loads(line)\n"
+            "    sys.stdout.write('[' * 100000 + ']' * 100000 + '\\n')\n"
+            "    sys.stdout.write(json.dumps({'jsonrpc': '2.0', 'id': m['id'], 'result': {'text': 'OK'}}) + '\\n')\n"
+            "    sys.stdout.flush()\n")
+    m = inst.install(_plugin_dir(tmp_path, macros='["shout"]', code=code), tmp_path / "p")
+    proc = PluginProcess(m, tmp_path / "p" / "quiet")
+    try:
+        assert proc.call("macro", {"name": "shout", "args": [], "opts": {}}, timeout=5)["text"] == "OK"
+    finally:
+        proc.stop()
+
+
+def test_a_timed_out_plugin_is_not_waited_for_again_in_the_same_phrase(plugin_mgr, tmp_path, monkeypatch):
+    """R109: three hanging calls in one phrase took 24 s."""
+    from phraseforge.host import ExpansionContext
+    from phraseforge.macros import MacroEngine
+    from phraseforge.plugins.host import PluginTimeout
+    from tests.fakehost import FakeHost
+    plugin_mgr.install(_plugin_dir(tmp_path, macros='["shout"]'), accept=True)
+    calls = []
+    monkeypatch.setattr(plugin_mgr, "call_macro", lambda *a, **k: (calls.append(1), (_ for _ in ()).throw(PluginTimeout("t")))[1])
+    out = MacroEngine(FakeHost()).expand_to_text("{#quiet.shout a}{#quiet.shout b}{#quiet.shout c}", ExpansionContext())
+    assert out.count("plugin timeout") == 3 and len(calls) == 1
+
+
+def test_stopping_a_plugin_closes_its_job(tmp_path, monkeypatch):
+    """R110: the job handle leaked on every restart (Windows; the close is checked here)."""
+    from phraseforge.plugins import host
+    from phraseforge.plugins import install as inst
+    closed = []
+    monkeypatch.setattr(host, "_close_job", lambda job: closed.append(job))
+    m = inst.install(_plugin_dir(tmp_path, macros='["shout"]'), tmp_path / "p")
+    proc = host.PluginProcess(m, tmp_path / "p" / "quiet")
+    proc._job = "job-handle"
+    proc.stop()
+    assert "job-handle" in closed
+
+
+def test_a_pulled_plugin_engine_choice_is_not_taken(tmp_path):
+    """R111: a synced ai.provider = plugin:<id> sent every AI text to that plugin on this PC."""
+    s = Store(tmp_path / "a.db")
+    s.set_setting("ai.provider", "openai")
+    copy = tmp_path / "pulled.db"
+    s.backup_to(copy)
+    c = sqlite3.connect(copy)
+    with c:
+        c.execute("UPDATE settings SET value='plugin:evil' WHERE key='ai.provider'")
+        c.execute("INSERT OR REPLACE INTO settings VALUES ('translation.provider', 'plugin:evil')")
+    c.close()
+    s.restore_from(copy, untrusted="synced")
+    assert s.setting("ai.provider") == "openai"
+    assert not s.setting("translation.provider", "").startswith("plugin:")
+    s.close()
+
+
+def test_engine_plugins_say_they_receive_your_text():
+    """R112: the consent for an ai_engine plugin did not say it receives prompts and images."""
+    from phraseforge.plugins.manifest import ENGINE_LINE, describe_manifest, parse
+    m = parse('id = "e"\nname = "E"\nversion = "1.0.0"\napi_version = "1.0"\nkinds = ["ai_engine"]\n'
+              'entry = "main.py"\nruntime = "python-subprocess"\n')
+    assert ENGINE_LINE in describe_manifest(m)
+
+
+def test_only_images_are_sent_to_any_ai_engine():
+    """R113: {#ai -provider ollama -image file:<any file>} sent a private key to Ollama."""
+    from phraseforge import ai
+    with pytest.raises(ai.AIError):
+        ai._with_images([{"role": "user", "content": "x"}], [b"-----BEGIN PRIVATE KEY-----"], "ollama")

@@ -12,19 +12,44 @@ from phraseforge.plugins.manifest import ManifestError
 from phraseforge.ui.i18n import tr
 
 
-def consent_text(manifest, asked: list[str], update: bool) -> str:
-    head = (tr('"{name}" {version} asks for more than before:') if update
-            else tr('Install "{name}" {version}? It may:'))
-    head = head.replace("{name}", manifest.name).replace("{version}", manifest.version)
-    return head + "\n\n• " + "\n• ".join(asked) + "\n\n" + tr(
-        "Plugins run as separate programs. Install only plugins you trust.")
+def _plain(text: str, limit: int = 80) -> str:
+    """A name from the package: no control or direction characters, bounded (R100)."""
+    t = "".join(c for c in str(text) if c.isprintable() and c not in "\u200e\u200f\u202a\u202b\u202c\u202d\u202e"
+                "\u2066\u2067\u2068\u2069")
+    return t[:limit]
+
+
+def consent_text(manifest, asked: list[str], update: bool, old=None) -> str:
+    if update and old is not None:
+        head = tr('Replace "{old}" {oldv} with "{name}" {version}?').replace("{old}", _plain(old.name)) \
+            .replace("{oldv}", _plain(old.version, 20))
+        if _plain(old.name) != _plain(manifest.name):
+            head += "\n" + tr("The name is different: make sure it comes from the same author.")
+        if asked:
+            head += "\n\n" + tr("It asks for more than before:")
+    else:
+        head = tr('Install "{name}" {version}? It says it needs:')
+    head = head.replace("{name}", _plain(manifest.name)).replace("{version}", _plain(manifest.version, 20))
+    body = ("\n\n• " + "\n• ".join(asked)) if asked else ""
+    # the list is what the plugin declares: nothing enforces it yet (security R97)
+    return head + body + "\n\n" + tr(
+        "A plugin is a program that runs with your Windows rights: it can read your files and reach the "
+        "internet whatever it declares. Install only plugins you trust.")
+
+
+def ask_plain(parent, title: str, text: str) -> bool:
+    """Yes/No with the text always shown as plain text: a plugin name cannot hide the list (R100)."""
+    box = QMessageBox(QMessageBox.Question, title, text, QMessageBox.Yes | QMessageBox.No, parent)
+    box.setTextFormat(Qt.PlainText)
+    box.setDefaultButton(QMessageBox.No)
+    return box.exec() == QMessageBox.Yes
 
 
 class PluginsDialog(QDialog):
     def __init__(self, parent=None, manager: pm.PluginManager | None = None, ask=None):
         super().__init__(parent)
         self.mgr = manager or pm.current()
-        self.ask = ask or (lambda text: QMessageBox.question(self, self.windowTitle(), text) == QMessageBox.Yes)
+        self.ask = ask or (lambda text: ask_plain(self, self.windowTitle(), text))
         self.setWindowTitle(tr("Plugins"))
         self.resize(640, 420)
         lay = QVBoxLayout(self)
@@ -94,20 +119,31 @@ class PluginsDialog(QDialog):
         self.refresh()
 
     def install_from(self, path: str) -> bool:
+        from phraseforge.plugins import install as inst
         try:
-            m, asked = self.mgr.preview(path)
+            staged = inst.stage(path)            # what is shown is what is installed (R99)
         except (ManifestError, OSError) as e:
             QMessageBox.warning(self, self.windowTitle(), tr("This is not a plugin PhraseForge can install:")
                                 + "\n" + str(e))
             return False
-        update = m.id in self.mgr.installed()
-        if (asked or not update) and not self.ask(consent_text(m, asked or m.permissions.describe(), update)):
-            return False
         try:
-            self.mgr.install(path, accept=True)
-        except (PermissionError, OSError, ManifestError) as e:
-            QMessageBox.warning(self, self.windowTitle(), str(e))
-            return False
+            try:
+                m, asked = self.mgr.preview(staged)
+            except (ManifestError, OSError) as e:
+                QMessageBox.warning(self, self.windowTitle(), tr("This is not a plugin PhraseForge can install:")
+                                    + "\n" + str(e))
+                return False
+            old = self.mgr.installed().get(m.id)
+            # an update always asks: anyone can make a package with the same id (R101)
+            if not self.ask(consent_text(m, asked, old is not None, old)):
+                return False
+            try:
+                self.mgr.install(staged, accept=True, expected=m)
+            except (PermissionError, OSError, ManifestError) as e:
+                QMessageBox.warning(self, self.windowTitle(), str(e))
+                return False
+        finally:
+            inst.unstage(staged)
         self.refresh()
         return True
 

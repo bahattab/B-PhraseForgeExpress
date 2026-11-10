@@ -29,6 +29,23 @@ KINDS = ("ai_engine", "translator", "macro", "importer", "exporter", "trigger_so
 RUNTIMES = ("python-subprocess", "exe-subprocess")
 _ID = re.compile(r"[a-z][a-z0-9_-]{0,39}")
 _MACRO = re.compile(r"[a-z][a-z0-9_]{0,39}")
+_DEVICE = {"con", "prn", "aux", "nul"} | {f"com{i}" for i in range(1, 10)} | {f"lpt{i}" for i in range(1, 10)}
+ENGINE_KINDS = ("ai_engine", "translator")
+ENGINE_LINE = "receive the text and images you send to AI or translation"
+
+
+def valid_id(pid: str) -> bool:
+    """A plugin id is also a folder name: no Windows device names such as CON or NUL (R104)."""
+    return bool(_ID.fullmatch(pid or "")) and pid.split(".", 1)[0] not in _DEVICE
+
+
+def describe_manifest(m) -> list[str]:
+    """What the user is asked to accept: the declared needs, and for an AI or translation
+    engine that it receives what is sent to it (R112)."""
+    out = list(m.permissions.describe())
+    if any(k in getattr(m, "kinds", ()) for k in ENGINE_KINDS):
+        out = [x for x in out if x != "no special needs declared"] + [ENGINE_LINE]
+    return out
 _SEMVER = re.compile(r"\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?")
 _HOST = re.compile(r"(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*")
 _SECRET = re.compile(r"[a-z][a-z0-9_]{0,39}")
@@ -49,7 +66,9 @@ class Permissions:
 
     @property
     def privileged(self) -> bool:
-        """Needs an approved phrase, like {#run} (FR-PLG-07 / FR-SEC-05)."""
+        """What the plugin SAYS it needs beyond answering. Not enforced: every plugin runs as a
+        program with the user's rights, so the trust gate treats every plugin as privileged
+        (security R97); this only decides how the needs are described."""
         return bool(self.network or self.filesystem or self.input)
 
     def describe(self) -> list[str]:
@@ -64,7 +83,8 @@ class Permissions:
             out.append("read and change the clipboard")
         if self.input:
             out.append("press keys and move the mouse")
-        return out or ["nothing beyond answering PhraseForge"]
+        # not "nothing": the list is what the plugin declares, nothing enforces it (R97)
+        return out or ["no special needs declared"]
 
     def wider_than(self, old: "Permissions") -> list[str]:
         """What these permissions add to old ([] = nothing new)."""
@@ -139,7 +159,7 @@ def parse(text: str) -> Manifest:
     if unknown:
         raise ManifestError(f"unknown key {unknown[0]!r}")
     pid = _str(data, "id")
-    if not _ID.fullmatch(pid):
+    if not valid_id(pid):
         raise ManifestError("id may only hold lowercase letters, digits, - and _ (and start with a letter)")
     version = _str(data, "version")
     if not _SEMVER.fullmatch(version):
@@ -153,8 +173,11 @@ def parse(text: str) -> Manifest:
     if not kinds:
         raise ManifestError("kinds must name at least one kind")
     entry = _str(data, "entry").replace("\\", "/")
-    if entry.startswith("/") or re.match(r"^[A-Za-z]:", entry) or ".." in entry.split("/"):
-        raise ManifestError("entry must be a file inside the plugin folder")
+    parts = [x for x in entry.split("/") if x not in ("", ".")]
+    if (entry.startswith("/") or re.match(r"^[A-Za-z]:", entry) or ".." in parts or not parts
+            or entry.endswith("/")
+            or any(":" in x or x.endswith((".", " ")) or x.split(".", 1)[0].lower() in _DEVICE for x in parts)):
+        raise ManifestError("entry must be a file inside the plugin folder")   # also no NUL, x:ads (R104)
     runtime = _str(data, "runtime")
     if runtime not in RUNTIMES:
         raise ManifestError(f"runtime must be one of {', '.join(RUNTIMES)}")

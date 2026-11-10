@@ -169,9 +169,12 @@ class PluginEngine(Engine):
         self.kind = "ai_engine" if "ai_engine" in manifest.kinds else "translator"
 
     def _call(self, method: str, params: dict | None = None, timeout: float = AI_TIMEOUT_S, settings=None):
+        from phraseforge import policy
         from phraseforge.plugins.host import PluginError, PluginTimeout
         if not self.mgr.is_enabled(self.manifest.id):
             raise ai.AIError(f"the plugin {self.manifest.id} is switched off")
+        if policy.current().macro_disabled(self.manifest.id + ".*"):   # also as an engine (R98)
+            raise ai.AIError(f"the plugin {self.manifest.id} is disabled by your administrator")
         p = dict(params or {})
         secrets = self.mgr._secrets(self.manifest)
         for name in secrets:                      # a key typed in Settings but not saved yet ("Test")

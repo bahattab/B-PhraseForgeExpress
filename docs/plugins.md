@@ -23,10 +23,16 @@ clipboard = false
 input = false
 ```
 
-PhraseForge reads only this file before the user agrees to install the plugin. A plugin that
-asks for network, filesystem or input access is treated like `{#run}`: phrases from imports or
-sync must be approved on this PC before they can use it. An update that asks for more is
-switched off until the user agrees again.
+PhraseForge reads only this file before the user agrees to install the plugin. **The
+permissions are declarations, not limits:** a plugin is a program that runs with the user's
+Windows rights, so it can read files and reach the network whatever it declares (a network
+proxy and a restricted token are still open, FR-PLG-05). Therefore every plugin macro is
+treated like `{#run}`: phrases from imports, sync or libraries must be approved on this PC
+before they can use it, and so must `{#ai}` / `{#translate}` when the engine is a plugin.
+An update always asks (also when it asks for nothing new) and keeps a switched-off plugin
+off; one that asks for more is switched off until the user agrees again. Removing a plugin
+removes its secrets. Without `plugins_allowed`, a PC whose policy locks Settings or editing
+runs no plugins.
 
 ## Protocol
 
