@@ -440,9 +440,98 @@ def deepl_code(lang: str) -> str:
     return DEEPL_LANGS.get(lang.lower(), lang.upper())
 
 
-def deepl_translate(settings: dict[str, str], text: str, to: str, src: str = "", timeout_s: float = 60) -> str:
+GLOSSARY_PREFIX = "PhraseForge: "
+
+
+def _deepl_call(method: str, url: str, key: str, payload: dict | None = None, timeout: float = 30) -> dict:
+    from phraseforge.net import client_kwargs
+    try:
+        with httpx.Client(timeout=timeout, **client_kwargs()) as c:
+            r = c.request(method, url, headers={"Authorization": f"DeepL-Auth-Key {key}"}, json=payload)
+    except httpx.HTTPError as e:
+        raise AIError(str(e)) from e
+    if r.status_code >= 400:
+        raise AIError(f"DeepL HTTP {r.status_code}: {r.text[:300]}")
+    return r.json() if r.content else {}
+
+
+def glossary_entries(text: str) -> list[tuple[str, str]]:
+    """Word=Translation lines of a glossary (DeepL takes each source term once; no tabs)."""
+    seen, out = set(), []
+    for line in (text or "").splitlines():
+        a, sep, b = line.partition("=")
+        a, b = a.strip(), b.strip()
+        if sep and a and b and "\t" not in a + b and a not in seen:
+            seen.add(a)
+            out.append((a, b))
+    return out
+
+
+def _deepl_glossary_for(settings: dict[str, str], to: str, src: str, name: str) -> tuple[str, str] | None:
+    """(glossary name, source language) to use for this translation, or None. A glossary is sent
+    to DeepL only when its languages are set (Settings > Glossaries) and match, or when named."""
+    try:
+        gl = json.loads(settings.get("translation.glossaries") or "{}")
+    except ValueError:
+        return None
+    if not isinstance(gl, dict):
+        return None
+    langs = glossary_langs(settings)
+    target = deepl_code(to).split("-")[0].lower()
+    for n in ([name] if name else list(gl)):
+        if n not in gl or n not in langs or not glossary_entries(str(gl[n])):
+            continue
+        g_src, g_to = (deepl_code(x).split("-")[0].lower() for x in langs[n])
+        if g_to == target and (not src or deepl_code(src).split("-")[0].lower() == g_src):
+            return n, g_src
+    return None
+
+
+def sync_deepl_glossary(settings: dict[str, str], name: str, timeout_s: float = 30) -> str:
+    """Make sure DeepL has this glossary as written in Settings; returns its glossary_id.
+    DeepL glossaries cannot be edited, so a changed glossary is uploaded again and the old
+    copy deleted. The server copy is named "PhraseForge: <name> #<hash>" so no local state is kept."""
+    import hashlib
+    key = (settings.get("ai.deepl_key") or "").strip()
+    if not key:
+        raise AIError("DeepL API key is not set (Settings > Language Translation)")
+    base = f"https://{'api-free.deepl.com' if key.endswith(':fx') else 'api.deepl.com'}/v2/glossaries"
+    gl = json.loads(settings.get("translation.glossaries") or "{}")
+    langs = glossary_langs(settings)
+    if name not in gl or name not in langs:
+        raise AIError(f"glossary '{name}' needs its source and target languages set (Settings > Glossaries)")
+    src, to = (deepl_code(x).split("-")[0].lower() for x in langs[name])
+    entries = glossary_entries(str(gl[name]))
+    if not entries:
+        raise AIError(f"glossary '{name}' has no Word=Translation lines")
+    tsv = "\n".join(f"{a}\t{b}" for a, b in entries)
+    digest = hashlib.sha256(f"{src}|{to}|{tsv}".encode()).hexdigest()[:10]
+    wanted = f"{GLOSSARY_PREFIX}{name} #{digest}"
+    found = ""
+    for g in _deepl_call("GET", base, key, timeout=timeout_s).get("glossaries", []):
+        gname = str(g.get("name", ""))
+        if gname == wanted and g.get("ready", True) and not found:
+            found = str(g.get("glossary_id", ""))
+        elif gname.startswith(f"{GLOSSARY_PREFIX}{name} #"):
+            try:                                          # an older copy of this glossary
+                _deepl_call("DELETE", f"{base}/{g.get('glossary_id', '')}", key, timeout=timeout_s)
+            except AIError:
+                pass
+    if found:
+        return found
+    made = _deepl_call("POST", base, key, {"name": wanted, "source_lang": src, "target_lang": to,
+                                          "entries": tsv, "entries_format": "tsv"}, timeout_s)
+    gid = str(made.get("glossary_id", ""))
+    if not gid:
+        raise AIError(f"unexpected response: {str(made)[:200]}")
+    return gid
+
+
+def deepl_translate(settings: dict[str, str], text: str, to: str, src: str = "", timeout_s: float = 60,
+                    glossary: str = "") -> str:
     """Translate with the DeepL API (Free keys end in ':fx'). Ignored words are wrapped in
-    <keep> tags that DeepL leaves untranslated."""
+    <keep> tags that DeepL leaves untranslated. A matching glossary from Settings > Glossaries
+    is uploaded to DeepL (sync_deepl_glossary) and used; DeepL takes one glossary per request."""
     key = (settings.get("ai.deepl_key") or "").strip()
     if not key:
         raise AIError("DeepL API key is not set (Settings > Language Translation)")
@@ -459,6 +548,17 @@ def deepl_translate(settings: dict[str, str], text: str, to: str, src: str = "",
     payload["text"] = [body]
     if src:
         payload["source_lang"] = deepl_code(src).split("-")[0]
+    use = _deepl_glossary_for(settings, to, src, glossary)
+    if use is not None:
+        try:
+            payload["glossary_id"] = sync_deepl_glossary(settings, use[0], timeout_s)
+            payload["source_lang"] = use[1].upper()       # DeepL needs the source with a glossary
+        except AIError:
+            if glossary:                                  # asked for by name: say why it failed
+                raise
+    elif glossary:
+        raise AIError(f"glossary '{glossary}' does not fit this translation: set its languages in "
+                      "Settings > Glossaries")
     data = _post(f"https://{host}/v2/translate", {"Authorization": f"DeepL-Auth-Key {key}"}, payload, timeout_s)
     try:
         out = data["translations"][0]["text"]
