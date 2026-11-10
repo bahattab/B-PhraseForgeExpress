@@ -88,6 +88,8 @@ SCHEMA: dict[str, str] = {
     # AI
     "ai.provider": DEFAULT_SETTINGS["ai.provider"],
     "ai.model": "",
+    "ai.image_provider": "openai",        # {#aiimage}: openai | gemini
+    "ai.image_model": "",
     "ai.openai_key": "",
     "ai.anthropic_key": "",
     "ai.openrouter_key": "",

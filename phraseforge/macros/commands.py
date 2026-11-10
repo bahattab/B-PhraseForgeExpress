@@ -1019,8 +1019,8 @@ def _waitfor(rt, args, opts):
 
 # ====================================================================== AI / OCR
 @macro("ai", "AI", '{#ai "prompt" -provider openai|anthropic|gpt4all|ollama|openrouter -model name -system "role" '
-       '-preset "Summarize"}',
-       "Insert an AI model's answer. -preset uses a prompt from Settings > AI text processing > Custom presets "
+       '-preset "Summarize" -image clipboard|region|file:path}',
+       "Insert an AI model's answer. -image sends a picture too (engines with vision). -preset uses a prompt from Settings > AI text processing > Custom presets "
        "(the macro text becomes the input).", '{#ai "Rewrite politely: {#clipboard}"}', aliases=("openai", "chatgpt"))
 def _ai(rt, args, opts):
     prompt = " ".join(args)
@@ -1031,8 +1031,63 @@ def _ai(rt, args, opts):
         prompt = f"{instruction}\n\n{prompt}" if prompt else instruction
         if not opts.get("model") and not opts.get("provider"):
             opts = dict(opts, model=preset_model(ps, opts["preset"]))
+    if opts.get("image"):
+        from phraseforge.ai import capabilities
+        provider = opts.get("provider", "") or rt.setting("ai.provider", "openai")
+        if not capabilities(provider)["vision"]:
+            return "[ai: engine has no vision]"
+        vision = getattr(rt.host, "ai_vision", None)
+        if vision is None:
+            raise MacroError("images cannot be sent to AI here")
+        return vision(prompt, _ai_images(rt, opts["image"]), provider=opts.get("provider", ""),
+                      model=opts.get("model", ""), system=opts.get("system", "")).strip()
     return rt.host.ai_complete(prompt, provider=opts.get("provider", ""), model=opts.get("model", ""),
                                system=opts.get("system", "")).strip()
+
+
+MAX_AI_IMAGE = 20 * 1024 * 1024
+
+
+def _ai_images(rt, spec: str) -> list[bytes]:
+    """-image clipboard | region | file:<path> (several separated by '|')."""
+    out = []
+    for part in [p.strip() for p in spec.split("|") if p.strip()]:
+        low = part.lower()
+        if low == "clipboard":
+            fn = getattr(rt.host, "clipboard_image", None)
+            data = fn() if fn else None
+            if not data:
+                raise MacroError("the clipboard holds no image")
+        elif low == "region":
+            fn = getattr(rt.host, "capture_region", None)
+            data = fn() if fn else None
+            if not data:
+                raise Cancelled("no screen area was selected")
+        elif low.startswith("file:"):
+            path = Path(os.path.expandvars(part[5:].strip().strip('"')))
+            if not path.is_file():
+                raise MacroError(f"image not found: {path}")
+            if path.stat().st_size > MAX_AI_IMAGE:
+                raise MacroError(f"image is larger than 20 MB: {path}")
+            data = path.read_bytes()
+        else:
+            raise MacroError(f"-image must be clipboard, region or file:<path>, not '{part}'")
+        out.append(data)
+    if not out:
+        raise MacroError("-image needs clipboard, region or file:<path>")
+    return out
+
+
+@macro("aiimage", "AI", '{#aiimage -prompt "a red bicycle" -model gpt-image-1 -size 1024x1024 -provider openai}',
+       "Make an image from a description with the image engine from Settings > AI and paste it.",
+       '{#aiimage -prompt "Company logo sketch, flat style"}')
+def _aiimage(rt, args, opts):
+    prompt = opts.get("prompt", "") or " ".join(args)
+    fn = getattr(rt.host, "ai_image", None)
+    if fn is None:
+        raise MacroError("images cannot be made here")
+    return ImageAction(fn(prompt, provider=opts.get("provider", ""), model=opts.get("model", ""),
+                          size=opts.get("size", "") or "1024x1024"))
 
 
 @macro("translate", "AI", '{#translate text -to Arabic -from English -glossary "Name"}',

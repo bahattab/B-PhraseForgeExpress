@@ -1085,6 +1085,20 @@ class SettingsDialog(QDialog):
         self.ai_model = self.bind("ai.model", QLineEdit())
         self.ai_model.setFixedWidth(330)
         lay.addWidget(self.ai_model)
+        lay.addSpacing(6)
+        lay.addWidget(QLabel("Image engine for {#aiimage} (uses that engine's API key) and model:"))
+        self.ai_image_provider = self.bind("ai.image_provider", DataCombo([("OpenAI", "openai"), ("Gemini", "gemini")]))
+        self.ai_image_provider.setFixedWidth(181)
+        self.ai_image_model = self.bind("ai.image_model", QLineEdit())
+        self.ai_image_model.setPlaceholderText("default")
+        self.ai_image_model.setFixedWidth(200)
+        lay.addWidget(_row(self.ai_image_provider, self.ai_image_model))
+        lay.addSpacing(6)
+        pull = QPushButton("Download Ollama model...")
+        pull.clicked.connect(self._pull_ollama_model)
+        usage = QPushButton("Usage...")
+        usage.clicked.connect(self._show_ai_usage)
+        lay.addWidget(_row(pull, usage))
         lay.addStretch(1)
         self._ai_current = ""
         self.ai_provider.currentIndexChanged.connect(lambda _i: (self._stash_ai_key(), self._load_ai_key()))
@@ -1131,6 +1145,85 @@ class SettingsDialog(QDialog):
             self.ai_status_icon.setPixmap(icon("warning").pixmap(16, 16))
         finally:
             QApplication.restoreOverrideCursor()
+
+    def _pull_ollama_model(self) -> None:
+        import threading
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QProgressDialog
+        from phraseforge import ai
+        settings = dict(self.store.settings())
+        if self.ai_provider.value() == "ollama":
+            self._stash_ai_key()
+            settings["ai.ollama_url"] = self._ai_keys.get("ollama", "") or settings.get("ai.ollama_url", "")
+        try:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                have = ", ".join(ai.ollama_models(settings, timeout_s=3)) or "none"
+            finally:
+                QApplication.restoreOverrideCursor()
+        except ai.AIError as e:
+            QMessageBox.warning(self, APP, f"Ollama is not reachable: {str(e)[:200]}")
+            return
+        name, ok = QInputDialog.getText(self, APP, f"Models already downloaded: {have}\n\n"
+                                        "Model to download (see ollama.com/library), for example llama3.2:")
+        if not ok or not name.strip():
+            return
+        state = {"status": "starting", "done": 0, "total": 0, "error": None, "finished": False, "cancel": False}
+
+        def work():
+            try:
+                ai.ollama_pull(settings, name.strip(),
+                               lambda st, d, t: state.update(status=st, done=d, total=t),
+                               lambda: state["cancel"])
+            except ai.AIError as e:
+                state["error"] = str(e)
+            state["finished"] = True
+        dlg = QProgressDialog(f"Downloading {name.strip()}...", "Cancel", 0, 1000, self)
+        dlg.setWindowTitle(APP)
+        dlg.setMinimumDuration(0)
+        dlg.canceled.connect(lambda: state.update(cancel=True))
+        timer = QTimer(dlg)
+
+        def tick():
+            t = state["total"]
+            dlg.setValue(int(state["done"] * 1000 / t) if t else 0)
+            dlg.setLabelText(f"{name.strip()}: {state['status']}"
+                             + (f" ({state['done'] // 1048576} / {t // 1048576} MB)" if t else ""))
+            if state["finished"]:
+                timer.stop()
+                dlg.reset()
+                if state["error"] and not state["cancel"]:
+                    QMessageBox.warning(self, APP, f"The download failed: {state['error'][:300]}")
+                elif not state["error"]:
+                    QMessageBox.information(self, APP, f"{name.strip()} is ready to use with Ollama.")
+        timer.timeout.connect(tick)
+        threading.Thread(target=work, daemon=True, name="ollama-pull").start()
+        timer.start(200)
+
+    def _show_ai_usage(self) -> None:
+        import json as _json
+        from phraseforge import ai
+        stored = self.store.setting("ai.usage", "")
+        rows = ai.usage_rows(stored)
+        try:
+            since = _json.loads(stored or "{}").get("since", "")
+        except (ValueError, AttributeError):
+            since = ""
+        if not rows:
+            QMessageBox.information(self, APP, "No AI requests have been counted yet.")
+            return
+        lines = [f"{k}: {r} requests, {i:,} tokens in, {o:,} tokens out" + (f", {n} images" if n else "")
+                 for k, r, i, o, n in rows]
+        box = QMessageBox(self)
+        box.setWindowTitle(APP)
+        box.setText(f"AI usage on this PC{' since ' + since if since else ''}:\n\n" + "\n".join(lines)
+                    + "\n\nThe services' own dashboards show what you are billed.")
+        reset = box.addButton("Reset", QMessageBox.DestructiveRole)
+        box.addButton(QMessageBox.Close)
+        box.exec()
+        if box.clickedButton() is reset:
+            with ai.USAGE_LOCK:
+                self.store.set_setting("ai.usage", "", notify=False)
 
     def _page_ai_presets(self) -> QWidget:
         w, lay = self._page()

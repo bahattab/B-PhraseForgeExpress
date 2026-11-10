@@ -138,6 +138,8 @@ DEFAULT_SETTINGS = {
     "learning.min_count": "3",
     "ai.provider": "openai",              # openai | anthropic | gemini | openrouter | opencode | kilocode | ollama | gpt4all
     "ai.model": "",
+    "ai.image_provider": "openai",        # {#aiimage}: openai | gemini
+    "ai.image_model": "",
     "ai.openai_key": "",
     "ai.anthropic_key": "",
     "ai.openrouter_key": "",
@@ -227,7 +229,7 @@ DEVICE_SETTING_PREFIXES = (
     "sync.", "gdrive.", "backup.cloud_", "backup.directory", "ocr.cli_path", "ocr.log_file",
     "app.start_with_windows", "app.first_run_done", "ui.item_colors", "ui.trigger_extras",
     "updates.last_check", "updates.notified_version", "net.", "onenote.exe",
-    "filesearch.actions", "filesearch.commands", "filesearch.roots", "sound.", "shared.", "recorder.", "dynamic.", "library.", "autoskip.", "schedule.", "plugins.",
+    "filesearch.actions", "filesearch.commands", "filesearch.roots", "sound.", "shared.", "recorder.", "dynamic.", "library.", "autoskip.", "schedule.", "plugins.", "ai.usage",
     "trash.",                            # the trash is this PC's: a pulled trash.days=1 emptied it (R95)
     *sorted(SECRET_SETTINGS))
 DEVICE_SETTING_SUFFIXES = ("_url", "_endpoint", "_path", "_file", ".file", ".exe", "_dir", "_directory")
@@ -1269,14 +1271,16 @@ class Store:
             return default
         return _unseal(r[0]) if is_secret_setting(key) else r[0]
 
-    def set_setting(self, key: str, value: str) -> None:
+    def set_setting(self, key: str, value: str, notify: bool = True) -> None:
+        """notify=False: a counter only this PC reads (ai.usage); no listener reloads for it."""
         if policy.current().setting_locked(key):
             log.info("a setting locked by the administrator's policy was not changed")
             return
         value = _seal(str(value)) if is_secret_setting(key) else str(value)
         with self.lock, self.conn:
             self.conn.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (key, value))
-        self._changed("setting")
+        if notify:
+            self._changed("setting")
 
     def settings(self) -> dict[str, str]:
         with self.lock:

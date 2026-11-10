@@ -10,7 +10,10 @@ translation.glossaries (see translation_system()).
 """
 from __future__ import annotations
 
+import base64
 import json
+import threading
+import time
 
 import httpx
 
@@ -44,6 +47,100 @@ PROVIDER_NAMES = {"openai": "OpenAI", "anthropic": "Anthropic", "openrouter": "O
 
 class AIError(RuntimeError):
     pass
+
+
+# ---------------------------------------------------------------- capabilities and usage
+# Providers whose chat API accepts images (the chosen model must support them too; the
+# service answers with an error otherwise). GPT4All's local server has no image input.
+VISION_PROVIDERS = {"openai", "anthropic", "openrouter", "gemini", "ollama", "opencode", "kilocode"}
+IMAGE_PROVIDERS = {"openai": "gpt-image-1", "gemini": "imagen-4.0-generate-001", "openrouter": ""}
+
+# Called after each answer with (provider, model, input_tokens, output_tokens, images=0). The app sets it
+# to add the numbers to the ai.usage setting; tests replace it.
+USAGE_HOOK = None
+USAGE_LOCK = threading.Lock()          # held while ai.usage is read and written back
+
+
+def capabilities(provider: str) -> dict:
+    provider = (provider or "").lower()
+    if provider.startswith("plugin:"):
+        from phraseforge.plugins import engines
+        eng = engines.engine(provider)
+        try:
+            caps = eng.capabilities() if eng is not None else {}
+        except Exception:     # noqa: BLE001 - a broken plugin has no capabilities
+            caps = {}
+        return {"vision": bool(caps.get("vision")), "image": False}
+    return {"vision": provider in VISION_PROVIDERS, "image": provider in IMAGE_PROVIDERS}
+
+
+def _record(provider: str, model: str, data: dict, images: int = 0) -> None:
+    u = data.get("usage") or {}
+    inp = u.get("input_tokens", u.get("prompt_tokens", data.get("prompt_eval_count", 0))) or 0
+    out = u.get("output_tokens", u.get("completion_tokens", data.get("eval_count", 0))) or 0
+    if USAGE_HOOK is not None:
+        try:
+            USAGE_HOOK(provider, model, int(inp), int(out), images)
+        except Exception:     # noqa: BLE001 - counting must never break an answer
+            pass
+
+
+def add_usage(stored: str, provider: str, model: str, inp: int, out: int, images: int = 0) -> str:
+    """Adds one request to the JSON kept in the ai.usage setting:
+    {"provider/model": {"requests": n, "input": n, "output": n, "images": n}, "since": "YYYY-MM-DD"}."""
+    try:
+        data = json.loads(stored or "{}")
+        if not isinstance(data, dict):
+            data = {}
+    except ValueError:
+        data = {}
+    data.setdefault("since", time.strftime("%Y-%m-%d"))
+    row = data.setdefault(f"{provider}/{model}" if model else provider, {})
+    for k, v in (("requests", 1), ("input", inp), ("output", out), ("images", images)):
+        row[k] = int(row.get(k, 0)) + int(v)
+    return json.dumps(data)
+
+
+def usage_rows(stored: str) -> list[tuple[str, int, int, int, int]]:
+    """[(provider/model, requests, input tokens, output tokens, images)] sorted by requests."""
+    try:
+        data = json.loads(stored or "{}")
+    except ValueError:
+        return []
+    rows = [(k, int(v.get("requests", 0)), int(v.get("input", 0)), int(v.get("output", 0)), int(v.get("images", 0)))
+            for k, v in (data.items() if isinstance(data, dict) else []) if isinstance(v, dict)]
+    return sorted(rows, key=lambda r: (-r[1], r[0]))
+
+
+def image_mime(data: bytes) -> str:
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:4] == b"GIF8":
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    raise AIError("only PNG, JPEG, GIF and WebP images can be sent to an AI engine")
+
+
+def _with_images(history: list[dict], images: list[bytes], provider: str) -> list[dict]:
+    """Attach images to the last user message in the provider's format."""
+    if not images:
+        return history
+    last = dict(history[-1])
+    text = last["content"]
+    if provider == "ollama":
+        last["images"] = [base64.b64encode(b).decode() for b in images]
+    elif provider == "anthropic":
+        last["content"] = [{"type": "image", "source": {"type": "base64", "media_type": image_mime(b),
+                                                        "data": base64.b64encode(b).decode()}} for b in images] \
+            + [{"type": "text", "text": text}]
+    else:                                                # OpenAI chat-completions format
+        last["content"] = [{"type": "text", "text": text}] + [
+            {"type": "image_url", "image_url": {"url": f"data:{image_mime(b)};base64,{base64.b64encode(b).decode()}"}}
+            for b in images]
+    return history[:-1] + [last]
 
 
 def _post(url: str, headers: dict, payload: dict, timeout: float) -> dict:
@@ -149,15 +246,17 @@ def translation_system(settings: dict[str, str], to: str, src: str = "", glossar
 
 
 def complete(settings: dict[str, str], prompt: str, provider: str = "", model: str = "", system: str = "",
-             timeout_s: float = 120, max_tokens: int = 1024, raw_system: bool = False) -> str:
+             timeout_s: float = 120, max_tokens: int = 1024, raw_system: bool = False,
+             images: list[bytes] | None = None) -> str:
     """One prompt, one answer. raw_system=True skips the user's custom instructions (used by
-    translation)."""
+    translation). images: PNG/JPEG/GIF/WebP bytes sent with the prompt (vision)."""
     return chat(settings, [{"role": "user", "content": prompt}], provider, model, system,
-                timeout_s, max_tokens, raw_system)
+                timeout_s, max_tokens, raw_system, images)
 
 
 def chat(settings: dict[str, str], history: list[dict], provider: str = "", model: str = "", system: str = "",
-         timeout_s: float = 120, max_tokens: int = 1024, raw_system: bool = False) -> str:
+         timeout_s: float = 120, max_tokens: int = 1024, raw_system: bool = False,
+         images: list[bytes] | None = None) -> str:
     """A conversation: history is [{"role": "user"|"assistant", "content": "..."}, ...]
     (oldest first, ending with the user's turn). Returns the assistant's reply."""
     history = [{"role": m["role"], "content": m["content"]} for m in history
@@ -165,11 +264,15 @@ def chat(settings: dict[str, str], history: list[dict], provider: str = "", mode
     if not history or history[-1]["role"] != "user":
         raise AIError("The conversation must end with a user message.")
     provider = (provider or settings.get("ai.provider") or "openai").lower()
+    if images and not capabilities(provider)["vision"]:
+        raise AIError("engine has no vision")
     if provider.startswith("plugin:"):                  # an AI engine from a plugin (plugins/engines.py)
         from phraseforge.plugins import engines
         eng = engines.engine(provider)
         if eng is None or eng.kind != "ai_engine":
             raise AIError(f"the AI plugin '{provider[7:]}' is not installed or switched off")
+        if images:
+            history = _with_images(history, images, "openai")
         return eng.generate(settings, history, {"model": model, "max_tokens": max_tokens, "timeout": timeout_s,
                                                 "system": system if raw_system else full_system(settings, system)})
     if provider not in DEFAULT_MODELS:
@@ -178,6 +281,7 @@ def chat(settings: dict[str, str], history: list[dict], provider: str = "", mode
     model = model or (settings.get("ai.model") if same_provider else "") or DEFAULT_MODELS[provider]
     if not raw_system:
         system = full_system(settings, system)
+    history = _with_images(history, images or [], provider)
 
     if provider == "anthropic":
         key = settings.get("ai.anthropic_key", "")
@@ -189,12 +293,14 @@ def chat(settings: dict[str, str], history: list[dict], provider: str = "", mode
         data = _post("https://api.anthropic.com/v1/messages",
                      {"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
                      payload, timeout_s)
+        _record(provider, model, data, len(images or []))
         return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
 
     if provider == "gpt4all":
         base = (settings.get("ai.gpt4all_url") or "http://localhost:4891/v1").rstrip("/")
         data = _post(f"{base}/chat/completions", {}, {"model": model, "max_tokens": max_tokens,
                                                       "messages": _with_system(history, system)}, timeout_s)
+        _record(provider, model, data, len(images or []))
         try:
             return data["choices"][0]["message"]["content"] or ""
         except (KeyError, IndexError) as e:
@@ -204,6 +310,7 @@ def chat(settings: dict[str, str], history: list[dict], provider: str = "", mode
         base = (settings.get("ai.ollama_url") or "http://localhost:11434").rstrip("/")
         data = _post(f"{base}/api/chat", {}, {"model": model, "stream": False,
                                                "messages": _with_system(history, system)}, timeout_s)
+        _record(provider, model, data, len(images or []))
         return data.get("message", {}).get("content", "")
 
     name = PROVIDER_NAMES.get(provider, provider)
@@ -216,10 +323,102 @@ def chat(settings: dict[str, str], history: list[dict], provider: str = "", mode
         raise AIError(f"Enter the model to use with {name} in Settings > AI > Model.")
     data = _post(url, {"Authorization": f"Bearer {key}"},
                  {"model": model, "messages": _with_system(history, system)}, timeout_s)
+    _record(provider, model, data, len(images or []))
     try:
         return data["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError) as e:
         raise AIError(f"unexpected response: {str(data)[:200]}") from e
+
+
+# ---------------------------------------------------------------- image generation
+def generate_image(settings: dict[str, str], prompt: str, provider: str = "", model: str = "",
+                   size: str = "1024x1024", timeout_s: float = 180) -> bytes:
+    """Image bytes for a text prompt ({#aiimage}). Uses the OpenAI images API format, which
+    OpenAI and Gemini (OpenAI compatibility) serve; Settings > AI > Image engine picks one."""
+    provider = (provider or settings.get("ai.image_provider") or settings.get("ai.provider") or "openai").lower()
+    if provider not in IMAGE_PROVIDERS or provider == "openrouter":
+        raise AIError(f"{PROVIDER_NAMES.get(provider, provider)} cannot make images; choose OpenAI or Gemini "
+                      "as the image engine in Settings > AI")
+    if not prompt.strip():
+        raise AIError("describe the image to make")
+    size = (size or "1024x1024").lower()
+    w, _, h = size.partition("x")
+    if not (w.isdigit() and h.isdigit()):
+        raise AIError(f"image size must look like 1024x1024, not '{size}'")
+    key = (settings.get(f"ai.{provider}_key") or "").strip()
+    if not key:
+        raise AIError(f"{PROVIDER_NAMES[provider]} API key is not set (Settings > AI)")
+    model = model or settings.get("ai.image_model") or IMAGE_PROVIDERS[provider]
+    base = (settings.get(f"ai.{provider}_base_url") or OPENAI_COMPATIBLE[provider]).rstrip("/")
+    payload = {"model": model, "prompt": prompt, "n": 1, "size": size}
+    if provider == "gemini" or model.startswith("dall-e"):
+        payload["response_format"] = "b64_json"          # gpt-image-* always answer in base64
+    data = _post(f"{base}/images/generations", {"Authorization": f"Bearer {key}"}, payload, timeout_s)
+    try:
+        b64 = data["data"][0]["b64_json"]
+    except (KeyError, IndexError, TypeError) as e:
+        raise AIError(f"unexpected response: {str(data)[:200]}") from e
+    if USAGE_HOOK is not None:
+        try:
+            USAGE_HOOK(provider, model, 0, 0, 1)
+        except Exception:     # noqa: BLE001
+            pass
+    try:
+        return base64.b64decode(b64)
+    except ValueError as e:
+        raise AIError("the image engine sent an image that could not be read") from e
+
+
+# ---------------------------------------------------------------- Ollama model downloads
+def _ollama_base(settings: dict[str, str]) -> str:
+    return (settings.get("ai.ollama_url") or "http://localhost:11434").rstrip("/")
+
+
+def ollama_models(settings: dict[str, str], timeout_s: float = 10) -> list[str]:
+    """Names of the models the Ollama server already has."""
+    from phraseforge.net import client_kwargs
+    try:
+        with httpx.Client(timeout=timeout_s, **client_kwargs()) as c:
+            r = c.get(f"{_ollama_base(settings)}/api/tags")
+    except httpx.HTTPError as e:
+        raise AIError(str(e)) from e
+    if r.status_code >= 400:
+        raise AIError(f"HTTP {r.status_code}: {r.text[:300]}")
+    return sorted(m.get("name", "") for m in r.json().get("models", []) if m.get("name"))
+
+
+def ollama_pull(settings: dict[str, str], model: str, progress=None, cancelled=lambda: False,
+                timeout_s: float = 3600) -> None:
+    """Download a model into Ollama. progress(status, done_bytes, total_bytes) is called for each
+    line Ollama streams; cancelled() returning True stops the download."""
+    model = (model or "").strip()
+    if not model or any(c.isspace() for c in model):
+        raise AIError("enter a model name such as llama3.2 or qwen2.5:7b")
+    from phraseforge.net import client_kwargs
+    try:
+        with httpx.Client(timeout=httpx.Timeout(timeout_s, connect=10), **client_kwargs()) as c, \
+                c.stream("POST", f"{_ollama_base(settings)}/api/pull", json={"model": model, "stream": True}) as r:
+            if r.status_code >= 400:
+                r.read()
+                raise AIError(f"HTTP {r.status_code}: {r.text[:300]}")
+            for line in r.iter_lines():
+                if cancelled():
+                    raise AIError("download cancelled")
+                if not line.strip():
+                    continue
+                try:
+                    msg = json.loads(line)
+                except ValueError:
+                    continue
+                if msg.get("error"):
+                    raise AIError(str(msg["error"]))
+                if progress:
+                    progress(str(msg.get("status", "")), int(msg.get("completed") or 0), int(msg.get("total") or 0))
+                if msg.get("status") == "success":
+                    return
+    except httpx.HTTPError as e:
+        raise AIError(str(e)) from e
+    raise AIError("Ollama stopped before the download finished")
 
 
 # ---------------------------------------------------------------- DeepL (translation only)
