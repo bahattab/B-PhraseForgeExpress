@@ -111,6 +111,7 @@ class PluginProcess:
         self._lock = threading.Lock()                      # one call at a time
         self._replies: queue.Queue = queue.Queue()
         self._next_id = 0
+        self._proxy = None                                 # netproxy.FilterProxy (FR-PLG-05)
 
     # ------------------------------------------------------------ process
     @property
@@ -119,7 +120,12 @@ class PluginProcess:
 
     def _start(self) -> None:
         flags = 0x08000000 if sys.platform == "win32" else 0       # CREATE_NO_WINDOW
-        self._proc = subprocess.Popen(command(self.manifest, self.folder), cwd=str(self.folder), env=_env(),
+        from phraseforge.plugins.netproxy import FilterProxy
+        if self._proxy is None:                             # only the manifest's hosts are reachable
+            self._proxy = FilterProxy(self.manifest.id, self.manifest.permissions.network, self._error)
+            self._proxy.start()
+        env = dict(_env(), **self._proxy.env())
+        self._proc = subprocess.Popen(command(self.manifest, self.folder), cwd=str(self.folder), env=env,
                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                       creationflags=flags)
         _close_job(self._job)
@@ -167,7 +173,15 @@ class PluginProcess:
     def _error(self, text: str) -> None:
         self.errors.append(time.strftime("%Y-%m-%d %H:%M:%S ") + text)
 
+    @property
+    def blocked_hosts(self) -> list[str]:
+        """Connections the network filter refused (newest last)."""
+        return list(self._proxy.denied) if self._proxy else []
+
     def stop(self) -> None:
+        proxy, self._proxy = self._proxy, None
+        if proxy is not None:
+            proxy.stop()
         p, self._proc = self._proc, None
         job, self._job = self._job, None
         if p is not None and p.poll() is None:

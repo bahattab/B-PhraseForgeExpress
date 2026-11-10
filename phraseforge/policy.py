@@ -61,6 +61,8 @@ class Policy:
     forced: dict[str, str] = field(default_factory=dict)
     message: str = ""
     plugins_allowed: frozenset[str] | None = None   # None = any plugin; else only these ids ("*" = any)
+    plugins_require_signature: bool = False          # install only plugins signed by a trusted key
+    plugins_trusted_keys: frozenset[str] = frozenset()   # base64 Ed25519 publisher keys
     source: str = ""                       # file it came from ("" = no policy)
     error: str = ""                        # set when the file was unreadable (fail closed)
 
@@ -139,7 +141,7 @@ def parse(text: str, source: str = "policy.toml") -> Policy:
     import tomllib
     data = tomllib.loads(text)
     known = {"settings_locked", "editing_disabled", "stats_enabled", "macros_disabled", "locked_settings",
-             "settings", "message", "plugins_allowed"}
+             "settings", "message", "plugins_allowed", "plugins_require_signature", "plugins_trusted_keys"}
     unknown = sorted(k for k in data if k not in known)
     if unknown:                              # a misspelt key must not leave everything open
         raise ValueError(f"unknown key {unknown[0]!r}")
@@ -163,6 +165,9 @@ def parse(text: str, source: str = "policy.toml") -> Policy:
         message=str(data.get("message", "")),
         plugins_allowed=(frozenset(x.strip().lower() for x in _strings(data["plugins_allowed"], "plugins_allowed"))
                          if "plugins_allowed" in data else None),
+        plugins_require_signature=flag("plugins_require_signature", False),
+        plugins_trusted_keys=frozenset(x.strip() for x in _strings(data.get("plugins_trusted_keys", []),
+                                                                   "plugins_trusted_keys")),
         source=source)
 
 
@@ -176,7 +181,8 @@ def load(path: Path | None = None) -> Policy:
         return parse(p.read_text(encoding="utf-8-sig"), str(p))
     except Exception as e:                  # unreadable or invalid: lock rather than open up
         log.error("policy file %s could not be read, Settings and editing stay locked: %s", p, e)
-        return Policy(settings_locked=True, editing_disabled=True, plugins_allowed=frozenset(), source=str(p),
+        return Policy(settings_locked=True, editing_disabled=True, plugins_allowed=frozenset(),
+                      plugins_require_signature=True, source=str(p),
                       error=str(e))
 
 

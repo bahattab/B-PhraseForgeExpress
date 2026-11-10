@@ -71,3 +71,28 @@ The API key typed in Settings > AI for a plugin engine is passed as the secret `
 it under `[permissions] secrets`). AI calls have 60 seconds. A plugin that only writes text
 (ai_engine) can also be chosen for translation: PhraseForge then asks it with a translation
 instruction.
+
+## Signing a plugin
+
+A plugin can carry `plugin.sig`, an Ed25519 signature over every file in it. PhraseForge shows
+whether a plugin is signed, and by whom (a short fingerprint), when it asks you to install it.
+A plugin whose files no longer match its signature is never installed.
+
+```python
+from phraseforge.plugins import signing
+private, public = signing.new_key()      # keep the private key secret; publish the public one
+signing.sign_folder("my-plugin", private) # writes my-plugin/plugin.sig; sign last, after every change
+```
+
+Users trust a publisher by adding its public key, one per line, to the setting
+`plugins.trusted_keys` (this PC only). Administrators can list keys in `policy.toml`
+(`plugins_trusted_keys = ["..."]`) and set `plugins_require_signature = true` so that only
+plugins signed by a trusted key can be installed.
+
+## Network access
+
+Each plugin process gets `HTTPS_PROXY`, `HTTP_PROXY` and `ALL_PROXY` pointing at its own local
+proxy. It only opens HTTPS tunnels (port 443) to the hosts in `permissions.network`; anything
+else, and plain HTTP, is refused and listed in the plugin's errors. Use a normal HTTP library
+that honours these variables (urllib, requests, httpx). A plugin that opens sockets itself is not
+stopped by this: install only plugins you trust.

@@ -121,9 +121,27 @@ def _inspect(src: Path) -> Manifest:
         return m
 
 
-def install(src: str | Path, dest_root: str | Path) -> Manifest:
+def signature(src: str | Path, trusted=frozenset()):
+    """signing.Signature of a plugin folder or package, without installing it (shown at consent)."""
+    from phraseforge.plugins import signing
+    src = Path(src)
+    if src.is_dir():
+        _check_folder(src)
+        return signing.verify(signing.folder_files(src), trusted)
+    with zipfile.ZipFile(src) as z:
+        root = _check_zip(z)
+        files = {i.filename[len(root):]: z.read(i) for i in z.infolist()
+                 if not i.is_dir() and i.filename.startswith(root)
+                 and not set(PurePosixPath(i.filename).parts) & {"__pycache__", ".git"}
+                 and not i.filename.endswith(".pyc")}
+    return signing.verify(files, trusted)
+
+
+def install(src: str | Path, dest_root: str | Path, trusted=frozenset(), require_signed: bool = False) -> Manifest:
     """Copy the plugin into dest_root/<id> (replacing an older version). The caller asks for
-    consent first."""
+    consent first. A plugin whose plugin.sig does not match its files is refused; with
+    require_signed (policy) so is one not signed by a trusted key. The check runs on the copied
+    files, so what is verified is exactly what gets installed."""
     src, dest_root = Path(src), Path(dest_root)
     m = inspect(src)
     dest_root.mkdir(parents=True, exist_ok=True)
@@ -146,6 +164,12 @@ def install(src: str | Path, dest_root: str | Path) -> Manifest:
                     target.parent.mkdir(parents=True, exist_ok=True)
                     with z.open(i) as r, open(target, "wb") as w:
                         shutil.copyfileobj(r, w)
+        from phraseforge.plugins import signing
+        sig = signing.verify(signing.folder_files(stage / "p"), trusted)
+        if sig.state == "invalid":
+            raise ManifestError(f"the plugin's signature is not valid: {sig.reason}")
+        if require_signed and sig.state != "trusted":
+            raise ManifestError("this PC only installs plugins signed by a trusted publisher")
         final = dest_root / m.id
         old = dest_root / f".{m.id}.old"
         if old.exists():
