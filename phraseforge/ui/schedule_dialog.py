@@ -134,6 +134,9 @@ class TasksDialog(QDialog):
             p = self.store.get_phrase(t.phrase_id) if t.phrase_id is not None else None
             if p is None:
                 continue
+            from phraseforge.security import LOCKS
+            if LOCKS.is_locked(self.store, p.folder_id):     # the tree hides it too (R92)
+                continue
             try:
                 s = schedule.parse(t.value)
             except ValueError:

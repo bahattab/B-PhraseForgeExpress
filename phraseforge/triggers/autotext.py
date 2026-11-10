@@ -34,6 +34,9 @@ from dataclasses import dataclass, replace
 from typing import Callable
 
 from phraseforge.models import Folder, Trigger, TriggerKind
+import logging
+
+log = logging.getLogger(__name__)
 
 MAX_BUFFER = 256
 PUNCTUATION = set(".,;:!?)]}'\"([{/\\-_<>")
@@ -114,8 +117,11 @@ class AutotextMatcher:
             elif kind == TriggerKind.REGEX:
                 try:
                     flags = 0 if t.case_sensitive else re.IGNORECASE
-                    rx.append((t, re.compile(f"(?:{t.value})$", flags)))
-                except re.error:
+                    # checked: it runs on every keystroke, and (a+)+b froze typing (security R86)
+                    from phraseforge import saferegex
+                    rx.append((t, saferegex.compile_checked(f"(?:{t.value})$", flags)))
+                except (re.error, ValueError) as e:
+                    log.warning("regex trigger of phrase %s not used: %s", t.phrase_id, e)
                     continue
         # longest first so the first hit is the longest match
         no_trail.sort(key=lambda t: -len(t.value))
@@ -159,15 +165,29 @@ class AutotextMatcher:
         return m
 
     # ------------------------------------------------------------ delimiter rules
+    MAX_DELIM = 200                       # an imported trigger's delimiter text (R91)
+
     def _choice_pred(self, choice: str, default: set[str]) -> Callable[[str], bool] | None:
+        """Cached: it is asked on every keystroke for every trigger, and a 1.2 MB delimiter
+        text from an imported file took 3.5 s per keystroke (security R91)."""
+        key = (choice, id(default))
+        cache = self.__dict__.setdefault("_pred_cache", {})
+        if key not in cache:
+            if len(cache) > 4096:
+                cache.clear()
+            cache[key] = self._make_pred(choice[:self.MAX_DELIM] if len(choice) > self.MAX_DELIM else choice,
+                                         default)
+        return cache[key]
+
+    def _make_pred(self, choice: str, default: set[str]) -> Callable[[str], bool] | None:
         if choice == "None":
             return None
         if choice.startswith("Custom:"):
             chars = set(choice[len("Custom:"):])
             return lambda c: c in chars
         if "+" in choice and choice not in ("+",):
-            preds = [p for p in (self._choice_pred(part.strip(), default) for part in choice.split("+") if part.strip())
-                     if p is not None]
+            parts = list(dict.fromkeys(part.strip() for part in choice.split("+") if part.strip()))[:12]
+            preds = [p for p in (self._make_pred(part, default) for part in parts) if p is not None]
             return (lambda c: any(p(c) for p in preds)) if preds else None
         if choice == "All":
             return lambda c: True

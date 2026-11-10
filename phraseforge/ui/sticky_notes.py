@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 from phraseforge.stickynotes import COLORS, StickyNote
 from phraseforge.ui.i18n import tr
 from phraseforge.ui.icons import app_icon
+from phraseforge.ui.safetext import plain_tip
 
 COLOR_LABELS = {"yellow": "Yellow", "green": "Green", "pink": "Pink", "purple": "Purple",
                 "blue": "Blue", "gray": "Gray", "charcoal": "Charcoal"}
@@ -377,7 +378,7 @@ class NotesListWindow(QWidget):
             paper, header, ink = _paper(n.theme)
             it.setBackground(QColor(paper))
             it.setForeground(QColor(ink))
-            it.setToolTip(n.text[:500])
+            it.setToolTip(plain_tip(n.text[:500]))
             self.list.addItem(it)
         self.empty.setVisible(not notes)
         from phraseforge import stickynotes

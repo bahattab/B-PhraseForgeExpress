@@ -200,8 +200,13 @@ def unlock(header: dict, passphrase: str | None = None) -> Key:
     raise WrongPassphrase("Wrong passphrase.")
 
 
-def encrypt(data: bytes, key: Key) -> bytes:
-    header = json.dumps({"v": 1, "alg": "AES-256-GCM", "wraps": key.wraps}, sort_keys=True).encode("utf-8")
+def encrypt(data: bytes, key: Key, meta: dict | None = None) -> bytes:
+    """meta: authenticated with the data (it is part of the header, the associated data): a sync
+    copy's name and revision cannot be changed without the key (security R84)."""
+    h = {"v": 1, "alg": "AES-256-GCM", "wraps": key.wraps}
+    if meta:
+        h["meta"] = meta
+    header = json.dumps(h, sort_keys=True).encode("utf-8")
     aad = MAGIC + struct.pack(">I", len(header)) + header
     nonce = secrets.token_bytes(12)
     return aad + nonce + _aes()(key.dek).encrypt(nonce, data, aad)
@@ -223,12 +228,12 @@ def read(path: str | Path, key: Key | None = None, passphrase: str | None = None
     return decrypt(blob, key), key
 
 
-def write(path: str | Path, data: bytes, key: Key) -> None:
+def write(path: str | Path, data: bytes, key: Key, meta: dict | None = None) -> None:
     """Write atomically: a crash leaves the old file or the new one, never half of one."""
     p = Path(path)
     tmp = p.with_name(p.name + ".tmp")
     with open(tmp, "wb") as f:
-        f.write(encrypt(data, key))
+        f.write(encrypt(data, key, meta))
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, p)

@@ -18,6 +18,7 @@ from phraseforge.db import Store
 from phraseforge.models import Phrase
 from phraseforge.ui.i18n import tr
 from phraseforge.ui.iconset import icon
+from phraseforge.ui.safetext import plain_tip
 
 ROLE_KIND = Qt.UserRole
 ROLE_ID = Qt.UserRole + 1
@@ -226,7 +227,7 @@ class TreePanel(QWidget):
         if linked:
             target = self.store.phrase_by_uid(linked)
             tip += ("\n" if tips else "") + (f'Link to "{target.description}"' if target else "Link to a deleted phrase")
-        it.setToolTip(0, tip)
+        it.setToolTip(0, plain_tip(tip))
         if not p.enabled:
             it.setForeground(0, QBrush(QColor("#9a9a9a")))
         self._apply_color(it, "phrase", p.id, colors if colors is not None else item_colors(self.store))
@@ -317,7 +318,7 @@ class TreePanel(QWidget):
                     c.setIcon(0, icon("phrase"))
                     c.setData(0, ROLE_KIND, "clip")
                     c.setData(0, ROLE_ID, e.id)
-                    c.setToolTip(0, e.text[:500])
+                    c.setToolTip(0, plain_tip(e.text[:500]))
                     c.setFlags(c.flags() & ~Qt.ItemIsDragEnabled & ~Qt.ItemIsDropEnabled)
                     cc.addChild(c)
             # PhraseForge's own sticky notes (ui/sticky_notes.py)
@@ -332,7 +333,7 @@ class TreePanel(QWidget):
                         c.setIcon(0, icon("sticky_notes"))
                         c.setData(0, ROLE_KIND, "note")
                         c.setData(0, ROLE_ID, n.id)
-                        c.setToolTip(0, n.text[:500])
+                        c.setToolTip(0, plain_tip(n.text[:500]))
                         c.setFlags(c.flags() & ~Qt.ItemIsDragEnabled & ~Qt.ItemIsDropEnabled & ~Qt.ItemIsEditable)
                         sn.addChild(c)
             root = self._special("root", "Phrases", "phrases_root")
@@ -546,7 +547,7 @@ class PhraseList(QWidget):
                 it.setIcon(0, icon("sticky_notes"))
                 it.setData(0, ROLE_KIND, "note")
                 it.setData(0, ROLE_ID, n.id)
-                it.setToolTip(0, n.text[:500])
+                it.setToolTip(0, plain_tip(n.text[:500]))
                 self.list.addTopLevelItem(it)
         elif kind == "root" and self.panel.flat:
             # Flat list: every phrase of every (unlocked) folder, without folders

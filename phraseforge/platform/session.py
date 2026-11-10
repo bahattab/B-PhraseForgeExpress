@@ -212,8 +212,15 @@ def restart_as_admin() -> bool:
     to exit (--after-exit <pid>). True when the user agreed; the caller then quits."""
     if os.name != "nt":
         return False
+    import subprocess
+    from phraseforge import paths
     exe, params = restart_command()
-    params = (params + " " if params else "") + f"--minimized --after-exit {os.getpid()}"
+    # the elevated copy must open the same phrase file: --home / --portable came from the command
+    # line and the elevated process does not inherit this one's environment (security R82)
+    where = ["--portable"] if paths.is_portable() and not os.environ.get("PHRASEFORGE_HOME") else \
+        ["--home", str(paths.data_dir())]
+    params = (params + " " if params else "") + subprocess.list2cmdline(
+        where + ["--minimized", "--after-exit", str(os.getpid())])
     shell32 = ctypes.WinDLL("shell32", use_last_error=True)
     shell32.ShellExecuteW.restype = ctypes.c_void_p
     shell32.ShellExecuteW.argtypes = [wt.HWND, wt.LPCWSTR, wt.LPCWSTR, wt.LPCWSTR, wt.LPCWSTR, ctypes.c_int]

@@ -112,9 +112,11 @@ def clipboard_trigger_hit(t: Trigger, text: str) -> tuple[bool, tuple[str, ...]]
         a, b = text.strip(), t.value.strip()
         return (a == b if t.case_sensitive else a.casefold() == b.casefold()), ()
     if kind == TriggerKind.CLIPBOARD_REGEX:
-        try:
-            m = re.search(t.value, text, 0 if t.case_sensitive else re.IGNORECASE)
-        except re.error:
+        from phraseforge import saferegex
+        try:   # a checked pattern on bounded text: the clipboard can hold megabytes (R86)
+            m = saferegex.compile_checked(t.value, 0 if t.case_sensitive else re.IGNORECASE).search(
+                text[:saferegex.MAX_TEXT])
+        except (re.error, ValueError):
             return False, ()
         return (m is not None), (tuple(g or "" for g in m.groups()) if m else ())
     return False, ()
@@ -792,8 +794,8 @@ class TriggerManager:
 
     # ------------------------------------------------------------ clipboard
     def _on_clipboard(self, text: str) -> None:
-        if not self._active() or not self._clip_triggers:
-            return
+        if not self._active() or not self._clip_triggers or not self.session_active:
+            return                       # not while the PC is locked or disconnected (R93)
         exe, title = self._fg()
         if self._restricted(exe):
             return

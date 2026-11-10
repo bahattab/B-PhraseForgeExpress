@@ -79,7 +79,12 @@ def _pe_macros(content: str, rep: ExchangeReport) -> str:
     if "{#" not in content:
         return content
     from phraseforge.macros.pe_compat import translate
-    new, warnings = translate(content)
+    try:
+        new, warnings = translate(content)
+    except RecursionError:                # very deep nesting: keep this row as it is, go on (R94)
+        if len(rep.notes) < 50:
+            rep.notes.append("A phrase with very deeply nested macros was imported without translating them.")
+        return content
     for w in warnings:                    # the macros PhraseForge does not have; renames are silent
         if ("not supported" in w or "not understood" in w) and w not in rep.notes and len(rep.notes) < 50:
             rep.notes.append(w)

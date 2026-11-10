@@ -412,7 +412,9 @@ ALLOW_ONCE, ALLOW_ALWAYS = "once", "always"
 def approve_phrase(description: str, origin: str, reasons: list[str]) -> str:
     """Ask before an imported/synced phrase runs privileged macros.
     Returns ALLOW_ONCE, ALLOW_ALWAYS or "" (do not run)."""
-    where = tr("was imported") if origin == "imported" else tr("came from cloud sync")
+    where = {"imported": tr("was imported"), "library": tr("comes from a phrase library"),
+             "restored": tr("was restored from the trash after its folder or variables changed"),
+             "shared": tr("comes from the shared database")}.get(origin, tr("came from cloud sync"))
     box = QMessageBox()
     box.setIcon(QMessageBox.Warning)
     box.setWindowTitle(tr("Run this phrase?"))
