@@ -105,6 +105,18 @@ class PluginManager:
             new.append(ENGINE_LINE)                     # it becomes an AI/translation engine (R112)
         return m, new
 
+    def trusted_keys(self) -> frozenset[str]:
+        """Publisher keys this PC trusts: Settings (plugins.trusted_keys) plus the policy's."""
+        from phraseforge.plugins import signing
+        pol = policy.current()
+        if pol.plugins_require_signature:     # the administrator decides who is trusted, not the user
+            return pol.plugins_trusted_keys
+        return signing.trusted_keys(self.store.setting("plugins.trusted_keys", "")) | pol.plugins_trusted_keys
+
+    def signature(self, src):
+        """signing.Signature of a package, shown with the consent question."""
+        return inst.signature(src, self.trusted_keys())
+
     def install(self, src, accept: bool, expected: Manifest | None = None) -> Manifest:
         """Install after the user accepted the permissions (accept must be True)."""
         if not accept:
@@ -117,7 +129,7 @@ class PluginManager:
         was = self.installed().get(m.id)
         keep_off = was is not None and m.id not in self._enabled_ids()   # switched off by the user (R101)
         self.stop(m.id)
-        inst.install(src, self.root)
+        inst.install(src, self.root, self.trusted_keys(), policy.current().plugins_require_signature)
         self.store.set_setting(f"plugins.granted.{m.id}", _perm_json(m.permissions))
         self.set_enabled(m.id, not keep_off)
         return m
