@@ -2520,6 +2520,17 @@ class SettingsDialog(QDialog):
         gl.addWidget(_row("Formatted text as:", rich))
         gl.addSpacing(4)
         gl.addWidget(self.bind("output.restore_clipboard", QCheckBox("Restore clipboard contents after phrase insertion")))
+        # FR-TRG-06: what happens to keys typed while a phrase is being typed
+        block = self.bind("output.block_keys", DataCombo([
+            ("Hold them back and type them after the phrase", "replay"),
+            ("Ignore them", "discard"),
+            ("Let them through (may mix with the phrase)", "off")]))
+        block.setMinimumWidth(300)
+        gl.addWidget(_row("Keys typed while a phrase is inserted:", block))
+        block_s = self.bind("output.block_max_s", QSpinBox())
+        block_s.setRange(1, 120)
+        block_s.setFixedWidth(60)
+        gl.addWidget(_row("Stop holding keys back after", block_s, "seconds"))
         more = QLabel('<a href="more">(more)</a>')
         more.linkActivated.connect(lambda _l: QMessageBox.information(
             self, "Paste method", "Some programs accept text only by pasting or only by typing. "

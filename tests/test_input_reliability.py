@@ -54,6 +54,13 @@ class FakeLib:
     def pf_stats(self, ref):
         pass
 
+    def pf_block_begin(self, ms):
+        self.block = ("begin", ms)
+
+    def pf_block_end(self, replay):
+        self.block = ("end", replay)
+        return 3
+
 
 def raw(vk, chars="", status=ST_DOWN | ST_WAITED, mods=0, seq=7):
     e = PFEvent()
@@ -306,6 +313,72 @@ def test_integrity_comparison():
     assert s.own_integrity() >= 0x2000
 
 
+# ---------------------------------------------------------------- FR-TRG-06: keys typed during output
+def test_keys_to_send_replays_all_or_only_pending_releases():
+    from phraseforge.platform.keyboard_hook import LLKHF_UP, keys_to_send
+    held = [(0x10, 0, LLKHF_UP),          # Shift was held before output began, released during it
+            (0x58, 0, 0), (0x58, 0, LLKHF_UP),
+            (0xE7, 0x627, 0), (0xE7, 0x627, LLKHF_UP)]
+    assert keys_to_send(held, True) == held
+    assert keys_to_send(held, False) == [(0x10, 0, LLKHF_UP)]
+
+
+def test_native_wrapper_blocks_only_while_running():
+    lib = FakeLib()
+    hook = NativeKeyboardHook(lambda ev: False, lib=lib)
+    hook.begin_block(5000)
+    assert not hasattr(lib, "block")                  # not started: nothing to hold back
+    hook.start()
+    try:
+        hook.begin_block(5000)
+        assert lib.block == ("begin", 5000)
+        assert hook.end_block(replay=False) == 3 and lib.block == ("end", 0)
+    finally:
+        hook.stop()
+
+
+class BlockingHook(FakeHook):
+    def __init__(self, on_key):
+        super().__init__(on_key)
+        self.calls = []
+
+    def begin_block(self, ms):
+        self.calls.append(("begin", ms))
+
+    def end_block(self, replay=True):
+        self.calls.append(("end", replay))
+        return 0
+
+
+@pytest.mark.parametrize("mode,expect", [
+    ("replay", [("begin", 10000), ("end", True)]),
+    ("discard", [("begin", 10000), ("end", False)]),
+    ("off", []),
+])
+def test_output_holds_keys_back_once_for_nested_busy(mode, expect):
+    store = Store(":memory:")
+    store.set_setting("output.block_keys", mode)
+    mgr = TriggerManager(store, lambda r: None, lambda c: None, hook_factory=BlockingHook,
+                         watcher_factory=FakeWatcher, poll_interval_s=3600,
+                         session_state=lambda: "active", window_elevated=lambda h: False)
+    mgr.start()
+    try:
+        with mgr.suspend():
+            with mgr.suspend():              # e.g. _with_triggers_paused around output.execute
+                pass
+            assert mgr._hook.calls == expect[:1]
+        assert mgr._hook.calls == expect
+    finally:
+        mgr.stop()
+        store.close()
+
+
+def test_block_time_limit_is_clamped():
+    from phraseforge.triggers.manager import _block_ms
+    assert _block_ms("10") == 10000 and _block_ms("0") == 1000 and _block_ms("999") == 120000
+    assert _block_ms("x") == 10000
+
+
 # ---------------------------------------------------------------- the real DLL (built in CI)
 needs_dll = pytest.mark.skipif(nh.load_library() is None, reason=f"pfhook.dll: {nh.library_error()}")
 
@@ -352,6 +425,36 @@ def test_real_hook_sees_and_swallows_keys():
         assert not any(e.late for e in f24)
         st = hook.stats()
         assert st["running"] and st["timeouts"] == 0 and st["waited"] >= 6
+    finally:
+        hook.stop()
+
+
+@needs_dll
+def test_real_hook_holds_keys_back_and_replays_them_in_order():
+    """FR-TRG-06: keys pressed during output reach nobody until output ends, then come
+    back in their original order (and PhraseForge sees them as typing)."""
+    seen = []
+    hook = NativeKeyboardHook(lambda ev: seen.append((ev.vk, ev.down)) or False, budget_ms=200)
+    hook.start()
+    try:
+        hook.begin_block(5000)
+        _inject(0.1, 3).wait(10)
+        time.sleep(0.3)
+        st = hook.stats()
+        if st["blocked"] == 0:
+            pytest.skip("no keyboard input reaches hooks on this machine (no interactive desktop)")
+        assert not [s for s in seen if s[0] == 0x87], "a key got through while blocked"
+        assert hook.end_block(replay=True) == 6
+        deadline = time.time() + 3
+        while len([s for s in seen if s[0] == 0x87]) < 6 and time.time() < deadline:
+            time.sleep(0.05)
+        assert [s for s in seen if s[0] == 0x87] == [(0x87, True), (0x87, False)] * 3
+        st = hook.stats()
+        assert st["blocked"] == 6 and st["replayed"] == 6
+        hook.begin_block(5000)
+        _inject(0.1, 1).wait(10)
+        time.sleep(0.3)
+        assert hook.end_block(replay=False) == 0        # a press and its release: both dropped
     finally:
         hook.stop()
 

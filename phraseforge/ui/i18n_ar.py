@@ -1658,4 +1658,9 @@ AR_EXTRA = {
     "comes from the shared database": "تأتي من قاعدة البيانات المشتركة",
     "A link asks to insert the phrase \"{name}\" into the window in front. Insert it?": "يطلب رابطٌ إدراج العبارة «{name}» في النافذة الأمامية. هل تُدرجها؟",
     "{exe} runs as administrator, so PhraseForge cannot type into it. Click here to restart PhraseForge as administrator (programs your phrases start then run as administrator too).": "يعمل {exe} بصلاحيات المسؤول، فلا يستطيع PhraseForge الكتابة فيه. انقر هنا لإعادة تشغيل PhraseForge بصلاحيات المسؤول (وعندها تعمل البرامج التي تشغّلها عباراتك بصلاحيات المسؤول أيضًا).",
+    'Keys typed while a phrase is inserted:': 'المفاتيح التي تُكتب أثناء إدراج عبارة:',
+    'Hold them back and type them after the phrase': 'احتجازها وكتابتها بعد العبارة',
+    'Ignore them': 'تجاهلها',
+    'Let them through (may mix with the phrase)': 'تمريرها (قد تختلط بالعبارة)',
+    'Stop holding keys back after': 'إيقاف احتجاز المفاتيح بعد',
 }
