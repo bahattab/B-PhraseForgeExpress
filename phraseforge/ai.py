@@ -165,6 +165,13 @@ def chat(settings: dict[str, str], history: list[dict], provider: str = "", mode
     if not history or history[-1]["role"] != "user":
         raise AIError("The conversation must end with a user message.")
     provider = (provider or settings.get("ai.provider") or "openai").lower()
+    if provider.startswith("plugin:"):                  # an AI engine from a plugin (plugins/engines.py)
+        from phraseforge.plugins import engines
+        eng = engines.engine(provider)
+        if eng is None or eng.kind != "ai_engine":
+            raise AIError(f"the AI plugin '{provider[7:]}' is not installed or switched off")
+        return eng.generate(settings, history, {"model": model, "max_tokens": max_tokens, "timeout": timeout_s,
+                                                "system": system if raw_system else full_system(settings, system)})
     if provider not in DEFAULT_MODELS:
         raise AIError(f"unknown AI provider '{provider}'")
     same_provider = (settings.get("ai.provider") or "openai").lower() == provider
@@ -352,7 +359,19 @@ def translate_text(settings: dict[str, str], text: str, to: str, src: str = "", 
     import re
     provider = (settings.get("translation.provider") or "free").lower()
     has_key = provider in ("ollama", "gpt4all") or bool((settings.get(f"ai.{provider}_key", "") or "").strip())
-    if provider == "deepl" and has_key:
+    plugin = None
+    if provider.startswith("plugin:"):
+        from phraseforge.plugins import engines
+        plugin = engines.engine(provider)
+        if plugin is None:
+            raise AIError(f"the translation plugin '{provider[7:]}' is not installed or switched off")
+    if plugin is not None:
+        def one(t):
+            if "translator" in plugin.manifest.kinds:
+                return plugin.translate(settings, t, src, to)
+            return plugin.generate(settings, [{"role": "user", "content": t}],
+                                   {"system": translation_system(settings, to, src)})
+    elif provider == "deepl" and has_key:
         def one(t):
             return deepl_translate(settings, t, to, src)
     elif provider not in ("free", "deepl") and has_key:

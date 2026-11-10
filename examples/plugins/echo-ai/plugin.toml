@@ -1,0 +1,11 @@
+id = "echo-ai"
+name = "Echo AI"
+version = "1.0.0"
+api_version = "1.0"
+kinds = ["ai_engine", "translator"]
+entry = "main.py"
+runtime = "python-subprocess"
+description = "Example AI and translation engine: answers with the last message, marks translations"
+
+[permissions]
+secrets = ["api_key"]

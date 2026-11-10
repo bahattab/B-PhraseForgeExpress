@@ -44,3 +44,24 @@ phrase as `[hello.greet: ...]`. A macro call has 5 seconds; then PhraseForge sen
 `{"method": "$/cancel", "params": {"id": 1}}`, waits two seconds and stops the process (it is
 started again on the next call). Anything written to stderr appears in the Plugins window.
 The process gets a minimal environment (no API keys or proxy settings from PhraseForge's own).
+
+## AI and translation engines
+
+A plugin with `kinds = ["ai_engine"]` and/or `["translator"]` appears in Settings > AI and
+Settings > Language Translation as "Plugin: <name>". It answers these methods (see
+`examples/plugins/echo-ai` and `phraseforge/plugins/engines.py`):
+
+| Method | Answer |
+|---|---|
+| `describe` | `{type, provider, name, urls, is_local, needs_api_key, configurable}` |
+| `status` | `{configured, error}` |
+| `capabilities` | booleans: `glossaries, ignored_words, custom_instructions, vision, image_gen, image_edit, usage_stats, model_management` |
+| `settings_schema` | a JSON Schema object |
+| `list_models`, `list_languages` | lists of names |
+| `generate` | params `{messages, params: {model, system, max_tokens}}` → `{text}` |
+| `translate` | params `{text, from, to}` → `{text}` |
+
+The API key typed in Settings > AI for a plugin engine is passed as the secret `api_key` (declare
+it under `[permissions] secrets`). AI calls have 60 seconds. A plugin that only writes text
+(ai_engine) can also be chosen for translation: PhraseForge then asks it with a translation
+instruction.
