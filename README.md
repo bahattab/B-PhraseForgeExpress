@@ -81,7 +81,11 @@ PhraseForge also:
   PhraseForge as administrator. Phrases are not half-typed into such a window;
 - holds back the keys you press while it types a phrase and types them right after the
   phrase, so they never land in the middle of it. Settings > Text Insertion can drop them
-  instead, or let them through; holding back stops by itself after 10 seconds.
+  instead, or let them through; holding back stops by itself after 10 seconds;
+- opens the phrase menu and suggestion tips at the text caret in more programs: besides
+  the classic Windows caret it asks Windows accessibility (MSAA, UI Automation), so
+  browsers, Electron apps such as VS Code, Office and WPF programs work too. Where no
+  caret can be found the menu opens where Settings > Popup menu says (mouse by default).
 
 ## Screen OCR and sticky notes
 

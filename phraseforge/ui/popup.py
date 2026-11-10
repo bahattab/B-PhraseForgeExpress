@@ -1326,11 +1326,13 @@ class PhrasePopup(_Panel):
             return px, min(y + 20, g.bottom() - h)
         return px, (y + 4 if y + 4 + h <= g.bottom() else max(g.top(), y - h - 24))
 
-    @staticmethod
-    def _caret() -> tuple[int, int] | None:
+    def _caret(self) -> tuple[int, int] | None:
+        """Caret position in Qt coordinates (Win32 caret, MSAA or UI Automation), or None."""
         try:
             from phraseforge.platform import windows
-            return windows.caret_position()
+            from phraseforge.ui.region_select import physical_to_logical
+            pos = windows.caret_position(_setting(self.store, "caret.accessibility", "1") == "1")
+            return physical_to_logical(*pos) if pos else None
         except Exception:
             return None
 

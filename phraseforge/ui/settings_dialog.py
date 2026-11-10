@@ -2168,6 +2168,8 @@ class SettingsDialog(QDialog):
         fb.setFixedWidth(196)
         gl2.addWidget(_row("Show phrase menus", pos), 0, 0)
         gl2.addWidget(_row("If caret position is indeterminable show phrase menu", fb), 1, 0)
+        gl2.addWidget(self.bind("caret.accessibility", QCheckBox(
+            "Find the caret through accessibility (browsers, Electron apps, Office, WPF)")), 2, 0)
         lay.addWidget(g)
         lay.addStretch(1)
         return w

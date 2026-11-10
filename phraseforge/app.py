@@ -903,6 +903,9 @@ class PhraseForgeApp(QObject):
             self.triggers.start()
         if not self.options.has("no-clipboard"):
             self.clip_history.start()
+        if self.store.setting("caret.accessibility", "1") == "1":
+            from phraseforge.platform import caret     # first use builds COM wrappers (~1 s): not on a hotkey
+            threading.Thread(target=caret.warm_up, name="pf-caret-warmup", daemon=True).start()
         log.info("triggers ready")   # tools/e2e_notepad.py waits for this line
 
     # ---------------------------------------------------------- cloud backup & sync
@@ -1658,9 +1661,10 @@ class PhraseForgeApp(QObject):
         from PySide6.QtGui import QCursor
         try:
             from phraseforge.platform import windows
-            pos = windows.caret_position()
+            from phraseforge.ui.region_select import physical_to_logical
+            pos = windows.caret_position(self.store.setting("caret.accessibility", "1") == "1")
             if pos:
-                return pos
+                return physical_to_logical(*pos)      # the caret is in physical pixels, Qt is not
         except Exception:
             pass
         c = QCursor.pos()

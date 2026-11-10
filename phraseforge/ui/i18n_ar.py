@@ -1663,4 +1663,5 @@ AR_EXTRA = {
     'Ignore them': 'تجاهلها',
     'Let them through (may mix with the phrase)': 'تمريرها (قد تختلط بالعبارة)',
     'Stop holding keys back after': 'إيقاف احتجاز المفاتيح بعد',
+    'Find the caret through accessibility (browsers, Electron apps, Office, WPF)': 'تحديد موضع المؤشر عبر واجهات إمكانية الوصول (المتصفحات وتطبيقات Electron وOffice وWPF)',
 }

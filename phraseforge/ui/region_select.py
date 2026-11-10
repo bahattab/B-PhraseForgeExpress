@@ -86,6 +86,22 @@ def logical_to_physical(screen, r: QRect) -> tuple[int, int, int, int]:
     return x1, y1, x2, y2
 
 
+def physical_to_logical(x: int, y: int, screens=None) -> tuple[int, int]:
+    """A physical desktop point (Win32: caret, GetCursorPos) as Qt global coordinates, the
+    inverse of logical_to_physical. With display scaling above 100 % the two differ, and a
+    menu placed at the physical point opens away from the caret."""
+    if screens is None:
+        from PySide6.QtGui import QGuiApplication
+        screens = QGuiApplication.screens()
+    for screen in screens:
+        dpr = screen.devicePixelRatio() or 1.0
+        g = screen.geometry()
+        pw, ph = int(round(g.width() * dpr)), int(round(g.height() * dpr))
+        if g.x() <= x < g.x() + pw and g.y() <= y < g.y() + ph:
+            return int(round(g.x() + (x - g.x()) / dpr)), int(round(g.y() + (y - g.y()) / dpr))
+    return x, y
+
+
 class RegionSelector:
     def __init__(self):
         self.result: tuple[int, int, int, int] | None = None
