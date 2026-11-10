@@ -225,6 +225,7 @@ _SEALED = "dpapi:"
 # everything that decides where data and keys go or what program runs: a synced or opened
 # copy must not send this PC's API keys to another server, set a proxy, lift the {#http}
 # guard, move backups or logs, or swap the programs behind the file-search actions.
+ENGINE_SETTINGS = ("ai.provider", "translation.provider", "ai.image_provider")   # see restore_from (R111)
 DEVICE_SETTING_PREFIXES = (
     "sync.", "gdrive.", "backup.cloud_", "backup.directory", "ocr.cli_path", "ocr.log_file",
     "app.start_with_windows", "app.first_run_done", "ui.item_colors", "ui.trigger_extras",
@@ -1876,6 +1877,16 @@ class Store:
                 self.conn.executemany("INSERT INTO trash VALUES (?,?,?,?,?,?,?)", keep_trash or [])
                 for u, h in keep_pw.items():
                     self.conn.execute("UPDATE folders SET password_hash=? WHERE uid=?", (h, u))
+                # an engine from a plugin is chosen on this PC only: a pulled "plugin:<id>" would
+                # send every AI and translation text to whatever plugin has that id here (R111)
+                local = dict(rows)
+                for k in ENGINE_SETTINGS:
+                    r = self.conn.execute("SELECT value FROM settings WHERE key=?", (k,)).fetchone()
+                    if r and str(r[0]).lower().startswith("plugin:") and r[0] != local.get(k):
+                        if k in local:
+                            self.conn.execute("UPDATE settings SET value=? WHERE key=?", (local[k], k))
+                        else:
+                            self.conn.execute("DELETE FROM settings WHERE key=?", (k,))
             after = self.phrase_fingerprints()
             with self.lock, self.conn:
                 self.conn.execute("DELETE FROM phrase_quarantine")

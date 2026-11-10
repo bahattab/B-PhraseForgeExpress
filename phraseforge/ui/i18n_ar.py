@@ -1664,4 +1664,9 @@ AR_EXTRA = {
     'Let them through (may mix with the phrase)': 'تمريرها (قد تختلط بالعبارة)',
     'Stop holding keys back after': 'إيقاف احتجاز المفاتيح بعد',
     'Find the caret through accessibility (browsers, Electron apps, Office, WPF)': 'تحديد موضع المؤشر عبر واجهات إمكانية الوصول (المتصفحات وتطبيقات Electron وOffice وWPF)',
+    "Replace \"{old}\" {oldv} with \"{name}\" {version}?": "هل تستبدل «{old}» {oldv} بـ«{name}» {version}؟",
+    "The name is different: make sure it comes from the same author.": "الاسم مختلف: تأكّد أنها من المؤلف نفسه.",
+    "It asks for more than before:": "تطلب أكثر من قبل:",
+    "Install \"{name}\" {version}? It says it needs:": "هل تثبّت «{name}» {version}؟ تقول إنها تحتاج إلى:",
+    "A plugin is a program that runs with your Windows rights: it can read your files and reach the internet whatever it declares. Install only plugins you trust.": "الإضافة برنامج يعمل بصلاحياتك في Windows: تستطيع قراءة ملفاتك والوصول إلى الإنترنت مهما صرّحت. لا تثبّت إلا إضافات تثق بها.",
 }

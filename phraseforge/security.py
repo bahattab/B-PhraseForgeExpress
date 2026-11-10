@@ -88,6 +88,8 @@ def privileged_reason(name: str, args: list[str], opts: dict[str, str]) -> str |
     """Why the call {#name args opts} needs an approved phrase, or None if it is harmless."""
     if name in FILE_READERS:
         return NETWORK_READ if args and is_network_path(str(args[0])) else None
+    if name in ("ai", "translate") and plugin_engine(opts.get("provider", "")):
+        return PLUGIN_ENGINE_REASON   # the text and images go to plugin code (security R98)
     if name == "ai":      # {#ai -image file:\\host\share\x.png} reads a network file
         return NETWORK_READ if _ai_network_image(opts.get("image", "")) else None
     if name in SCOPED_VARS:
@@ -110,6 +112,48 @@ def _ai_network_image(spec: str) -> bool:
 _AI_IMAGE = re.compile(r'-image\s+("[^"]*"|\S+)')
 
 PLUGIN_REASON = "use plugins that may reach the internet, files or the keyboard"
+PLUGIN_ENGINE_REASON = "send text or images to an AI or translation plugin"
+_PROVIDER = re.compile(r'-provider\s+("[^"]*"|\S+)', re.IGNORECASE)
+
+
+def plugin_engine(provider: str) -> bool:
+    return (provider or "").strip().strip('"').lower().startswith("plugin:")
+
+
+def _setting(key: str) -> str:
+    """This PC's setting, for the engine a macro without -provider uses."""
+    try:
+        from phraseforge.plugins import manager as pm
+        mgr = pm.current()
+        store = getattr(mgr, "store", None) if mgr is not None else None
+        return store.setting(key, "") if store is not None else ""
+    except Exception:          # noqa: BLE001 - no store: nothing chosen
+        return ""
+
+
+def _whole_call(content: str, start: int) -> str:
+    """The text of the macro call that opens at `start`, nested macros included (a nested
+    {#clipboard} must not hide a later -provider option)."""
+    depth, i = 0, start
+    while i < len(content):
+        c = content[i]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return content[start:i + 1]
+        i += 1
+    return content[start:]
+
+
+def ai_provider_of(name: str, provider: str) -> str:
+    """The engine {#ai}/{#translate} really uses: -provider, else the one chosen in Settings."""
+    if provider:
+        return provider
+    if name == "translate":
+        return _setting("translation.provider") or _setting("ai.provider")
+    return _setting("ai.provider")
 
 
 def scan_privileged(content: str) -> list[str]:
@@ -119,14 +163,10 @@ def scan_privileged(content: str) -> list[str]:
     from phraseforge.macros.registry import REGISTRY, catalog
     catalog()                                     # make sure all commands are registered
     found: list[str] = []
-    for m in re.finditer(r"\{#([A-Za-z]\w*(?:-\w+)*)\.([A-Za-z_]\w*)", content or ""):     # plugin macros
-        from phraseforge.plugins import manager as pm
-        mgr = pm.current()
-        man = mgr.macro_manifest(m.group(1).lower(), m.group(2).lower()) if mgr is not None else None
-        if man is None or man.permissions.privileged:     # unknown now: it may be one later
-            reason = PLUGIN_REASON
-            if reason not in found:
-                found.append(reason)
+    # every plugin macro, known or not: a plugin's declared permissions are not enforced, it
+    # runs with the user's rights (security R97); an unknown one may be installed later
+    if re.search(r"\{#[A-Za-z]\w*(?:-\w+)*\.[A-Za-z_]\w*", content or ""):
+        found.append(PLUGIN_REASON)
     for m in re.finditer(r"\{#([A-Za-z][\w]*)([^{}]*)", content or ""):
         if m.group(2).startswith("."):                   # a plugin macro: handled above
             continue
@@ -143,9 +183,13 @@ def scan_privileged(content: str) -> list[str]:
             scope = _SCOPE.search(rest)
             # a scope written as a macro ({#var s}) is only known at run time: ask anyway
             reason = privileged_reason(name, [], {"scope": scope.group(1) or "?"} if scope else {})
-        elif name == "ai":
-            img = _AI_IMAGE.search(rest)
-            reason = privileged_reason(name, [], {"image": img.group(1).strip('"')} if img else {})
+        elif name in ("ai", "translate"):
+            whole = _whole_call(content, m.start())
+            img = _AI_IMAGE.search(whole)
+            prov = _PROVIDER.search(whole)
+            o = {"image": img.group(1).strip('"')} if img and name == "ai" else {}
+            o["provider"] = ai_provider_of(name, prov.group(1).strip('"') if prov else "")
+            reason = privileged_reason(name, [], o)
         elif name in FILE_READERS:
             first = _FIRST_ARG.match(rest)
             reason = privileged_reason(name, [first.group(1)] if first else [], {})

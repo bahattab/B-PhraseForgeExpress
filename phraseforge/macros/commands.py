@@ -1018,11 +1018,22 @@ def _waitfor(rt, args, opts):
 
 
 # ====================================================================== AI / OCR
+def _plugin_engine_gate(rt, name: str, provider: str) -> None:
+    """An unapproved phrase or a preview does not send text to a plugin engine: the plugin runs
+    with the user's rights, whatever it declares (security R98)."""
+    from phraseforge import security
+    eff = provider or (rt.setting("translation.provider", "") if name == "translate" else "") \
+        or rt.setting("ai.provider", "")
+    if security.plugin_engine(eff) and not getattr(rt.ctx, "allow_privileged", True):
+        raise MacroError("blocked, phrase not approved on this PC (it would send text to a plugin)")
+
+
 @macro("ai", "AI", '{#ai "prompt" -provider openai|anthropic|gpt4all|ollama|openrouter -model name -system "role" '
        '-preset "Summarize" -image clipboard|region|file:path}',
        "Insert an AI model's answer. -image sends a picture too (engines with vision). -preset uses a prompt from Settings > AI text processing > Custom presets "
        "(the macro text becomes the input).", '{#ai "Rewrite politely: {#clipboard}"}', aliases=("openai", "chatgpt"))
 def _ai(rt, args, opts):
+    _plugin_engine_gate(rt, "ai", opts.get("provider", ""))
     prompt = " ".join(args)
     if opts.get("preset"):
         from phraseforge.ai import preset_model, preset_prompt
@@ -1096,6 +1107,7 @@ def _aiimage(rt, args, opts):
 def _translate(rt, args, opts):
     keys = ("translation.ignored_words", "translation.glossaries", "translation.glossary_langs")
     provider = opts.get("provider", "") or rt.setting("translation.provider", "")
+    _plugin_engine_gate(rt, "translate", provider)
 
     def free():
         from phraseforge.ai import translate_text      # free service, no key needed

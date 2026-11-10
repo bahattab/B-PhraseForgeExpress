@@ -2041,10 +2041,39 @@ def quiet_http_loggers() -> None:
         logging.getLogger(name).setLevel(logging.WARNING)
 
 
+def _plugin_entry_ok(path: str) -> str:
+    """"" when `path` is the entry script of a plugin the administrator allows, else why not.
+    Without this check PhraseForge.exe ran any Python file, also on a PC whose policy allows
+    no plugins (security R106)."""
+    from pathlib import Path
+    from phraseforge import policy
+    from phraseforge.plugins import manifest as pman
+    if not os.environ.get("PHRASEFORGE_PLUGIN_API"):
+        return "--run-plugin is only used by PhraseForge itself"
+    p = Path(path).resolve()
+    try:
+        m = pman.parse((p.parent / "plugin.toml").read_text(encoding="utf-8-sig"))
+    except Exception as e:                  # noqa: BLE001 - no or bad manifest: not a plugin
+        return f"not a plugin: {e}"
+    if m.id != p.parent.name or (p.parent / m.entry).resolve() != p:
+        return "not the entry script of an installed plugin"
+    pol = policy.current()
+    allowed = pol.plugins_allowed
+    if allowed is None:
+        ok = not (pol.settings_locked or pol.editing_disabled)
+    else:
+        ok = "*" in allowed or m.id in allowed
+    return "" if ok else "your administrator does not allow this plugin"
+
+
 def _run_plugin(path: str) -> int:
     """The frozen EXE runs a Python plugin's entry script (plugins/host.py starts it this way)."""
     import runpy
     from pathlib import Path
+    why = _plugin_entry_ok(path)
+    if why:
+        print(f"PhraseForge: {why}", file=sys.stderr)
+        return 2
     sys.argv = [path]
     sys.path[:] = [str(Path(path).parent)] + [p for p in sys.path if p]
     runpy.run_path(path, run_name="__main__")
