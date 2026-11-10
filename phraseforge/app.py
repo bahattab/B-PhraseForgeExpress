@@ -542,13 +542,11 @@ class QtHost:
 
 # ------------------------------------------------------------------ application
 class PhraseForgeApp(QObject):
-    _usage_lock = threading.Lock()
-
     def _count_ai_usage(self, provider, model, inp, out, images=0):
         from phraseforge import ai
-        with self._usage_lock:
+        with ai.USAGE_LOCK:
             self.store.set_setting("ai.usage", ai.add_usage(self.store.setting("ai.usage", ""), provider, model,
-                                                            inp, out, images))
+                                                            inp, out, images), notify=False)
 
     def __init__(self, qapp: QApplication, store: Store, options=None):
         super().__init__()

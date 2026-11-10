@@ -1271,14 +1271,16 @@ class Store:
             return default
         return _unseal(r[0]) if is_secret_setting(key) else r[0]
 
-    def set_setting(self, key: str, value: str) -> None:
+    def set_setting(self, key: str, value: str, notify: bool = True) -> None:
+        """notify=False: a counter only this PC reads (ai.usage); no listener reloads for it."""
         if policy.current().setting_locked(key):
             log.info("a setting locked by the administrator's policy was not changed")
             return
         value = _seal(str(value)) if is_secret_setting(key) else str(value)
         with self.lock, self.conn:
             self.conn.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (key, value))
-        self._changed("setting")
+        if notify:
+            self._changed("setting")
 
     def settings(self) -> dict[str, str]:
         with self.lock:

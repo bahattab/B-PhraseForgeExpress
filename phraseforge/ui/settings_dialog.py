@@ -1156,7 +1156,11 @@ class SettingsDialog(QDialog):
             self._stash_ai_key()
             settings["ai.ollama_url"] = self._ai_keys.get("ollama", "") or settings.get("ai.ollama_url", "")
         try:
-            have = ", ".join(ai.ollama_models(settings)) or "none"
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                have = ", ".join(ai.ollama_models(settings, timeout_s=3)) or "none"
+            finally:
+                QApplication.restoreOverrideCursor()
         except ai.AIError as e:
             QMessageBox.warning(self, APP, f"Ollama is not reachable: {str(e)[:200]}")
             return
@@ -1218,7 +1222,8 @@ class SettingsDialog(QDialog):
         box.addButton(QMessageBox.Close)
         box.exec()
         if box.clickedButton() is reset:
-            self.store.set_setting("ai.usage", "")
+            with ai.USAGE_LOCK:
+                self.store.set_setting("ai.usage", "", notify=False)
 
     def _page_ai_presets(self) -> QWidget:
         w, lay = self._page()

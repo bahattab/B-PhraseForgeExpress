@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import json
+import threading
 import time
 
 import httpx
@@ -57,6 +58,7 @@ IMAGE_PROVIDERS = {"openai": "gpt-image-1", "gemini": "imagen-4.0-generate-001",
 # Called after each answer with (provider, model, input_tokens, output_tokens, images=0). The app sets it
 # to add the numbers to the ai.usage setting; tests replace it.
 USAGE_HOOK = None
+USAGE_LOCK = threading.Lock()          # held while ai.usage is read and written back
 
 
 def capabilities(provider: str) -> dict:
@@ -72,13 +74,13 @@ def capabilities(provider: str) -> dict:
     return {"vision": provider in VISION_PROVIDERS, "image": provider in IMAGE_PROVIDERS}
 
 
-def _record(provider: str, model: str, data: dict) -> None:
+def _record(provider: str, model: str, data: dict, images: int = 0) -> None:
     u = data.get("usage") or {}
     inp = u.get("input_tokens", u.get("prompt_tokens", data.get("prompt_eval_count", 0))) or 0
     out = u.get("output_tokens", u.get("completion_tokens", data.get("eval_count", 0))) or 0
     if USAGE_HOOK is not None:
         try:
-            USAGE_HOOK(provider, model, int(inp), int(out))
+            USAGE_HOOK(provider, model, int(inp), int(out), images)
         except Exception:     # noqa: BLE001 - counting must never break an answer
             pass
 
@@ -291,14 +293,14 @@ def chat(settings: dict[str, str], history: list[dict], provider: str = "", mode
         data = _post("https://api.anthropic.com/v1/messages",
                      {"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
                      payload, timeout_s)
-        _record(provider, model, data)
+        _record(provider, model, data, len(images or []))
         return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
 
     if provider == "gpt4all":
         base = (settings.get("ai.gpt4all_url") or "http://localhost:4891/v1").rstrip("/")
         data = _post(f"{base}/chat/completions", {}, {"model": model, "max_tokens": max_tokens,
                                                       "messages": _with_system(history, system)}, timeout_s)
-        _record(provider, model, data)
+        _record(provider, model, data, len(images or []))
         try:
             return data["choices"][0]["message"]["content"] or ""
         except (KeyError, IndexError) as e:
@@ -308,7 +310,7 @@ def chat(settings: dict[str, str], history: list[dict], provider: str = "", mode
         base = (settings.get("ai.ollama_url") or "http://localhost:11434").rstrip("/")
         data = _post(f"{base}/api/chat", {}, {"model": model, "stream": False,
                                                "messages": _with_system(history, system)}, timeout_s)
-        _record(provider, model, data)
+        _record(provider, model, data, len(images or []))
         return data.get("message", {}).get("content", "")
 
     name = PROVIDER_NAMES.get(provider, provider)
@@ -321,7 +323,7 @@ def chat(settings: dict[str, str], history: list[dict], provider: str = "", mode
         raise AIError(f"Enter the model to use with {name} in Settings > AI > Model.")
     data = _post(url, {"Authorization": f"Bearer {key}"},
                  {"model": model, "messages": _with_system(history, system)}, timeout_s)
-    _record(provider, model, data)
+    _record(provider, model, data, len(images or []))
     try:
         return data["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError) as e:

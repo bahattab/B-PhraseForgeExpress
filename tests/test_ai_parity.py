@@ -51,7 +51,7 @@ def test_openai_vision_format(monkeypatch, usage):
     content = sent["payload"]["messages"][-1]["content"]
     assert content[0] == {"type": "text", "text": "what is it?"}
     assert content[1]["image_url"]["url"] == "data:image/png;base64," + base64.b64encode(PNG).decode()
-    assert usage == [("openai", "gpt-4o", 50, 3)]
+    assert usage == [("openai", "gpt-4o", 50, 3, 1)]
 
 
 def test_anthropic_vision_format(monkeypatch, usage):
@@ -62,7 +62,7 @@ def test_anthropic_vision_format(monkeypatch, usage):
     assert content[0]["source"] == {"type": "base64", "media_type": "image/jpeg",
                                     "data": base64.b64encode(JPG).decode()}
     assert content[-1] == {"type": "text", "text": "describe"}
-    assert usage[0][2:] == (9, 1)
+    assert usage[0][2:] == (9, 1, 1)
 
 
 def test_ollama_vision_format(monkeypatch, usage):
@@ -70,7 +70,7 @@ def test_ollama_vision_format(monkeypatch, usage):
     ai.complete({}, "hi", "ollama", "llava", images=[PNG])
     last = sent["payload"]["messages"][-1]
     assert last["content"] == "hi" and last["images"] == [base64.b64encode(PNG).decode()]
-    assert usage == [("ollama", "llava", 7, 2)]
+    assert usage == [("ollama", "llava", 7, 2, 1)]
 
 
 def test_no_vision_engine(monkeypatch):
@@ -262,3 +262,15 @@ def test_ai_network_image_needs_approval():
     assert scan_privileged(r'{#ai "x" -image "file:\\server\share\a.png"}') == [NETWORK_READ]
     assert scan_privileged('{#ai "x" -image clipboard}') == []
     assert scan_privileged('{#ai "x" -image "file:C:\\a.png"}') == []
+
+
+def test_usage_write_does_not_notify(tmp_path):
+    from phraseforge.db import Store
+    st = Store(tmp_path / "x.db")
+    seen = []
+    st._listeners.append(lambda kind, id_=None: seen.append(kind))
+    st.set_setting("ai.usage", "{}", notify=False)
+    assert st.setting("ai.usage") == "{}"
+    assert "setting" not in seen
+    st.set_setting("ai.model", "m")
+    assert "setting" in seen
