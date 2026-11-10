@@ -143,6 +143,13 @@ def send_keys(spec: str, repeat: int = 1, delay_ms: int = 0) -> None:
                 time.sleep(delay_ms / 1000)
 
 
+def replay_keys(events: list[tuple[int, bool]]) -> None:
+    """Send held key events again, in order ([(vk, down), ...]; keyboard blocking, FR-TRG-06)."""
+    for i in range(0, len(events), CHUNK):
+        _send([_vk_events(vk, not down) for vk, down in events[i:i + CHUNK]])
+        time.sleep(CHUNK_DELAY_S)
+
+
 def backspace(n: int) -> None:
     for i in range(0, max(0, n), CHUNK):
         k = min(CHUNK, n - i)

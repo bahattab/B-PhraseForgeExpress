@@ -214,6 +214,7 @@ SCHEMA: dict[str, str] = {
     # Text insertion
     "output.method": "keys",           # clipboard | keys
     "output.key_method": "vk_packet",  # vk_packet | unicode | scancode
+    "input.block_during_output": "replay",   # keys pressed while a phrase is typed: replay | discard | off
     "output.paste_long": "1",
     "output.paste_threshold": DEFAULT_SETTINGS["output.paste_threshold"],
     "output.rich_formats": "html",      # html | rtf_html | rtf: clipboard formats of formatted phrases

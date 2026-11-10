@@ -2508,6 +2508,12 @@ class SettingsDialog(QDialog):
         sl.addWidget(_row(keym))
         sl.addWidget(_row(paste_long, self.paste_threshold, "characters"))
         gl.addWidget(sub)
+        block = self.bind("input.block_during_output", DataCombo([
+            ("Hold them and type them after the phrase (recommended)", "replay"),
+            ("Ignore them", "discard"),
+            ("Let them through (they may mix into the phrase)", "off")]))
+        block.setFixedWidth(330)
+        gl.addWidget(_row("Keys pressed while a phrase is typed:", block))
         self.enable_with(method.buttons["keys"], sub)
         self.enable_with(paste_long, self.paste_threshold)
         fmt = self.bind("output.format", DataCombo([("Auto", "auto"), ("Plain text", "plain"),

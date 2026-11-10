@@ -36,6 +36,7 @@ class KeyEvent:
     # did not answer in time (late), or the hook swallowed it from its rule table (native).
     late: bool = False
     native: bool = False
+    blocked: bool = False     # the native hook held it because a phrase is being typed (FR-TRG-06)
 
     @property
     def altgr(self) -> bool:

@@ -23,9 +23,10 @@ from typing import Callable
 log = logging.getLogger(__name__)
 
 DLL_NAME = "pfhook.dll"
-EXPECTED_VERSION = 1
+EXPECTED_VERSION = 2
 
 ST_DOWN, ST_INJECTED, ST_EXTENDED, ST_WAITED, ST_NATIVE = 0x01, 0x02, 0x04, 0x08, 0x10
+ST_BLOCKED = 0x20
 M_SHIFT, M_CTRL, M_ALT, M_WIN = 1, 2, 4, 8
 WHEN_ALWAYS, WHEN_DEGRADED = 1, 2
 MOD_BITS = {"shift": M_SHIFT, "ctrl": M_CTRL, "alt": M_ALT, "win": M_WIN}
@@ -106,6 +107,8 @@ def load_library():
         lib.pf_reply.restype = ctypes.c_int
         lib.pf_stats.argtypes = [ctypes.POINTER(PFStats)]
         lib.pf_stats.restype = None
+        lib.pf_set_block.argtypes = [ctypes.c_int]
+        lib.pf_set_block.restype = None
     except (OSError, AttributeError) as e:
         _lib_error = f"{DLL_NAME}: {e}"
         return None
@@ -174,6 +177,13 @@ class NativeKeyboardHook:
             arr[i].vk, arr[i].mods, arr[i].when = vk, mods, when
         self._lib.pf_set_rules(arr, len(self._rules))
 
+    def set_block(self, on: bool) -> None:
+        """Hold every physical key in the DLL itself while a phrase is typed (FR-TRG-06), so a
+        busy Python cannot let keys through. Older DLLs without pf_set_block: Python holds them."""
+        fn = getattr(self._lib, "pf_set_block", None)
+        if fn is not None:
+            fn(1 if on else 0)
+
     def stats(self) -> dict:
         s = PFStats()
         self._lib.pf_stats(ctypes.byref(s))
@@ -194,7 +204,7 @@ class NativeKeyboardHook:
                         injected=bool(raw.status & ST_INJECTED), modifiers=bits_to_mods(raw.mods),
                         extended=bool(raw.status & ST_EXTENDED),
                         late=not (raw.status & ST_WAITED) and not (raw.status & ST_NATIVE),
-                        native=bool(raw.status & ST_NATIVE))
+                        native=bool(raw.status & ST_NATIVE), blocked=bool(raw.status & ST_BLOCKED))
 
     def handle(self, raw: PFEvent) -> None:
         """One queued event: ask on_key and answer the DLL if it is waiting."""

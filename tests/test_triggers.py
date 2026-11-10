@@ -242,8 +242,16 @@ def test_manager_pause_and_busy(setup):
     mgr.paused = True
     assert type_into(mgr, "sg ") == [False] * 3
     mgr.paused = False
-    with mgr.suspend():
-        assert type_into(mgr, "sg ") == [False] * 3
+    replayed = []
+    mgr.keyblock._replay = replayed.extend
+    with mgr.suspend():                   # output running: keys are held (FR-TRG-06), no trigger fires
+        assert type_into(mgr, "sg ") == [True] * 3
+    import time
+    for _ in range(100):
+        if replayed and not mgr.keyblock._queue:
+            break
+        time.sleep(0.01)
+    assert [vk for vk, _down in replayed] == [0x41, 0x41, 0x20]
     assert type_into(mgr, " sg ")[-1] is True
 
 

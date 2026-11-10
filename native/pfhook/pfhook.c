@@ -20,7 +20,7 @@
 #include <windows.h>
 
 #define PF_API __declspec(dllexport)
-#define PF_VERSION 1
+#define PF_VERSION 2
 
 #define RING_SIZE 1024u                 /* power of two */
 #define MAX_RULES 256
@@ -31,6 +31,7 @@
 #define ST_EXTENDED  0x04u
 #define ST_WAITED    0x08u              /* the hook waited for Python's decision */
 #define ST_NATIVE    0x10u              /* swallowed by the rule table, no decision asked */
+#define ST_BLOCKED   0x20u              /* held while a phrase is typed (pf_set_block, FR-TRG-06) */
 
 /* modifier bits */
 #define M_SHIFT 1u
@@ -71,6 +72,8 @@ static SRWLOCK g_rules_lock = SRWLOCK_INIT;
 static PFRule g_rules[MAX_RULES];
 static int g_nrules;
 static BYTE g_swallow_up[256];          /* key-up of a natively swallowed key-down */
+static BYTE g_block_up[256];            /* key-up of a key-down held by pf_set_block */
+static volatile LONG g_block;           /* 1 = hold every physical key (output running) */
 
 static HHOOK g_hook;
 static HANDLE g_thread, g_ready;
@@ -199,7 +202,14 @@ static LRESULT CALLBACK hook_proc(int code, WPARAM wp, LPARAM lp) {
     if (kb->flags & LLKHF_EXTENDED) ev.status |= ST_EXTENDED;
     if (down && !is_modifier(ev.vk)) ev.nchars = translate(ev.vk, ev.scan, ev.mods, ev.chars);
 
-    if (ev.vk < 256 && !down && g_swallow_up[ev.vk]) {
+    if (down && !g_block && !(kb->flags & LLKHF_INJECTED) && ev.vk < 256)
+        g_block_up[ev.vk] = 0;                  /* this down passed: so does its up */
+    if (!(kb->flags & LLKHF_INJECTED) && ev.vk < 256 && (down ? g_block : g_block_up[ev.vk])) {
+        /* keyboard blocking: hold the key; Python replays it after the output */
+        g_block_up[ev.vk] = (BYTE)(down ? 1 : 0);
+        ev.status |= ST_BLOCKED;
+        native = 1;
+    } else if (ev.vk < 256 && !down && g_swallow_up[ev.vk]) {
         g_swallow_up[ev.vk] = 0;
         native = 1;
     } else if (down && !is_modifier(ev.vk)) {
@@ -256,6 +266,9 @@ static DWORD WINAPI hook_thread(LPVOID unused) {
 
 PF_API int pf_version(void) { return PF_VERSION; }
 
+/* on = 1: swallow every physical key-down (and its key-up) and queue it with ST_BLOCKED. */
+PF_API void pf_set_block(int on) { InterlockedExchange(&g_block, on ? 1 : 0); }
+
 /* budget_ms: how long a key waits for Python's decision; magic: dwExtraInfo of our own output. */
 PF_API void pf_set_options(UINT32 budget_ms, int pass_foreign_injected, ULONG_PTR magic) {
     if (budget_ms < 1) budget_ms = 1;
@@ -287,6 +300,8 @@ PF_API DWORD pf_start(void) {
     g_wait_seq = 0;
     g_degraded = 0;
     ZeroMemory(g_swallow_up, sizeof g_swallow_up);
+    ZeroMemory(g_block_up, sizeof g_block_up);
+    g_block = 0;
     ResetEvent(g_reply);
     ResetEvent(g_ready);
     g_thread = CreateThread(NULL, 0, hook_thread, NULL, 0, &g_tid);

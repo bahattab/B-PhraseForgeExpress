@@ -197,6 +197,8 @@ class TriggerManager:
         self._pause_until = 0.0
         self._suspend = 0
         self._suspend_lock = threading.Lock()
+        from phraseforge.triggers.keyblock import KeyBlocker
+        self.keyblock = KeyBlocker(self._replay_keys, self._native_block, clock=clock)   # FR-TRG-06
         self._hook = None
         self._watcher = None
         self._queue: queue.Queue = queue.Queue()
@@ -230,9 +232,25 @@ class TriggerManager:
     def set_busy(self, busy: bool) -> None:
         """Pass as OutputExecutor(busy_callback=...): ignore input while we type."""
         with self._suspend_lock:
+            before = self._suspend
             self._suspend = max(0, self._suspend + (1 if busy else -1))
+            after = self._suspend
+        if before == 0 and after > 0:
+            self.keyblock.begin()
+        elif before > 0 and after == 0:
+            self.keyblock.end()
         if not busy:
             self.matcher.reset()
+
+    def _native_block(self, on: bool) -> None:
+        hook = self._hook
+        if hook is not None and hasattr(hook, "set_block"):
+            hook.set_block(on)
+
+    @staticmethod
+    def _replay_keys(events: list[tuple[int, bool]]) -> None:
+        from phraseforge.platform import sendinput
+        sendinput.replay_keys(events)
 
     @contextlib.contextmanager
     def suspend(self):
@@ -284,6 +302,7 @@ class TriggerManager:
             min_chars = 3
         self._opt = {
             "disable_capslock": s("features.disable_capslock", "0") == "1",
+            "keyblock": s("input.block_during_output", "replay"),
             "capitalize": s("autocorrect.capitalize_sentences", "0") == "1",
             "two_caps": s("autocorrect.two_initial_capitals", "0") == "1",
             "undo": s("features.detect_unwanted_replacements", "0") == "1",
@@ -292,6 +311,8 @@ class TriggerManager:
             "restrict": s("app.restrict_enabled", "0") == "1",
             "programs": _parse_programs(s("app.restrict_programs", "")),
         }
+        mode = self._opt["keyblock"]
+        self.keyblock.mode = mode if mode in ("replay", "discard", "off") else "replay"
         self.matcher.set_route_enter_tab(s("autotext.route_enter_tab", "0") == "1")
         try:
             self.matcher.set_fast_ms(int(s("autotext.fast_ms", "150") or 150))
@@ -499,6 +520,8 @@ class TriggerManager:
         self._late = bool(getattr(ev, "late", False))
         if ev.vk == VK_CAPITAL and self._opt.get("disable_capslock"):
             return True                                   # Caps Lock disabled (down and up)
+        if self.keyblock.feed(ev.vk, ev.down, ev.injected, getattr(ev, "blocked", False), self._late):
+            return True                                   # held while a phrase is typed (FR-TRG-06)
         if self._double_ctrl is not None and self._double_ctrl.feed(ev.vk, ev.down) and self._active():
             self._emit(self.on_command, "file_search")    # Listary-style double Ctrl
         if not ev.down:
