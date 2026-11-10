@@ -23,7 +23,8 @@ from typing import Callable
 log = logging.getLogger(__name__)
 
 DLL_NAME = "pfhook.dll"
-EXPECTED_VERSION = 1
+EXPECTED_VERSION = 2
+REPLAY_MAGIC = 0x50465252          # "PFRR": keys sent again after output (FR-TRG-06)
 
 ST_DOWN, ST_INJECTED, ST_EXTENDED, ST_WAITED, ST_NATIVE = 0x01, 0x02, 0x04, 0x08, 0x10
 M_SHIFT, M_CTRL, M_ALT, M_WIN = 1, 2, 4, 8
@@ -47,7 +48,8 @@ class PFStats(ctypes.Structure):
     _fields_ = [("events", ctypes.c_uint64), ("waited", ctypes.c_uint64), ("timeouts", ctypes.c_uint64),
                 ("dropped", ctypes.c_uint64), ("native_swallowed", ctypes.c_uint64),
                 ("late_replies", ctypes.c_uint64), ("max_us", ctypes.c_uint32), ("p99_us", ctypes.c_uint32),
-                ("degraded", ctypes.c_uint32), ("running", ctypes.c_uint32), ("hist", ctypes.c_uint32 * 32)]
+                ("degraded", ctypes.c_uint32), ("running", ctypes.c_uint32), ("hist", ctypes.c_uint32 * 32),
+                ("blocked", ctypes.c_uint64), ("replayed", ctypes.c_uint64)]
 
 
 def mods_to_bits(mods) -> int:
@@ -106,6 +108,10 @@ def load_library():
         lib.pf_reply.restype = ctypes.c_int
         lib.pf_stats.argtypes = [ctypes.POINTER(PFStats)]
         lib.pf_stats.restype = None
+        lib.pf_block_begin.argtypes = [ctypes.c_uint32]
+        lib.pf_block_begin.restype = None
+        lib.pf_block_end.argtypes = [ctypes.c_int]
+        lib.pf_block_end.restype = ctypes.c_uint32
     except (OSError, AttributeError) as e:
         _lib_error = f"{DLL_NAME}: {e}"
         return None
@@ -180,7 +186,19 @@ class NativeKeyboardHook:
         return {"events": s.events, "waited": s.waited, "timeouts": s.timeouts, "dropped": s.dropped,
                 "native_swallowed": s.native_swallowed, "late_replies": s.late_replies,
                 "max_us": s.max_us, "p99_us": s.p99_us, "degraded": bool(s.degraded),
-                "running": bool(s.running)}
+                "running": bool(s.running), "blocked": s.blocked, "replayed": s.replayed}
+
+    # ---------------------------------------------------------------- FR-TRG-06
+    def begin_block(self, max_ms: int = 10000) -> None:
+        """Hold the user's keys back while PhraseForge types (at most max_ms)."""
+        if self._running:
+            self._lib.pf_block_begin(int(max_ms))
+
+    def end_block(self, replay: bool = True) -> int:
+        """Stop holding keys back; send them again (replay) or drop them. Returns keys sent."""
+        if not self._running:
+            return 0
+        return int(self._lib.pf_block_end(1 if replay else 0))
 
     # ---------------------------------------------------------------- reader
     def event_from(self, raw: PFEvent):
