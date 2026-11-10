@@ -1115,7 +1115,8 @@ def _translate_with(rt, args, opts, provider, keys):
     from phraseforge.ai import deepl_translate, translation_system
     if provider == "deepl":
         settings = {k: rt.setting(k, "") for k in keys + ("ai.deepl_key",)}
-        return deepl_translate(settings, " ".join(args), opts.get("to", "English"), opts.get("from", "")).strip()
+        return deepl_translate(settings, " ".join(args), opts.get("to", "English"), opts.get("from", ""),
+                               glossary=opts.get("glossary", "")).strip()
     system = translation_system({k: rt.setting(k, "") for k in keys}, opts.get("to", "English"),
                                 opts.get("from", ""), opts.get("glossary", ""))
     return rt.host.ai_complete(" ".join(args), provider=provider, model=opts.get("model", ""),
