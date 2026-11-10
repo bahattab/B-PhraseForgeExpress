@@ -138,6 +138,8 @@ DEFAULT_SETTINGS = {
     "learning.min_count": "3",
     "ai.provider": "openai",              # openai | anthropic | gemini | openrouter | opencode | kilocode | ollama | gpt4all
     "ai.model": "",
+    "ai.image_provider": "openai",        # {#aiimage}: openai | gemini
+    "ai.image_model": "",
     "ai.openai_key": "",
     "ai.anthropic_key": "",
     "ai.openrouter_key": "",
@@ -227,7 +229,7 @@ DEVICE_SETTING_PREFIXES = (
     "sync.", "gdrive.", "backup.cloud_", "backup.directory", "ocr.cli_path", "ocr.log_file",
     "app.start_with_windows", "app.first_run_done", "ui.item_colors", "ui.trigger_extras",
     "updates.last_check", "updates.notified_version", "net.", "onenote.exe",
-    "filesearch.actions", "filesearch.commands", "filesearch.roots", "sound.", "shared.", "recorder.", "dynamic.", "library.", "autoskip.", "schedule.", "plugins.",
+    "filesearch.actions", "filesearch.commands", "filesearch.roots", "sound.", "shared.", "recorder.", "dynamic.", "library.", "autoskip.", "schedule.", "plugins.", "ai.usage",
     "trash.",                            # the trash is this PC's: a pulled trash.days=1 emptied it (R95)
     *sorted(SECRET_SETTINGS))
 DEVICE_SETTING_SUFFIXES = ("_url", "_endpoint", "_path", "_file", ".file", ".exe", "_dir", "_directory")

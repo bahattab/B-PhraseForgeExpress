@@ -119,6 +119,14 @@ def configure_logging(store: Store) -> None:
             h.close()
 
 
+def _mime_or_png(data: bytes) -> str:
+    from phraseforge import ai
+    try:
+        return ai.image_mime(data)
+    except ai.AIError:
+        return "image/png"
+
+
 def _png_bytes(image) -> bytes | None:
     from PySide6.QtCore import QBuffer, QIODevice
     if image is None or image.isNull():
@@ -329,6 +337,37 @@ class QtHost:
         translating = (system or "").startswith("You are a translator.")
         return ai.complete(self.store.settings(), prompt, provider, model, system, raw_system=translating)
 
+    def ai_vision(self, prompt, images, provider="", model="", system=""):
+        from phraseforge import ai
+        return ai.complete(self.store.settings(), prompt, provider, model, system, images=images)
+
+    def ai_image(self, prompt, provider="", model="", size="1024x1024"):
+        """{#aiimage}: make the picture and save it where ImageAction can paste it from."""
+        import hashlib
+        from phraseforge import ai, paths
+        data = ai.generate_image(self.store.settings(), prompt, provider, model, size)
+        folder = paths.data_dir() / "ai-images"
+        folder.mkdir(parents=True, exist_ok=True)
+        ext = {"image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}.get(_mime_or_png(data), ".png")
+        out = folder / f"{time.strftime('%Y%m%d-%H%M%S')}-{hashlib.sha1(data).hexdigest()[:8]}{ext}"
+        out.write_bytes(data)
+        return str(out)
+
+    def clipboard_image(self):
+        """PNG bytes of the image on the clipboard, or None."""
+        def grab():
+            from PySide6.QtGui import QGuiApplication
+            return _png_bytes(QGuiApplication.clipboard().image())
+        return self._ui(grab)
+
+    def capture_region(self):
+        """Let the user draw a screen area; PNG bytes of it (None if cancelled)."""
+        rect = self.select_screen_region()
+        if not rect:
+            return None
+        time.sleep(0.15)   # let the selection overlay disappear before the screenshot
+        return self._ui(lambda: _grab_screen_png(rect))
+
     def _ocr(self) -> WindowsOCR:
         s = self.store.setting
         try:
@@ -503,6 +542,14 @@ class QtHost:
 
 # ------------------------------------------------------------------ application
 class PhraseForgeApp(QObject):
+    _usage_lock = threading.Lock()
+
+    def _count_ai_usage(self, provider, model, inp, out, images=0):
+        from phraseforge import ai
+        with self._usage_lock:
+            self.store.set_setting("ai.usage", ai.add_usage(self.store.setting("ai.usage", ""), provider, model,
+                                                            inp, out, images))
+
     def __init__(self, qapp: QApplication, store: Store, options=None):
         super().__init__()
         from phraseforge import cli
@@ -511,6 +558,8 @@ class PhraseForgeApp(QObject):
         self.store = store
         from phraseforge.plugins import manager as plugin_manager
         plugin_manager.set_current(plugin_manager.PluginManager(store))   # {#<plugin>.<macro>}
+        from phraseforge import ai as _ai
+        _ai.USAGE_HOOK = self._count_ai_usage                                # Settings > AI > Usage
         self.host = QtHost(self)
         self.poster = _Poster()
         self._jobs: queue.Queue = queue.Queue()

@@ -88,6 +88,8 @@ def privileged_reason(name: str, args: list[str], opts: dict[str, str]) -> str |
     """Why the call {#name args opts} needs an approved phrase, or None if it is harmless."""
     if name in FILE_READERS:
         return NETWORK_READ if args and is_network_path(str(args[0])) else None
+    if name == "ai":      # {#ai -image file:\\host\share\x.png} reads a network file
+        return NETWORK_READ if _ai_network_image(opts.get("image", "")) else None
     if name in SCOPED_VARS:
         return PRIVILEGED["settemp"] if opts.get("scope", "local") not in ("", "local") else None
     reason = PRIVILEGED.get(name)
@@ -99,6 +101,13 @@ def privileged_reason(name: str, args: list[str], opts: dict[str, str]) -> str |
         return None       # only opens a draft for the user to check
     return reason
 
+
+def _ai_network_image(spec: str) -> bool:
+    return any(p.strip().lower().startswith("file:") and is_network_path(p.strip()[5:])
+               for p in (spec or "").split("|"))
+
+
+_AI_IMAGE = re.compile(r'-image\s+("[^"]*"|\S+)')
 
 PLUGIN_REASON = "use plugins that may reach the internet, files or the keyboard"
 
@@ -134,6 +143,9 @@ def scan_privileged(content: str) -> list[str]:
             scope = _SCOPE.search(rest)
             # a scope written as a macro ({#var s}) is only known at run time: ask anyway
             reason = privileged_reason(name, [], {"scope": scope.group(1) or "?"} if scope else {})
+        elif name == "ai":
+            img = _AI_IMAGE.search(rest)
+            reason = privileged_reason(name, [], {"image": img.group(1).strip('"')} if img else {})
         elif name in FILE_READERS:
             first = _FIRST_ARG.match(rest)
             reason = privileged_reason(name, [first.group(1)] if first else [], {})
