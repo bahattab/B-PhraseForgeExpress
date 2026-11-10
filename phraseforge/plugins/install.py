@@ -131,9 +131,7 @@ def signature(src: str | Path, trusted=frozenset()):
     with zipfile.ZipFile(src) as z:
         root = _check_zip(z)
         files = {i.filename[len(root):]: z.read(i) for i in z.infolist()
-                 if not i.is_dir() and i.filename.startswith(root)
-                 and not set(PurePosixPath(i.filename).parts) & {"__pycache__", ".git"}
-                 and not i.filename.endswith(".pyc")}
+                 if not i.is_dir() and i.filename.startswith(root) and not signing.skipped(i.filename)}
     return signing.verify(files, trusted)
 
 
@@ -148,14 +146,17 @@ def install(src: str | Path, dest_root: str | Path, trusted=frozenset(), require
     stage = Path(tempfile.mkdtemp(prefix=f".{m.id}-", dir=dest_root))
     try:
         if src.is_dir():
-            shutil.copytree(src, stage / "p", symlinks=True,          # links were refused above
-                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".git"))
+            from phraseforge.plugins.signing import copy_ignore
+            shutil.copytree(src, stage / "p", symlinks=True, ignore=copy_ignore)   # links were refused above
         else:
             with zipfile.ZipFile(src) as z:
                 root = _check_zip(z)
                 out = stage / "p"
                 for i in z.infolist():
                     if i.is_dir() or not i.filename.startswith(root):
+                        continue
+                    from phraseforge.plugins.signing import skipped
+                    if skipped(i.filename):          # never installed, so never outside the signature
                         continue
                     rel = i.filename[len(root):]
                     target = out.joinpath(*PurePosixPath(rel).parts)
@@ -200,7 +201,8 @@ def stage(src: str | Path) -> Path:
     inspect(src)                                     # refuse links and oversize before copying
     tmp = Path(tempfile.mkdtemp(prefix="pf-plugin-"))
     if src.is_dir():
-        shutil.copytree(src, tmp / "p", symlinks=True, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".git"))
+        from phraseforge.plugins.signing import copy_ignore
+        shutil.copytree(src, tmp / "p", symlinks=True, ignore=copy_ignore)
         return tmp / "p"
     shutil.copyfile(src, tmp / "p.pfplugin")
     return tmp / "p.pfplugin"

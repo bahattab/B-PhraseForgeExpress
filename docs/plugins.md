@@ -87,7 +87,7 @@ signing.sign_folder("my-plugin", private) # writes my-plugin/plugin.sig; sign la
 Users trust a publisher by adding its public key, one per line, to the setting
 `plugins.trusted_keys` (this PC only). Administrators can list keys in `policy.toml`
 (`plugins_trusted_keys = ["..."]`) and set `plugins_require_signature = true` so that only
-plugins signed by a trusted key can be installed.
+plugins signed by one of those keys can be installed (then keys in the user's setting do not count). Python caches (`__pycache__`, `*.pyc`) and `.git` are never installed, so they are not signed either.
 
 ## Network access
 

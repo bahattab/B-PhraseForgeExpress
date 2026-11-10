@@ -108,7 +108,10 @@ class PluginManager:
     def trusted_keys(self) -> frozenset[str]:
         """Publisher keys this PC trusts: Settings (plugins.trusted_keys) plus the policy's."""
         from phraseforge.plugins import signing
-        return signing.trusted_keys(self.store.setting("plugins.trusted_keys", "")) | policy.current().plugins_trusted_keys
+        pol = policy.current()
+        if pol.plugins_require_signature:     # the administrator decides who is trusted, not the user
+            return pol.plugins_trusted_keys
+        return signing.trusted_keys(self.store.setting("plugins.trusted_keys", "")) | pol.plugins_trusted_keys
 
     def signature(self, src):
         """signing.Signature of a package, shown with the consent question."""

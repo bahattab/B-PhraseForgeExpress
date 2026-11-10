@@ -117,3 +117,43 @@ def test_plugin_process_gets_the_proxy(tmp_path):
         proc.stop()
     assert out["proxy"].startswith("http://127.0.0.1:")
     assert out["net"].startswith("blocked:")
+
+
+def test_connection_cap_and_stop_closes_tunnels(upstream, monkeypatch):
+    from phraseforge.plugins import netproxy
+    monkeypatch.setattr(netproxy, "MAX_CONNECTIONS", 2)
+    p = FilterProxy("demo", ["localhost"])
+    p.ports = frozenset({upstream})
+    p.start()
+    tunnels = []
+    try:
+        for _ in range(2):
+            reply, s = ask(p.port, f"CONNECT localhost:{upstream} HTTP/1.1\r\n\r\n".encode())
+            assert reply.startswith(b"HTTP/1.1 200")
+            tunnels.append(s)
+        reply, s3 = ask(p.port, f"CONNECT localhost:{upstream} HTTP/1.1\r\n\r\n".encode())
+        assert reply.startswith(b"HTTP/1.1 503")
+        s3.close()
+    finally:
+        p.stop()
+    for s in tunnels:                      # stop() ended the open tunnels
+        s.settimeout(3)
+        assert s.recv(10) == b""
+        s.close()
+
+
+def test_slow_header_is_dropped(monkeypatch):
+    import time
+    from phraseforge.plugins import netproxy
+    monkeypatch.setattr(netproxy, "HEADER_DEADLINE_S", 0.5)
+    p = FilterProxy("demo", [])
+    p.start()
+    try:
+        s = socket.create_connection(("127.0.0.1", p.port), timeout=5)
+        s.sendall(b"CONNECT ")
+        t = time.monotonic()
+        assert s.recv(10) == b""
+        assert time.monotonic() - t < 4
+        s.close()
+    finally:
+        p.stop()

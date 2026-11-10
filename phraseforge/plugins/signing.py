@@ -25,6 +25,18 @@ SIG_FILE = "plugin.sig"
 _SKIP_DIRS = {"__pycache__", ".git"}
 
 
+def skipped(rel: str) -> bool:
+    """Files that are never installed and so not signed: Python caches and .git. One rule for the
+    signature, the consent check and every copy, compared without case like Windows does."""
+    parts = [p.lower() for p in rel.replace("\\", "/").split("/")]
+    return bool(set(parts) & _SKIP_DIRS) or parts[-1].endswith((".pyc", ".pyo"))
+
+
+def copy_ignore(directory, names):
+    """shutil.copytree ignore= hook using skipped()."""
+    return {n for n in names if skipped(n)}
+
+
 @dataclass(frozen=True)
 class Signature:
     state: str                 # unsigned | trusted | untrusted | invalid
@@ -52,12 +64,12 @@ def folder_files(folder: str | Path) -> dict[str, bytes]:
     folder = Path(folder)
     out = {}
     for root, dirs, files in os.walk(folder):
-        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
+        dirs[:] = [d for d in dirs if d.lower() not in _SKIP_DIRS]
         for name in files:
-            if name.endswith(".pyc"):
-                continue
             p = Path(root) / name
-            out[p.relative_to(folder).as_posix()] = p.read_bytes()
+            rel = p.relative_to(folder).as_posix()
+            if not skipped(rel):
+                out[rel] = p.read_bytes()
     return out
 
 
@@ -85,7 +97,8 @@ def sign_folder(folder: str | Path, private_b64: str) -> str:
 
 
 def trusted_keys(text: str) -> frozenset[str]:
-    return frozenset(line.strip() for line in (text or "").splitlines() if line.strip() and not line.startswith("#"))
+    return frozenset(line.strip() for line in (text or "").splitlines()
+                     if line.strip() and not line.strip().startswith("#"))
 
 
 def verify(files: dict[str, bytes], trusted: frozenset[str] | set[str] = frozenset()) -> Signature:

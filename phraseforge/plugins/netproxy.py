@@ -25,6 +25,8 @@ ALLOWED_PORTS = frozenset({443})
 CONNECT_TIMEOUT_S = 15
 IDLE_TIMEOUT_S = 300
 MAX_HEADER = 8192
+MAX_CONNECTIONS = 16        # open tunnels per plugin; more are refused
+HEADER_DEADLINE_S = 10      # the whole CONNECT request must arrive within this
 
 
 def parse_connect(head: bytes) -> tuple[str, int] | None:
@@ -46,10 +48,29 @@ class _Handler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
         proxy: FilterProxy = self.server.owner            # type: ignore[attr-defined]
         client = self.request
-        client.settimeout(CONNECT_TIMEOUT_S)
+        if not proxy._slots.acquire(blocking=False):
+            try:
+                client.sendall(b"HTTP/1.1 503 Too many connections\r\nContent-Length: 0\r\n\r\n")
+            except OSError:
+                pass
+            return
+        proxy._track(client, True)
+        try:
+            self._serve(proxy, client)
+        finally:
+            proxy._track(client, False)
+            proxy._slots.release()
+
+    def _serve(self, proxy, client) -> None:
+        import time
+        deadline = time.monotonic() + HEADER_DEADLINE_S
         head = b""
         try:
             while b"\r\n\r\n" not in head and len(head) < MAX_HEADER:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    return
+                client.settimeout(left)
                 chunk = client.recv(1024)
                 if not chunk:
                     return
@@ -74,6 +95,7 @@ class _Handler(socketserver.BaseRequestHandler):
         except OSError:
             client.sendall(b"HTTP/1.1 502 Could not connect\r\nContent-Length: 0\r\n\r\n")
             return
+        proxy._track(upstream, True)
         rest = head.split(b"\r\n\r\n", 1)[1]
         try:
             client.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
@@ -81,6 +103,7 @@ class _Handler(socketserver.BaseRequestHandler):
                 upstream.sendall(rest)
             _pipe(client, upstream)
         finally:
+            proxy._track(upstream, False)
             upstream.close()
 
 
@@ -118,6 +141,13 @@ class FilterProxy:
         self.on_denied = on_denied           # called with "host:port" for each refused tunnel
         self.denied: deque[str] = deque(maxlen=100)          # what was refused (shown with the plugin's errors)
         self._server: _Server | None = None
+        self._slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
+        self._open: set[socket.socket] = set()
+        self._open_lock = threading.Lock()
+
+    def _track(self, sock: socket.socket, add: bool) -> None:
+        with self._open_lock:
+            (self._open.add if add else self._open.discard)(sock)
 
     def allows(self, host: str, port: int) -> bool:
         return port in self.ports and host.lower().rstrip(".") in self.hosts
@@ -138,6 +168,17 @@ class FilterProxy:
             self._server.shutdown()
             self._server.server_close()
             self._server = None
+        with self._open_lock:                 # end open tunnels too, not only new connections
+            socks, self._open = list(self._open), set()
+        for sk in socks:
+            try:
+                sk.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                sk.close()
+            except OSError:
+                pass
 
     def env(self) -> dict[str, str]:
         url = f"http://127.0.0.1:{self.port}"

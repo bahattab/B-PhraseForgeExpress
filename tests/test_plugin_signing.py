@@ -88,17 +88,16 @@ def test_manager_uses_settings_and_policy_keys(plugin, keys, tmp_path, monkeypat
     signing.sign_folder(plugin, priv)
     st = Store(":memory:")
     mgr = pm.PluginManager(st, root=tmp_path / "plugins")
+    st.set_setting("plugins.trusted_keys", f"# my publisher\n{pub}\n")
+    assert mgr.signature(plugin).state == "trusted"                    # no policy: the user's keys count
     pol = dataclasses.replace(policy.NO_POLICY, plugins_require_signature=True)
     monkeypatch.setattr(policy, "current", lambda: pol)
     with pytest.raises(ManifestError):
         mgr.install(plugin, accept=True)
-    st.set_setting("plugins.trusted_keys", f"# my publisher\n{pub}\n")
-    assert mgr.signature(plugin).state == "trusted"
-    mgr.install(plugin, accept=True)
-    st.set_setting("plugins.trusted_keys", "")
     pol2 = dataclasses.replace(pol, plugins_trusted_keys=frozenset({pub}))
     monkeypatch.setattr(policy, "current", lambda: pol2)
     assert mgr.signature(plugin).state == "trusted"
+    mgr.install(plugin, accept=True)
 
 
 def test_policy_parsing_and_fail_closed(tmp_path):
@@ -116,3 +115,36 @@ def test_consent_text_shows_signature(plugin, keys):
     assert "Not signed" in consent_text(m, ["x"], False, sig=signing.Signature("unsigned"))
     priv, pub = keys
     assert signing.fingerprint(pub) in consent_text(m, ["x"], False, sig=signing.Signature("trusted", pub))
+
+
+def test_pyc_in_signed_zip_is_never_installed(plugin, keys, tmp_path):
+    """R: a .pyc / __pycache__ added to a signed package must not run under the signature."""
+    priv, pub = keys
+    signing.sign_folder(plugin, priv)
+    pkg = zip_of(plugin, tmp_path / "h.pfplugin")
+    with zipfile.ZipFile(pkg, "a") as z:
+        z.writestr("__PyCache__/main.cpython-313.pyc", b"evil")
+        z.writestr("helper.PYC", b"evil")
+        z.writestr(".Git/config", b"x")
+    assert inst.signature(pkg, {pub}).state == "trusted"
+    root = tmp_path / "plugins"
+    inst.install(pkg, root, {pub}, require_signed=True)
+    names = {p.name.lower() for p in (root / "hello").rglob("*")}
+    assert not names & {"__pycache__", "main.cpython-313.pyc", "helper.pyc", ".git", "config"}
+
+
+def test_user_keys_do_not_count_when_policy_requires_signature(plugin, keys, tmp_path, monkeypatch):
+    priv, pub = keys
+    signing.sign_folder(plugin, priv)
+    st = Store(":memory:")
+    st.set_setting("plugins.trusted_keys", pub)
+    mgr = pm.PluginManager(st, root=tmp_path / "plugins")
+    pol = dataclasses.replace(policy.NO_POLICY, plugins_require_signature=True)
+    monkeypatch.setattr(policy, "current", lambda: pol)
+    assert mgr.signature(plugin).state == "untrusted"
+    with pytest.raises(ManifestError):
+        mgr.install(plugin, accept=True)
+
+
+def test_indented_comment_lines_are_not_keys():
+    assert signing.trusted_keys("  # note\n abc \n") == {"abc"}
