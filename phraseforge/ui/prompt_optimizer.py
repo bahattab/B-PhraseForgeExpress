@@ -21,6 +21,15 @@ from phraseforge.ui.i18n import tr
 from phraseforge.ui.icons import app_icon
 
 
+
+_INVISIBLE = dict.fromkeys([*range(0, 32), 127, *range(0x80, 0xA0), 0x200E, 0x200F,
+                            *range(0x202A, 0x202F), *range(0x2066, 0x206A)], " ")
+
+
+def _plain_line(text: str) -> str:
+    """One line for the status label: control and direction characters become spaces."""
+    return text.translate(_INVISIBLE)
+
 class TemplateForm(QDialog):
     """Fill in the {{variables}} of a template."""
 
@@ -123,6 +132,7 @@ class PromptOptimizerWindow(QWidget):
         row.addWidget(more)
         lay.addLayout(row)
         self.status = QLabel()
+        self.status.setTextFormat(Qt.PlainText)        # streamed engine text is never HTML (R124)
         lay.addWidget(self.status)
         lay.addWidget(self.transcript, 1)
         self.new_conversation()
@@ -184,14 +194,22 @@ class PromptOptimizerWindow(QWidget):
         from phraseforge.ui.ai_ui import run_busy
         self.send_btn.setEnabled(False)
         self.status.setText(tr("Thinking…"))
-        pieces: list[str] = []                 # filled by the worker thread, shown by tick()
-        self.conv.on_delta = pieces.append
+        import threading
+        tail = {"text": "", "new": False}     # only the last 200 characters are kept (R125)
+        lock = threading.Lock()
 
-        def tick():
-            if pieces:
-                live = "".join(pieces)
-                self.status.setText(tr("Writing…") + " " + (live[-200:] if len(live) > 200 else live)
-                                    .replace("\n", " "))
+        def on_delta(piece: str) -> None:      # worker thread
+            with lock:
+                tail["text"] = (tail["text"] + piece)[-200:]
+                tail["new"] = True
+        self.conv.on_delta = on_delta
+
+        def tick():                            # UI thread
+            with lock:
+                if not tail["new"]:
+                    return
+                live, tail["new"] = tail["text"], False
+            self.status.setText(tr("Writing…") + " " + _plain_line(live))
         try:
             reply = run_busy(lambda: self.conv.send(msg), tick=tick)
         except Exception as e:      # noqa: BLE001 - shown to the user

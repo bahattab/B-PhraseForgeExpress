@@ -23,7 +23,8 @@ from phraseforge.plugins.manifest import Manifest
 GRACE_S = 2.0
 MEMORY_MB = 512
 MAX_LINE = 16 * 1024 * 1024        # one JSON-RPC message (R108)
-MAX_STREAM = 4 * 1024 * 1024       # text a call may stream through $/progress
+MAX_STREAM = 4 * 1024 * 1024       # bytes a call may stream through $/progress
+PIECE_COST = 64                    # counted per piece on top of its bytes, so 4 MB is also ~65k pieces
 MAX_CALL_FACTOR = 10               # a streaming call ends after timeout * this, however lively
 ENV_KEEP = ("SYSTEMROOT", "WINDIR", "TEMP", "TMP", "PATH", "LANG", "PATHEXT", "COMSPEC")
 
@@ -42,7 +43,19 @@ def command(m: Manifest, folder: Path) -> list[str]:
         return [entry]
     if getattr(sys, "frozen", False):            # the PhraseForge EXE runs Python plugins itself
         return [sys.executable, "--run-plugin", entry]
-    return [sys.executable, "-I", "-X", "utf8", entry]
+    # bytecode only from a private cache: a .pyc planted in the plugin's __pycache__ is never run (R118)
+    return [sys.executable, "-I", "-X", "utf8", "-X", f"pycache_prefix={_pycache_dir()}", entry]
+
+
+_PYCACHE: list[str] = []
+
+
+def _pycache_dir() -> str:
+    """A private folder (mkdtemp: new, this user only) made once per PhraseForge process."""
+    if not _PYCACHE:
+        import tempfile
+        _PYCACHE.append(tempfile.mkdtemp(prefix="pf-pycache-"))
+    return _PYCACHE[0]
 
 
 def _env() -> dict:
@@ -249,19 +262,19 @@ class PluginProcess:
             if msg.get("method") == "$/progress":
                 pp = msg.get("params") if isinstance(msg.get("params"), dict) else {}
                 text = pp.get("text")
-                if pp.get("id") != rid or not isinstance(text, str):
-                    continue                           # for an earlier call, or not text
-                streamed += len(text)
+                if pp.get("id") != rid or not isinstance(text, str) or on_progress is None:
+                    continue           # an earlier call, not text, or a call that did not ask to stream (R123)
+                streamed += len(text.encode("utf-8", "replace")) + PIECE_COST   # many tiny pieces count too (R125)
                 if streamed > MAX_STREAM:
                     self._cancel(rid)
                     self._error(f"{method}: streamed more than {MAX_STREAM // (1024 * 1024)} MB, stopped")
                     raise PluginError("the plugin sent too much text")
-                if on_progress is not None:
-                    try:
-                        on_progress(text)
-                    except Exception:                  # noqa: BLE001 - a display error must not end the call
-                        pass
-                deadline = min(time.monotonic() + timeout, hard_end)
+                try:
+                    on_progress(text)
+                except Exception:                      # noqa: BLE001 - a display error must not end the call
+                    pass
+                if text:                               # an empty piece is no progress (R123)
+                    deadline = min(time.monotonic() + timeout, hard_end)
                 continue
             if msg.get("id") != rid:
                 continue                               # a late answer to a cancelled call

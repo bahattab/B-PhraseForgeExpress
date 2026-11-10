@@ -27,6 +27,8 @@ IDLE_TIMEOUT_S = 300
 MAX_HEADER = 8192
 MAX_CONNECTIONS = 16        # open tunnels per plugin; more are refused
 HEADER_DEADLINE_S = 10      # the whole CONNECT request must arrive within this
+SEND_TIMEOUT_S = 30         # a send that cannot finish within this ends the tunnel
+MAX_PENDING = 64            # connections still sending their CONNECT line
 
 
 def parse_connect(head: bytes) -> tuple[str, int] | None:
@@ -44,24 +46,43 @@ def parse_connect(head: bytes) -> tuple[str, int] | None:
     return host.lower().rstrip("."), int(port)
 
 
+def _send(sock, data: bytes) -> None:
+    try:
+        sock.sendall(data)
+    except OSError:
+        pass
+
+
 class _Handler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
         proxy: FilterProxy = self.server.owner            # type: ignore[attr-defined]
         client = self.request
-        if not proxy._slots.acquire(blocking=False):
-            try:
-                client.sendall(b"HTTP/1.1 503 Too many connections\r\nContent-Length: 0\r\n\r\n")
-            except OSError:
-                pass
-            return
+        if not proxy._pending.acquire(blocking=False):
+            return                                        # too many half-sent requests: just close
         proxy._track(client, True)
         try:
-            self._serve(proxy, client)
+            try:
+                head = self._read_head(client)
+            finally:
+                proxy._pending.release()
+            if head is None:
+                return
+            if not proxy.authorized(head):                # only the plugin knows the token (R120)
+                _send(client, b"HTTP/1.1 407 Proxy authentication required\r\n"
+                              b"Proxy-Authenticate: Basic realm=\"PhraseForge\"\r\nContent-Length: 0\r\n\r\n")
+                return
+            if not proxy._slots.acquire(blocking=False):
+                _send(client, b"HTTP/1.1 503 Too many connections\r\nContent-Length: 0\r\n\r\n")
+                return
+            try:
+                self._serve(proxy, client, head)
+            finally:
+                proxy._slots.release()
         finally:
             proxy._track(client, False)
-            proxy._slots.release()
 
-    def _serve(self, proxy, client) -> None:
+    @staticmethod
+    def _read_head(client) -> bytes | None:
         import time
         deadline = time.monotonic() + HEADER_DEADLINE_S
         head = b""
@@ -69,14 +90,17 @@ class _Handler(socketserver.BaseRequestHandler):
             while b"\r\n\r\n" not in head and len(head) < MAX_HEADER:
                 left = deadline - time.monotonic()
                 if left <= 0:
-                    return
+                    return None
                 client.settimeout(left)
                 chunk = client.recv(1024)
                 if not chunk:
-                    return
+                    return None
                 head += chunk
         except OSError:
-            return
+            return None
+        return head
+
+    def _serve(self, proxy, client, head: bytes) -> None:
         target = parse_connect(head)
         if target is None:
             client.sendall(b"HTTP/1.1 405 Only CONNECT is allowed\r\nContent-Length: 0\r\n\r\n")
@@ -91,7 +115,12 @@ class _Handler(socketserver.BaseRequestHandler):
             log.info("plugin %s: blocked connection to %s:%d", proxy.plugin_id, host, port)
             return
         try:
-            upstream = socket.create_connection((host, port), timeout=CONNECT_TIMEOUT_S)
+            addr = (host, port) if proxy.allow_local else _public_address(host, port)
+            if addr is None:                          # an allowed name that points inside (R121)
+                client.sendall(b"HTTP/1.1 403 Host resolves to a local address\r\nContent-Length: 0\r\n\r\n")
+                proxy.denied.append(f"{host}:{port} (local address)")
+                return
+            upstream = socket.create_connection(addr, timeout=CONNECT_TIMEOUT_S)   # the address checked
         except OSError:
             client.sendall(b"HTTP/1.1 502 Could not connect\r\nContent-Length: 0\r\n\r\n")
             return
@@ -107,9 +136,23 @@ class _Handler(socketserver.BaseRequestHandler):
             upstream.close()
 
 
+def _public_address(host: str, port: int):
+    """The first internet address of host, or None when it only resolves to this PC, the local
+    network, link-local (169.254.x, cloud metadata) or other reserved ranges."""
+    import ipaddress
+    for family, _t, _p, _c, sa in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM):
+        ip = ipaddress.ip_address(sa[0].split("%")[0])
+        if getattr(ip, "ipv4_mapped", None):
+            ip = ip.ipv4_mapped
+        if ip.is_global:
+            return sa[:2]
+    return None
+
+
 def _pipe(a: socket.socket, b: socket.socket) -> None:
-    a.settimeout(None)
-    b.settimeout(None)
+    # a peer that stops reading must not hold the slot forever (R120)
+    a.settimeout(SEND_TIMEOUT_S)
+    b.settimeout(SEND_TIMEOUT_S)
     socks = [a, b]
     while True:
         ready, _, _ = select.select(socks, [], [], IDLE_TIMEOUT_S)
@@ -142,12 +185,26 @@ class FilterProxy:
         self.denied: deque[str] = deque(maxlen=100)          # what was refused (shown with the plugin's errors)
         self._server: _Server | None = None
         self._slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
+        self._pending = threading.BoundedSemaphore(MAX_PENDING)
+        import secrets
+        self.token = secrets.token_urlsafe(24)      # in the plugin's proxy URL only
+        self.allow_local = False                    # tests tunnel to a server on this PC
         self._open: set[socket.socket] = set()
         self._open_lock = threading.Lock()
 
     def _track(self, sock: socket.socket, add: bool) -> None:
         with self._open_lock:
             (self._open.add if add else self._open.discard)(sock)
+
+    def authorized(self, head: bytes) -> bool:
+        import base64
+        import hmac
+        want = b"Basic " + base64.b64encode(f"pf:{self.token}".encode())
+        for line in head.split(b"\r\n")[1:]:
+            name, sep, value = line.partition(b":")
+            if sep and name.strip().lower() == b"proxy-authorization":
+                return hmac.compare_digest(value.strip(), want)
+        return False
 
     def allows(self, host: str, port: int) -> bool:
         return port in self.ports and host.lower().rstrip(".") in self.hosts
@@ -181,7 +238,7 @@ class FilterProxy:
                 pass
 
     def env(self) -> dict[str, str]:
-        url = f"http://127.0.0.1:{self.port}"
+        url = f"http://pf:{self.token}@127.0.0.1:{self.port}"
         out = {}
         for name in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"):
             out[name] = out[name.lower()] = url

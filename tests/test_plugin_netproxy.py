@@ -25,8 +25,14 @@ def upstream():
     srv.server_close()
 
 
-def ask(proxy_port, line: bytes) -> tuple[bytes, socket.socket]:
-    s = socket.create_connection(("127.0.0.1", proxy_port), timeout=5)
+def ask(proxy, line: bytes, auth: bool = True) -> tuple[bytes, socket.socket]:
+    """Send a request as the plugin would: with the proxy token from its HTTPS_PROXY URL."""
+    import base64
+    if auth:
+        first, _, rest = line.partition(b"\r\n")
+        token = base64.b64encode(f"pf:{proxy.token}".encode())
+        line = first + b"\r\nProxy-Authorization: Basic " + token + b"\r\n" + rest
+    s = socket.create_connection(("127.0.0.1", proxy.port), timeout=5)
     s.sendall(line)
     reply = b""
     while b"\r\n\r\n" not in reply:
@@ -47,10 +53,11 @@ def test_parse_connect():
 
 def test_allowed_host_is_tunnelled(upstream):
     p = FilterProxy("demo", ["localhost"])
+    p.allow_local = True                      # the test server runs on this PC
     p.ports = frozenset({upstream})
     p.start()
     try:
-        reply, s = ask(p.port, f"CONNECT localhost:{upstream} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode())
+        reply, s = ask(p, f"CONNECT localhost:{upstream} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode())
         assert reply.startswith(b"HTTP/1.1 200")
         s.sendall(b"hello")
         assert s.recv(1024) == b"echo:hello"
@@ -63,9 +70,9 @@ def test_other_hosts_ports_and_plain_http_are_refused(upstream):
     p = FilterProxy("demo", ["api.example.com"])
     p.start()
     try:
-        assert ask(p.port, b"CONNECT evil.example.org:443 HTTP/1.1\r\n\r\n")[0].startswith(b"HTTP/1.1 403")
-        assert ask(p.port, b"CONNECT api.example.com:22 HTTP/1.1\r\n\r\n")[0].startswith(b"HTTP/1.1 403")
-        assert ask(p.port, b"GET http://api.example.com/ HTTP/1.1\r\n\r\n")[0].startswith(b"HTTP/1.1 405")
+        assert ask(p, b"CONNECT evil.example.org:443 HTTP/1.1\r\n\r\n")[0].startswith(b"HTTP/1.1 403")
+        assert ask(p, b"CONNECT api.example.com:22 HTTP/1.1\r\n\r\n")[0].startswith(b"HTTP/1.1 403")
+        assert ask(p, b"GET http://api.example.com/ HTTP/1.1\r\n\r\n")[0].startswith(b"HTTP/1.1 405")
         assert list(p.denied)[:2] == ["evil.example.org:443", "api.example.com:22"]
     finally:
         p.stop()
@@ -75,7 +82,7 @@ def test_no_network_permission_refuses_everything():
     p = FilterProxy("demo", [])
     p.start()
     try:
-        assert ask(p.port, b"CONNECT api.example.com:443 HTTP/1.1\r\n\r\n")[0].startswith(b"HTTP/1.1 403")
+        assert ask(p, b"CONNECT api.example.com:443 HTTP/1.1\r\n\r\n")[0].startswith(b"HTTP/1.1 403")
     finally:
         p.stop()
 
@@ -85,7 +92,7 @@ def test_env_points_every_proxy_variable_at_the_filter():
     p.start()
     try:
         env = p.env()
-        url = f"http://127.0.0.1:{p.port}"
+        url = f"http://pf:{p.token}@127.0.0.1:{p.port}"
         assert env["HTTPS_PROXY"] == env["https_proxy"] == env["HTTP_PROXY"] == env["ALL_PROXY"] == url
         assert env["NO_PROXY"] == ""
     finally:
@@ -115,7 +122,7 @@ def test_plugin_process_gets_the_proxy(tmp_path):
         out = proc.call("probe", {}, timeout=20)
     finally:
         proc.stop()
-    assert out["proxy"].startswith("http://127.0.0.1:")
+    assert out["proxy"].startswith("http://pf:") and "@127.0.0.1:" in out["proxy"]
     assert out["net"].startswith("blocked:")
 
 
@@ -123,15 +130,16 @@ def test_connection_cap_and_stop_closes_tunnels(upstream, monkeypatch):
     from phraseforge.plugins import netproxy
     monkeypatch.setattr(netproxy, "MAX_CONNECTIONS", 2)
     p = FilterProxy("demo", ["localhost"])
+    p.allow_local = True                      # the test server runs on this PC
     p.ports = frozenset({upstream})
     p.start()
     tunnels = []
     try:
         for _ in range(2):
-            reply, s = ask(p.port, f"CONNECT localhost:{upstream} HTTP/1.1\r\n\r\n".encode())
+            reply, s = ask(p, f"CONNECT localhost:{upstream} HTTP/1.1\r\n\r\n".encode())
             assert reply.startswith(b"HTTP/1.1 200")
             tunnels.append(s)
-        reply, s3 = ask(p.port, f"CONNECT localhost:{upstream} HTTP/1.1\r\n\r\n".encode())
+        reply, s3 = ask(p, f"CONNECT localhost:{upstream} HTTP/1.1\r\n\r\n".encode())
         assert reply.startswith(b"HTTP/1.1 503")
         s3.close()
     finally:
