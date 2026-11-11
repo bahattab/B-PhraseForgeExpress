@@ -802,6 +802,33 @@ class PhraseEditor(QWidget):
         self.dirty = was_dirty
         self._fill_lang_bar()
 
+    def _insert_file(self) -> None:
+        """Insert a Markdown (formatted), Word, RTF or text file at the cursor (G-21)."""
+        from PySide6.QtWidgets import QFileDialog
+        from phraseforge.ui import editor_files
+        path, _ = QFileDialog.getOpenFileName(self, "Insert from file", "", editor_files.FILTER)
+        if not path:
+            return
+        try:
+            content, is_html = editor_files.read_for_editor(path)
+        except Exception as e:                 # noqa: BLE001 - unreadable, too big, wrong type
+            QMessageBox.warning(self, "Insert from file", str(e))
+            return
+        self.insert_document(content, is_html)
+
+    def insert_document(self, content: str, is_html: bool) -> None:
+        ed = self.content_edit
+        c = ed.textCursor()
+        if is_html and ed.rich:
+            c.insertHtml(content)
+            ed._chipify_document()             # {#macros} in the file become chips like typed ones
+        else:
+            if is_html:                        # a plain-text phrase keeps the words, not the formatting
+                from PySide6.QtGui import QTextDocumentFragment
+                content = QTextDocumentFragment.fromHtml(content).toPlainText()
+            ed.insert_content(content, c)
+        ed.setTextCursor(c)
+
     def _spell_language(self) -> None:
         if self.spell_checker is not None and self.spell_checker.language != self._lang:
             self.spell_checker.language = self._lang
@@ -1023,6 +1050,7 @@ class PhraseEditor(QWidget):
         ins = m.addMenu("Insert macro")
         self._fill_insert_macro_menu(ins)
         m.addAction("AI text generator").triggered.connect(self._ai_generator)
+        m.addAction("Insert from file (Markdown, Word, RTF)...").triggered.connect(self._insert_file)
         m.addSeparator()
         a = m.addAction("Right-to-left paragraph"); a.setShortcut("Ctrl+Right Shift")
         a.triggered.connect(lambda: ed.set_paragraph_direction(True))
