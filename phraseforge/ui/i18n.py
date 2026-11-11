@@ -143,7 +143,54 @@ def lookup(text: str) -> str:
         hit = AR.get(base)
         if hit is not None:
             return f"{lead}{hit} ({hint}"
-    return text
+    return _from_template(text)
+
+
+# Text built at run time ("Exported 12 phrase(s).") is matched against the table entries that
+# hold "{}" place-holders ("Exported {} phrase(s)."); the values are carried over in order,
+# or by number when the Arabic entry uses {0} {1}.
+_TEMPLATES: list | None = None
+_TEMPLATE_CACHE: dict[str, str] = {}
+
+
+def _templates() -> list:
+    global _TEMPLATES
+    if _TEMPLATES is None:
+        found = []
+        for en, ar in AR.items():
+            if "{}" not in en:
+                continue
+            parts = en.split("{}")
+            anchor = max(parts, key=len)
+            if len(anchor.strip()) < 4:
+                continue                              # too little fixed text to recognise safely
+            rx = re.compile("(.*?)".join(re.escape(x) for x in parts), re.S)
+            found.append((anchor, rx, ar))
+        found.sort(key=lambda t: -len(t[0]))          # the most specific template first
+        _TEMPLATES = found
+    return _TEMPLATES
+
+
+def _from_template(text: str) -> str:
+    hit = _TEMPLATE_CACHE.get(text)
+    if hit is not None:
+        return hit
+    out = text
+    if len(text) <= 4000:
+        for anchor, rx, ar in _templates():
+            if anchor not in text:
+                continue
+            m = rx.fullmatch(text)
+            if m:
+                try:
+                    out = ar.format(*m.groups())
+                except (IndexError, KeyError, ValueError):
+                    out = text
+                break
+    if len(_TEMPLATE_CACHE) > 2000:
+        _TEMPLATE_CACHE.clear()
+    _TEMPLATE_CACHE[text] = out
+    return out
 
 
 # ---------------------------------------------------------------- automatic widget translation

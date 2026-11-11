@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import codecs
 import hashlib
+import os
 import re
 import shutil
 import zipfile
@@ -262,6 +263,83 @@ def _copy_asset(p: Path) -> Path:
     if not target.exists():
         shutil.copyfile(p, target)
     return target
+
+
+MAX_ATTACHMENT = 50 * 1024 * 1024
+ATTACHED = "attached"
+
+
+def attach_file(path: str | Path) -> str:
+    """Keep a copy of a file with PhraseForge (G-21: a file attached to a phrase) and return the
+    macro that pastes it: {#pastefile "attached/<hash>/<name>"}. The path is relative to the
+    assets folder, so it still works when the data folder moves (portable mode); the copy keeps
+    the file's own name, which is what the pasted file is called."""
+    p = Path(path)
+    if not p.is_file():
+        raise ValueError(f"Not a file: {p.name}")
+    size = p.stat().st_size
+    if size > MAX_ATTACHMENT:
+        raise ValueError(f"{p.name} is larger than {MAX_ATTACHMENT // (1024 * 1024)} MB.")
+    h = hashlib.sha256()
+    with open(p, "rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            h.update(block)
+    folder = assets_dir() / ATTACHED / h.hexdigest()[:16]
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / p.name
+    if not target.exists():
+        shutil.copyfile(p, target)
+    rel = target.relative_to(assets_dir()).as_posix()
+    return '{#pastefile "' + rel.replace('"', "'") + '"}'
+
+
+def resolve_attachment(path: str) -> Path | None:
+    """The file of a relative "attached/..." path, or None when it is not one of ours
+    (absolute, outside the attachments folder, or missing)."""
+    if not path or os.path.isabs(path) or not path.replace("\\", "/").startswith(ATTACHED + "/"):
+        return None
+    base = (assets_dir() / ATTACHED).resolve()
+    target = (assets_dir() / path).resolve()
+    if base not in target.parents or not target.is_file():
+        return None
+    return target
+
+
+_ATT_REF = re.compile(r'attached/([0-9a-f]{16})/([^"{}\\/\r\n]{1,200})"')
+EMBED_TOTAL_MAX = 200 * 1024 * 1024      # attached files written into one export file at most
+
+
+def attachment_refs(texts, refs: dict[str, str] | None = None) -> dict[str, str]:
+    """{hash16: file name} of every {#pastefile "attached/<hash16>/<name>"} in the texts."""
+    refs = {} if refs is None else refs
+    for t in texts:
+        if t and "attached/" in t:
+            for h, name in _ATT_REF.findall(t):
+                refs.setdefault(h, name)
+    return refs
+
+
+def attachment_path(h: str, name: str) -> Path | None:
+    """Where the attached file <h>/<name> is kept on this PC (None for a bad name)."""
+    name = Path(name).name
+    if not re.fullmatch(r"[0-9a-f]{16}", h or "") or name in ("", ".", ".."):
+        return None
+    return assets_dir() / ATTACHED / h / name
+
+
+def store_attachment(h: str, name: str, data: bytes) -> bool:
+    """Keep bytes received from elsewhere (sync, an export file) as the attached file <h>/<name>,
+    only when their SHA-256 starts with h. True when the file is now there."""
+    dest = attachment_path(h, name)
+    if dest is None or len(data) > MAX_ATTACHMENT or hashlib.sha256(data).hexdigest()[:16] != h:
+        return False
+    if dest.is_file():
+        return True
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.with_name(dest.name + ".part")
+    part.write_bytes(data)
+    os.replace(part, dest)
+    return True
 
 
 def _q(path: Path) -> str:

@@ -861,6 +861,8 @@ class MainWindow(QMainWindow):
         exp = menu_with(self, [("Export to file (JSON, CSV)...", "export", self.export_file),
                                ("Text files (one file per phrase)...", "text_file", self.export_text_folder),
                                ("Document (.docx, .pdf, .html, .mht)...", "export", self.export_document),
+                               ("XML (folders and phrases)...", "export", lambda: self.export_for("xml")),
+                               ("Excel workbook (.xlsx)...", "export", lambda: self.export_for("xlsx")),
                                None,
                                ("To a OneNote section (.one)...", "on_notebook", self.export_onenote_section),
                                ("OneNote to a file (.docx/.pdf/.xps/.mht)...", "on_notebook", self.export_onenote_file),
@@ -2358,6 +2360,8 @@ class MainWindow(QMainWindow):
             return
         try:
             d = self.store.export_dict()
+            from phraseforge.io_formats import _embed_attachments
+            _embed_attachments(d)             # attached files go to the new PC too
             from phraseforge.db import is_secret_setting
             # plain JSON: API keys and the proxy password are not written (re-enter them there)
             d["settings"] = {k: v for k, v in self.store.settings().items() if not is_secret_setting(k)}
@@ -2477,7 +2481,7 @@ class MainWindow(QMainWindow):
 
     def import_phraseexpress(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(self, "Import from PhraseExpress", "",  # noqa: E501 - filter below
-                                                "PhraseExpress export (*.txt *.csv *.tsv *.xml);;"
+                                                "PhraseExpress export (*.txt *.csv *.tsv *.xml *.xlsx);;"
                                                 "PhraseExpress phrase files (*.pexdb *.pexdbhub *.pxp);;All files (*)")
         if paths:
             self.import_phraseexpress_path(paths if len(paths) > 1 else paths[0])
@@ -2524,6 +2528,8 @@ class MainWindow(QMainWindow):
         "phraseexpress": ("Export for PhraseExpress", "phrases-phraseexpress.csv", "CSV (*.csv)"),
         "textexpander": ("Export for TextExpander", "phrases-textexpander.csv", "CSV (*.csv)"),
         "macos": ("Export for macOS Text Replacements", "Text Substitutions.plist", "Property list (*.plist)"),
+        "xml": ("Export as XML", "phrases.xml", "XML (*.xml)"),
+        "xlsx": ("Export as Excel workbook", "phrases.xlsx", "Excel workbook (*.xlsx)"),
     }
 
     def export_for(self, kind: str, path: str | None = None, show_message: bool = True):

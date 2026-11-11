@@ -164,6 +164,10 @@ def _outputfile(rt, args, opts):
        "Paste a file (as a file, like Explorer copy/paste) via the clipboard.")
 def _pastefile(rt, args, opts):
     path = os.path.expandvars(_arg(args, 0))
+    from phraseforge.importers.files import resolve_attachment
+    kept = resolve_attachment(path)              # "attached/..." : a file kept with PhraseForge
+    if kept is not None:
+        path = str(kept)
     if not Path(path).exists():
         raise MacroError(f"file not found: {path}")
     fn = _host(rt, "set_clipboard_files")

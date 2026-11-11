@@ -355,8 +355,99 @@ class CloudSync:
             raise
         return path
 
+    # ---------------------------------------------------- attached files (G-21)
+    ATT_PREFIX = "pf-att-"          # pf-att-<hash16>.db in the cloud folder (".db": every remote lists those)
+
+    @staticmethod
+    def _attachment_refs(con, refs: dict[str, str]) -> None:
+        """Add the attached files used by the phrases (and language versions) read through `con`."""
+        from phraseforge.importers.files import attachment_refs
+        for table in ("phrases", "phrase_versions"):
+            try:
+                rows = con.execute(f"SELECT content FROM {table} WHERE content LIKE '%attached/%'").fetchall()
+            except sqlite3.Error:
+                continue
+            attachment_refs((c for (c,) in rows), refs)
+
+    def sync_attachments(self, pulled: Path | None = None) -> tuple[int, int]:
+        """Carry the files attached to phrases: upload those the cloud lacks, download those
+        this PC lacks (also for the phrases in `pulled`, a copy not applied yet). A download is
+        kept only when its SHA-256 matches the hash in the phrase. Returns (uploaded, downloaded)."""
+        from phraseforge.importers import files as fl
+        refs: dict[str, str] = {}
+        self._attachment_refs(self.store.conn, refs)
+        if pulled:
+            con = sqlite3.connect(f"file:{Path(pulled).as_posix()}?mode=ro", uri=True)
+            try:
+                self._attachment_refs(con, refs)
+            finally:
+                con.close()
+        if not refs:
+            return 0, 0
+        there = {f.name for f in self.remote.list() if f.name.startswith(self.ATT_PREFIX)}
+        up = down = 0
+        for h, name in refs.items():
+            local, remote_name = fl.attachment_path(h, name), f"{self.ATT_PREFIX}{h}.db"
+            if local is None:
+                continue
+            try:
+                if local.is_file() and remote_name not in there:
+                    if local.stat().st_size <= fl.MAX_ATTACHMENT:
+                        self._upload(local, remote_name, {"kind": "attachment", "rev": 0})
+                        up += 1
+                elif not local.is_file() and remote_name in there:
+                    down += self._download_attachment(remote_name, h, local)
+            except SyncError:
+                raise
+            except Exception as e:                 # one file must not stop the others
+                log.warning("attached file %s was not synced: %s", name, e)
+        return up, down
+
+    def _download_attachment(self, remote_name: str, h: str, dest: Path) -> int:
+        from phraseforge import vault
+        from phraseforge.importers import files as fl
+        fd, tmp = tempfile.mkstemp(prefix="pf-att-")
+        os.close(fd)
+        path = Path(tmp)
+        try:
+            self.remote.get(remote_name, path)
+            if path.stat().st_size > fl.MAX_ATTACHMENT + 4096:
+                return 0
+            data = path.read_bytes()
+            if vault.is_encrypted(path):
+                pw = self.passphrase
+                if not pw:
+                    return 0
+                try:
+                    data, _key = vault.read(path, passphrase=pw)
+                except vault.WrongPassphrase:
+                    return 0
+                if (vault.header_of(path).get("meta") or {}).get("name") != remote_name:
+                    return 0
+            elif self.passphrase:
+                return 0                           # plain file in an encrypted sync: not ours
+            if not fl.store_attachment(h, dest.name, data):
+                log.warning("attached file %s in the cloud does not match its hash: not used", remote_name)
+                return 0
+            return 1
+        finally:
+            path.unlink(missing_ok=True)
+
     # ---------------------------------------------------- sync
     def sync(self) -> SyncResult:
+        res = self._sync_db()
+        if res.action != "conflict":
+            try:
+                up, down = self.sync_attachments(res.pulled_file)
+                if up or down:
+                    res.summary = {**res.summary, "attachments_up": up, "attachments_down": down}
+            except SyncError:
+                raise
+            except Exception as e:                 # the phrases are synced; files try again next time
+                log.warning("attached files were not synced: %s", e)
+        return res
+
+    def _sync_db(self) -> SyncResult:
         local_hash = content_hash(self.store)
         last_rev = int(self.store.setting("sync.last_rev", "0") or 0)
         last_hash = self.store.setting("sync.last_hash", "")
