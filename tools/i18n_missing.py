@@ -1,0 +1,73 @@
+"""List UI strings that have no Arabic translation (PRD G-31: the extraction step).
+
+Finds string literals given to the Qt calls that show text (labels, buttons, check boxes,
+group boxes, menu actions, window titles, tooltips, placeholders, the settings helpers
+_group/_row) in phraseforge/ui and phraseforge/app.py, and prints those that
+i18n.lookup() leaves in English.
+
+    python tools/i18n_missing.py            # list them
+    python tools/i18n_missing.py --count    # just the number
+"""
+from __future__ import annotations
+
+import ast
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+CALLS = {"QLabel", "QPushButton", "QCheckBox", "QRadioButton", "QGroupBox", "QAction", "QToolButton",
+         "addAction", "addMenu", "setWindowTitle", "setToolTip", "setPlaceholderText", "setText",
+         "setTitle", "_group", "_row", "addTab", "setStatusTip"}
+SKIP_PREFIX = ("{#", "http", "#", "<")
+# shown as they are on purpose: names, examples of what to type, code
+ALLOWED = {
+    "© 2026 PhraseForge contributors", "SELECT name AS Description, body AS Content FROM phrases",
+    "1234567890-abc.apps.googleusercontent.com", "GOCSPX-...", "\\s+([.,;:!?]) => \\1\n[Arabic]\nي => ی",
+    "Microsoft OneNote", "Google Drive", "e.g. G:\\My Drive\\PhraseForge", "keepass.exe", "s",
+    "sql01.company.local\\PHRASES", "CONTOSO\\Sales  /  ali  /  *", "MM-DD",
+}
+
+
+def _name(func) -> str:
+    return func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+
+
+def strings(path: Path):
+    tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or _name(node.func) not in CALLS:
+            continue
+        for arg in node.args[:2]:
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                s = arg.value
+                if s.strip() and any(c.isalpha() for c in s) and not s.startswith(SKIP_PREFIX):
+                    yield s, node.lineno
+                break
+
+
+def missing() -> list[tuple[str, str, int]]:
+    from phraseforge.ui import i18n
+    files = sorted((ROOT / "phraseforge" / "ui").glob("*.py")) + [ROOT / "phraseforge" / "app.py"]
+    out, seen = [], set()
+    for f in files:
+        if f.name.startswith("i18n"):
+            continue
+        for s, line in strings(f):
+            if s in seen:
+                continue
+            seen.add(s)
+            if i18n.lookup(s) == s and s.strip() != "PhraseForge" and s not in ALLOWED:
+                out.append((s, f.relative_to(ROOT).as_posix(), line))
+    return out
+
+
+if __name__ == "__main__":
+    rows = missing()
+    if "--count" in sys.argv:
+        print(len(rows))
+    else:
+        for s, f, line in rows:
+            print(f"{f}:{line}: {s!r}")
+        print(f"{len(rows)} strings without Arabic", file=sys.stderr)

@@ -1,7 +1,12 @@
 """Example "ai_engine" + "translator" plugin. A real engine would call its service here (and
 list that host under [permissions] network)."""
+import base64
 import json
 import sys
+
+# a 1x1 transparent PNG: a real engine would return the picture its service made
+PIXEL = ("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA"
+         "60e6kgAAAABJRU5ErkJggg==")
 
 
 def handle(method, p):
@@ -11,11 +16,11 @@ def handle(method, p):
     if method == "status":
         return {"configured": True, "error": ""}
     if method == "capabilities":
-        return {"custom_instructions": True}
+        return {"custom_instructions": True, "image_gen": True, "usage_stats": True, "model_management": True}
     if method == "settings_schema":
         return {"type": "object", "properties": {}}
     if method == "list_models":
-        return ["echo-1"]
+        return ["echo-image-1"] if p.get("kind") == "image" else ["echo-1"]
     if method == "list_languages":
         return ["English", "Arabic"]
     if method == "generate":
@@ -26,7 +31,13 @@ def handle(method, p):
         if (p.get("params") or {}).get("stream"):          # stream it word by word first
             for word in text.split(" "):
                 progress(CURRENT_ID, word + " ")
-        return {"text": text}
+        return {"text": text, "usage": {"input_tokens": len(last.split()), "output_tokens": len(text.split())}}
+    if method == "generate_image":
+        return {"image": PIXEL, "usage": {"input_tokens": len(str(p.get("prompt", "")).split()), "output_tokens": 0}}
+    if method == "pull_model":
+        for step in ("pulling manifest", "downloading 50%", "downloading 100%", "verifying"):
+            progress(CURRENT_ID, step)
+        return {}
     if method == "translate":
         return {"text": f"[{p.get('to')}] {p.get('text')}"}
     raise ValueError(f"unknown method {method}")

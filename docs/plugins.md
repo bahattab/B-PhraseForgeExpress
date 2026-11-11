@@ -63,9 +63,21 @@ Settings > Language Translation as "Plugin: <name>". It answers these methods (s
 | `status` | `{configured, error}` |
 | `capabilities` | booleans: `glossaries, ignored_words, custom_instructions, vision, image_gen, image_edit, usage_stats, model_management` |
 | `settings_schema` | a JSON Schema object |
-| `list_models`, `list_languages` | lists of names |
-| `generate` | params `{messages, params: {model, system, max_tokens}}` → `{text}` |
+| `list_models`, `list_languages` | lists of names (`list_models` gets `{kind: "text"}` or `{kind: "image"}`) |
+| `generate` | params `{messages, params: {model, system, max_tokens}}` → `{text, usage?}` |
 | `translate` | params `{text, from, to}` → `{text}` |
+| `generate_image` (if `image_gen`) | params `{prompt, model, size}` → `{image: base64, usage?}` |
+| `pull_model` (if `model_management`) | params `{model}` → `{}`, with `$/progress` status lines first |
+
+- **Usage:** `usage` is `{input_tokens, output_tokens}` (whole numbers). It is added to
+  Settings > AI > Usage. Other values count as 0.
+- **Images:** `generate_image` must answer a PNG, JPEG, GIF or WebP of at most 12 MB, and has
+  180 seconds. To use it, choose the plugin as the image engine in Settings > AI.
+- **Vision:** with `vision`, images arrive in the last message of `generate` as OpenAI-style
+  content parts (`{type: "image_url", image_url: {url: "data:image/png;base64,..."}}`).
+- **Model downloads:** with `model_management`, Settings > AI > Download model... calls
+  `pull_model`. Each `$/progress` piece is shown as the status, and each piece restarts its
+  120-second timeout. A plugin download cannot be cancelled once it has started.
 
 The API key typed in Settings > AI for a plugin engine is passed as the secret `api_key` (declare
 it under `[permissions] secrets`). AI calls have 60 seconds. A plugin that only writes text

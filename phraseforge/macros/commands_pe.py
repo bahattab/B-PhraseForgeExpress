@@ -514,7 +514,7 @@ def _convertlayout(rt, args, opts):
         raise MacroError(f"unknown layout {e.args[0]!r} (use en, ar, ru, de or fr)") from None
 
 
-def _sapi_speak(text: str, voice: str = "", rate: int = 0) -> None:
+def _sapi_speak(text: str, voice: str = "", rate: int = 0, wait: bool = False) -> None:
     import win32com.client  # type: ignore
     sp = win32com.client.Dispatch("SAPI.SpVoice")
     if voice:
@@ -524,6 +524,8 @@ def _sapi_speak(text: str, voice: str = "", rate: int = 0) -> None:
                 break
     sp.Rate = max(-10, min(10, rate))
     sp.Speak(text, 1 | 16)       # asynchronous; SVSFIsNotXML: the text is never read as SAPI XML (R94)
+    if wait:                     # the voice object dies with its thread: wait for the end
+        sp.WaitUntilDone(-1)
 
 
 SPEAKER = _sapi_speak                                  # tests replace this
