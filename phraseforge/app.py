@@ -2070,6 +2070,9 @@ def _run_plugin(path: str) -> int:
     if why:
         print(f"PhraseForge: {why}", file=sys.stderr)
         return 2
+    import tempfile
+    sys.dont_write_bytecode = True
+    sys.pycache_prefix = tempfile.mkdtemp(prefix="pf-pycache-")   # a planted __pycache__ is never read (R118)
     sys.argv = [path]
     sys.path[:] = [str(Path(path).parent)] + [p for p in sys.path if p]
     runpy.run_path(path, run_name="__main__")

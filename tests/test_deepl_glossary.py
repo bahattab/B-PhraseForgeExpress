@@ -36,6 +36,8 @@ class FakeDeepL:
 @pytest.fixture
 def deepl(monkeypatch):
     fake = FakeDeepL()
+    monkeypatch.setattr(ai, "_GLOSSARY_IDS", {})          # each test talks to a new fake account
+    monkeypatch.setattr(ai, "_GLOSSARY_REFUSED", {})
     monkeypatch.setattr(ai.httpx, "Client", lambda **kw: REAL_CLIENT(transport=httpx.MockTransport(fake.handler),
                                                                     timeout=kw.get("timeout")))
     sent = {}

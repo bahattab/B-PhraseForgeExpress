@@ -1175,9 +1175,10 @@ class SettingsDialog(QDialog):
                 ai.ollama_pull(settings, name.strip(),
                                lambda st, d, t: state.update(status=st, done=d, total=t),
                                lambda: state["cancel"])
-            except ai.AIError as e:
-                state["error"] = str(e)
-            state["finished"] = True
+            except Exception as e:     # noqa: BLE001 - any failure must end the dialog (R116)
+                state["error"] = str(e) or type(e).__name__
+            finally:
+                state["finished"] = True
         dlg = QProgressDialog(f"Downloading {name.strip()}...", "Cancel", 0, 1000, self)
         dlg.setWindowTitle(APP)
         dlg.setMinimumDuration(0)

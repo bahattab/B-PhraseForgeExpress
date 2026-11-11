@@ -87,15 +87,26 @@ signing.sign_folder("my-plugin", private) # writes my-plugin/plugin.sig; sign la
 Users trust a publisher by adding its public key, one per line, to the setting
 `plugins.trusted_keys` (this PC only). Administrators can list keys in `policy.toml`
 (`plugins_trusted_keys = ["..."]`) and set `plugins_require_signature = true` so that only
-plugins signed by one of those keys can be installed (then keys in the user's setting do not count). Python caches (`__pycache__`, `*.pyc`) and `.git` are never installed, so they are not signed either.
+plugins signed by one of those keys can be installed **or run**: a plugin installed before the
+policy, or whose files changed after it was installed, is switched off until a signed copy is
+installed (then keys in the user's setting do not count). Under that policy an older version is
+not installed over a newer one. Python caches (`__pycache__`, `*.pyc`) and `.git` are never
+installed, so they are not signed either; PhraseForge runs Python plugins with a private
+bytecode cache, so a `.pyc` placed in the plugin folder is never run instead of the signed source
+(a stray `.pyc` outside `__pycache__` makes a plugin unsigned under the policy).
 
 ## Network access
 
 Each plugin process gets `HTTPS_PROXY`, `HTTP_PROXY` and `ALL_PROXY` pointing at its own local
 proxy. It only opens HTTPS tunnels (port 443) to the hosts in `permissions.network`; anything
-else, and plain HTTP, is refused and listed in the plugin's errors. Use a normal HTTP library
-that honours these variables (urllib, requests, httpx). A plugin that opens sockets itself is not
-stopped by this: install only plugins you trust.
+else, and plain HTTP, is refused and listed in the plugin's errors. The proxy URL carries a
+random password for this plugin only (`http://pf:<token>@127.0.0.1:<port>`), so other programs on
+the PC cannot use it. `permissions.network` lists internet host names only: IP addresses,
+`localhost` and local-network names are refused, and a listed name that resolves to this PC, the
+local network or a link-local address (such as cloud metadata) is not tunnelled. Use a normal
+HTTP library that honours these variables (urllib, requests, httpx); they send the password
+themselves. A plugin that opens sockets itself is not stopped by this: install only plugins you
+trust.
 
 ## Streaming an answer
 
@@ -107,8 +118,10 @@ its params. The plugin may then send any number of notifications before its norm
 ```
 
 The pieces are shown live (Prompt Optimizer). The final reply must still carry the whole text.
-Each piece restarts the call's timeout, but a call ends after ten times its timeout in any case,
-and after 4 MB of streamed text. `examples/plugins/echo-ai` streams word by word.
+Each non-empty piece restarts the call's timeout, but a call ends after ten times its timeout in
+any case, and after 4 MB of streamed text (each piece also counts 64 bytes, so at most about
+65,000 pieces). A call that did not ask to stream ignores `$/progress`: its timeout is never
+extended. The live text is shown as plain text. `examples/plugins/echo-ai` streams word by word.
 
 ## Sandbox (Windows)
 

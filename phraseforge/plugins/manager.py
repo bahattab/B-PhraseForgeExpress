@@ -25,6 +25,11 @@ log = logging.getLogger(__name__)
 MACRO_TIMEOUT_S = 5.0
 
 
+def _version_key(v: str) -> tuple[int, ...]:
+    import re
+    return tuple(int(x) for x in re.findall(r"\d+", (v or "").split("-")[0].split("+")[0])[:3])
+
+
 def default_root() -> Path:
     return paths.data_dir() / "plugins"
 
@@ -89,7 +94,33 @@ class PluginManager:
         if m is None or pid not in self._enabled_ids() or not self.allowed_by_policy(pid):
             return False
         g = self.granted(pid)
-        return g is not None and not m.permissions.wider_than(g)
+        if g is None or m.permissions.wider_than(g):
+            return False
+        return not policy.current().plugins_require_signature or self.signed_now(pid)
+
+    def signed_now(self, pid: str) -> bool:
+        """The installed files are signed by a key the policy trusts (R118: the administrator's
+        plugins_require_signature also stops plugins installed before it, or changed since).
+        Cached until a file in the folder changes."""
+        from phraseforge.plugins import signing
+        folder = self.root / pid
+        try:
+            stamp = signing.folder_stamp(folder)
+        except OSError:
+            return False
+        key = (pid, stamp, self.trusted_keys())
+        cache = self.__dict__.setdefault("_sig_cache", {})
+        if key not in cache:
+            try:
+                ok = (not signing.stray_bytecode(folder)
+                      and signing.verify(signing.folder_files(folder), self.trusted_keys()).state == "trusted")
+            except (OSError, RecursionError):
+                ok = False
+            cache.clear()
+            cache[key] = ok
+            if not ok:
+                log.warning("plugin %s is not signed by a trusted publisher; it is not run", pid)
+        return cache[key]
 
     # ------------------------------------------------------------ changes
     def preview(self, src) -> tuple[Manifest, list[str]]:
@@ -127,6 +158,10 @@ class PluginManager:
         if not self.allowed_by_policy(m.id):
             raise PermissionError("your administrator does not allow this plugin")
         was = self.installed().get(m.id)
+        if (was is not None and policy.current().plugins_require_signature
+                and _version_key(m.version) < _version_key(was.version)):
+            raise PermissionError(f"this PC does not install an older version ({m.version}) over "
+                                  f"{was.version}")                                         # R122
         keep_off = was is not None and m.id not in self._enabled_ids()   # switched off by the user (R101)
         self.stop(m.id)
         inst.install(src, self.root, self.trusted_keys(), policy.current().plugins_require_signature)

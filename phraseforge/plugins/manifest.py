@@ -124,6 +124,19 @@ def _str(data, key, required=True) -> str:
     return v.strip()
 
 
+def _local_host(host: str) -> bool:
+    import ipaddress
+    h = host.rstrip(".")
+    if h == "localhost" or h.endswith((".localhost", ".local", ".internal", ".lan", ".home.arpa")):
+        return True
+    try:
+        ipaddress.ip_address(h)
+        return True                                  # IP literals are never listed, only names
+    except ValueError:
+        pass
+    return h.replace(".", "").isdigit()              # 2130706433, 127.1 and other numeric forms
+
+
 def _list(data, key, pattern=None, allowed=None) -> tuple[str, ...]:
     v = data.get(key, [])
     if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
@@ -135,6 +148,8 @@ def _list(data, key, pattern=None, allowed=None) -> tuple[str, ...]:
             raise ManifestError(f"{key}: {x!r} is not one of {', '.join(allowed)}")
         if pattern is not None and not pattern.fullmatch(x):
             raise ManifestError(f"{key}: {x!r} is not allowed")
+        if pattern is _HOST and _local_host(x):         # R121: this PC or the local network
+            raise ManifestError(f"{key}: {x!r} is an address on this PC or its network, not an internet host")
         if x in out:
             raise ManifestError(f"{key}: {x!r} is listed twice")
         out.append(x)

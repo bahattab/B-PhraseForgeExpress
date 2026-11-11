@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import threading
 import time
 
@@ -44,6 +45,8 @@ PROVIDER_NAMES = {"openai": "OpenAI", "anthropic": "Anthropic", "openrouter": "O
                   "opencode": "OpenCode Zen", "kilocode": "Kilo Code", "deepl": "DeepL",
                   "ollama": "Ollama", "gpt4all": "GPT4All"}
 
+
+log = logging.getLogger(__name__)
 
 class AIError(RuntimeError):
     pass
@@ -496,7 +499,19 @@ def ollama_models(settings: dict[str, str], timeout_s: float = 10) -> list[str]:
         raise AIError(str(e)) from e
     if r.status_code >= 400:
         raise AIError(f"HTTP {r.status_code}: {r.text[:300]}")
-    return sorted(m.get("name", "") for m in r.json().get("models", []) if m.get("name"))
+    try:
+        models = r.json().get("models", [])
+        return sorted(str(m["name"]) for m in models if isinstance(m, dict) and m.get("name"))
+    except (ValueError, AttributeError, TypeError) as e:     # not Ollama's JSON (R117)
+        raise AIError("the server did not answer like Ollama") from e
+
+
+def _count(v) -> int:
+    """A byte count from Ollama's progress line; anything else is 0 (R116)."""
+    try:
+        return max(0, int(v or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 def ollama_pull(settings: dict[str, str], model: str, progress=None, cancelled=lambda: False,
@@ -522,10 +537,12 @@ def ollama_pull(settings: dict[str, str], model: str, progress=None, cancelled=l
                     msg = json.loads(line)
                 except ValueError:
                     continue
+                if not isinstance(msg, dict):
+                    continue
                 if msg.get("error"):
                     raise AIError(str(msg["error"]))
                 if progress:
-                    progress(str(msg.get("status", "")), int(msg.get("completed") or 0), int(msg.get("total") or 0))
+                    progress(str(msg.get("status", "")), _count(msg.get("completed")), _count(msg.get("total")))
                 if msg.get("status") == "success":
                     return
     except httpx.HTTPError as e:
@@ -562,7 +579,23 @@ def _deepl_call(method: str, url: str, key: str, payload: dict | None = None, ti
         raise AIError(str(e)) from e
     if r.status_code >= 400:
         raise AIError(f"DeepL HTTP {r.status_code}: {r.text[:300]}")
-    return r.json() if r.content else {}
+    if not r.content:
+        return {}
+    try:
+        data = r.json()
+    except ValueError as e:                  # a proxy or portal page, not DeepL (R128)
+        raise AIError("DeepL did not answer with JSON (a proxy or sign-in page?)") from e
+    if not isinstance(data, dict):
+        raise AIError(f"unexpected response: {str(data)[:200]}")
+    return data
+
+
+# Glossaries already on DeepL, and uploads DeepL refused, in this run of PhraseForge:
+# (key hash, server name) -> (glossary_id, time) / time. A {#loop} of translations then makes
+# no glossary requests at all, and a glossary DeepL rejects is not sent again (R126, R129).
+_GLOSSARY_IDS: dict = {}
+_GLOSSARY_REFUSED: dict = {}
+GLOSSARY_CACHE_S = 600
 
 
 def glossary_entries(text: str) -> list[tuple[str, str]]:
@@ -597,6 +630,14 @@ def _deepl_glossary_for(settings: dict[str, str], to: str, src: str, name: str) 
     return None
 
 
+def _forget_glossary(gid: str) -> bool:
+    """Drop a cached glossary id (the translation using it failed); True if one was cached."""
+    gone = [k for k, v in _GLOSSARY_IDS.items() if v[0] == gid]
+    for k in gone:
+        del _GLOSSARY_IDS[k]
+    return bool(gone)
+
+
 def sync_deepl_glossary(settings: dict[str, str], name: str, timeout_s: float = 30) -> str:
     """Make sure DeepL has this glossary as written in Settings; returns its glossary_id.
     DeepL glossaries cannot be edited, so a changed glossary is uploaded again and the old
@@ -617,23 +658,51 @@ def sync_deepl_glossary(settings: dict[str, str], name: str, timeout_s: float = 
     tsv = "\n".join(f"{a}\t{b}" for a, b in entries)
     digest = hashlib.sha256(f"{src}|{to}|{tsv}".encode()).hexdigest()[:10]
     wanted = f"{GLOSSARY_PREFIX}{name} #{digest}"
-    found = ""
-    for g in _deepl_call("GET", base, key, timeout=timeout_s).get("glossaries", []):
+    import re
+    import time as _time
+    slot = (hashlib.sha256(key.encode()).hexdigest()[:16], wanted)
+    now = _time.monotonic()
+    hit = _GLOSSARY_IDS.get(slot)
+    if hit and now - hit[1] < GLOSSARY_CACHE_S:
+        return hit[0]
+    if now - _GLOSSARY_REFUSED.get(slot, -1e9) < GLOSSARY_CACHE_S:
+        raise AIError(f"DeepL refused glossary '{name}' (fix its lines in Settings > Glossaries)")
+    own = re.compile(re.escape(f"{GLOSSARY_PREFIX}{name} #") + r"[0-9a-f]{10}")   # exactly this glossary (R126)
+    listed = _deepl_call("GET", base, key, timeout=timeout_s).get("glossaries")
+    if not isinstance(listed, list):
+        raise AIError("unexpected response from DeepL's glossary list")
+    found, preparing = "", False
+    for g in listed:
+        if not isinstance(g, dict):
+            continue
         gname = str(g.get("name", ""))
-        if gname == wanted and g.get("ready", True) and not found:
-            found = str(g.get("glossary_id", ""))
-        elif gname.startswith(f"{GLOSSARY_PREFIX}{name} #"):
+        if gname == wanted:                               # never delete the copy we want (R127)
+            if g.get("ready", True):
+                found = found or str(g.get("glossary_id", ""))
+            else:
+                preparing = True
+        elif own.fullmatch(gname):
             try:                                          # an older copy of this glossary
                 _deepl_call("DELETE", f"{base}/{g.get('glossary_id', '')}", key, timeout=timeout_s)
             except AIError:
                 pass
     if found:
+        _GLOSSARY_IDS[slot] = (found, now)
         return found
-    made = _deepl_call("POST", base, key, {"name": wanted, "source_lang": src, "target_lang": to,
-                                          "entries": tsv, "entries_format": "tsv"}, timeout_s)
+    if preparing:
+        raise AIError(f"DeepL is still preparing glossary '{name}'; try again in a moment")
+    try:
+        made = _deepl_call("POST", base, key, {"name": wanted, "source_lang": src, "target_lang": to,
+                                              "entries": tsv, "entries_format": "tsv"}, timeout_s)
+    except AIError as e:
+        if any(f"HTTP {c}" in str(e) for c in (400, 413, 422)):   # the glossary itself was refused (R129)
+            _GLOSSARY_REFUSED[slot] = now
+            log.warning("DeepL refused glossary %r", name)
+        raise
     gid = str(made.get("glossary_id", ""))
     if not gid:
         raise AIError(f"unexpected response: {str(made)[:200]}")
+    _GLOSSARY_IDS[slot] = (gid, now)
     return gid
 
 
@@ -669,7 +738,14 @@ def deepl_translate(settings: dict[str, str], text: str, to: str, src: str = "",
     elif glossary:
         raise AIError(f"glossary '{glossary}' does not fit this translation: set its languages in "
                       "Settings > Glossaries")
-    data = _post(f"https://{host}/v2/translate", {"Authorization": f"DeepL-Auth-Key {key}"}, payload, timeout_s)
+    try:
+        data = _post(f"https://{host}/v2/translate", {"Authorization": f"DeepL-Auth-Key {key}"}, payload, timeout_s)
+    except AIError:
+        gid = payload.get("glossary_id")
+        if not gid or not _forget_glossary(gid):
+            raise
+        payload["glossary_id"] = sync_deepl_glossary(settings, use[0], timeout_s)   # deleted on DeepL's site?
+        data = _post(f"https://{host}/v2/translate", {"Authorization": f"DeepL-Auth-Key {key}"}, payload, timeout_s)
     try:
         out = data["translations"][0]["text"]
     except (KeyError, IndexError) as e:
