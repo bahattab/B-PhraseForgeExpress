@@ -31,12 +31,35 @@ def target_for(text: str, to: str, back: str) -> str:
     return to
 
 
+FREE_CONSENT = "translate.instant_free_ok"
+
+
+def check_service(settings: dict) -> None:
+    """Raise ValueError unless the selection may go to the translation service. The hotkey
+    works in any program, so the text must not go to MyMemory (a free online service) unless
+    the user chose it, either as the engine or by allowing it here (R153)."""
+    from phraseforge import ai
+    provider = (settings.get("translation.provider") or "free").lower()
+    if ai.translation_service(settings) != "free":
+        return
+    if provider != "free":
+        raise ValueError(f"There is no API key for {provider}; add it in Settings > Language Translation. "
+                         "The selection was not sent anywhere.")
+    if settings.get(FREE_CONSENT) != "1":
+        raise ValueError("Instant translation would send the selected text to MyMemory, a free online "
+                         "service. Choose a translation engine in Settings > Language Translation, or "
+                         "allow MyMemory under Instant translation there.")
+
+
 def translate(settings: dict, text: str, to: str = "", translate_fn=None) -> tuple[str, str]:
-    """(translation, target language) for the selected text. Raises ValueError for no text.
-    Only the first MAX_CHARS characters are translated (was_cut tells)."""
+    """(translation, target language) for the selected text. Raises ValueError for no text, or
+    for a service the user did not agree to. Only the first MAX_CHARS characters are translated
+    (was_cut tells)."""
     text = (text or "").strip()
     if not text:
         raise ValueError("Select some text first, then press the hotkey.")
+    if translate_fn is None:
+        check_service(settings)
     text = text[:MAX_CHARS]
     target = to or target_for(text, settings.get("translate.instant_to") or "Arabic",
                               settings.get("translate.instant_back") or "English")

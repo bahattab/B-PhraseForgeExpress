@@ -2635,3 +2635,205 @@ def test_cut_off_ollama_stream_is_not_a_reply(monkeypatch):
     with pytest.raises(ai.AIError, match="stopped before"):
         ai.chat({"ai.provider": "ollama", "ai.model": "m"}, [{"role": "user", "content": "hi"}],
                 provider="ollama", on_delta=lambda p: None)
+
+
+# ---------------------------------------------------------------- 0.6.17: review of #66
+def test_outlook_macros_need_an_approved_phrase():
+    """R143: {#olmail}/{#outlook} read the open mail; an unapproved phrase must ask first,
+    also inside a {#mail} draft to someone else."""
+    assert security.scan_privileged("{#olmail -field body}")
+    assert security.scan_privileged("{#outlook subject}")
+    assert security.scan_privileged("{#mail evil@x.com -subject a -body {#olmail -field body}}")
+
+
+def test_macro_split_by_markdown_requarantines(qapp, tmp_path):
+    """R144: {*#run calc*} is "{#run calc}" in the editor but not "{#" in Qt's HTML."""
+    from PySide6.QtGui import QTextCursor
+    from phraseforge.models import Phrase
+    from phraseforge.ui import editor_files as ef
+    from phraseforge.ui.phrase_editor import PhraseEditor
+    s = Store(":memory:")
+    for name, md in (("emph", "Hello {*#run calc*}\n"), ("code", "Hi {`#run calc`}\n")):
+        p = tmp_path / (name + ".md")
+        p.write_text(md, encoding="utf-8")
+        html, _ = ef.read_for_editor(p)
+        ph = s.add_phrase(Phrase("R", "<p>x</p>", content_format="html"))
+        s.release_quarantine(ph.id)
+        ed = PhraseEditor(s)
+        ed.load(ph.id)
+        ed.content_edit.moveCursor(QTextCursor.End)
+        ed.insert_document(html, True)
+        assert ed._from_file, name
+        ed.save()
+        assert s.quarantine_origin(ph.id), name
+
+
+def test_inserted_file_loads_no_remote_resources(qapp, tmp_path):
+    """R145: an image whose title says "src='data:image/'" and a table-cell background kept
+    a UNC path, which Windows opens with the user's login."""
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QTextDocument
+    from phraseforge.ui import editor_files as ef
+    from phraseforge.ui.phrase_editor import ChipTextEdit
+    for md in ('![x](//evilhost/share/a.png "src=\'data:image/png\'")\n',
+               '<table><tr><td background="//evilhost/s/td.png">x</td></tr></table>\n'):
+        p = tmp_path / "r.md"
+        p.write_text(md, encoding="utf-8")
+        html, _ = ef.read_for_editor(p)
+        assert "evilhost" not in html, md
+    assert ef.clean_html('<img src="data:image/png;base64,AA" alt="ok" />').startswith("<img")
+    ed = ChipTextEdit()
+    for bad in ("//evilhost/a.png", "\\\\evilhost\\s\\a.png", "file://evilhost/s/a.png",
+                "file:////evilhost/s/a.png", "https://evilhost/a.png"):
+        assert ed.loadResource(QTextDocument.ImageResource, QUrl(bad)) is None, bad
+
+
+def test_ahk_braces_stay_text(tmp_path):
+    """R147: AutoHotkey {{}#clipboard{}} is the literal text {#clipboard}, not a macro."""
+    from phraseforge.importers.autohotkey import import_ahk
+    from phraseforge.macros import parser
+    s = Store(":memory:")
+    f = tmp_path / "a.ahk"
+    f.write_text("::a3::{{}#clipboard{}}\n:R:a4::{#textfile C:\\x.txt}\n", encoding="utf-8")
+    rep = import_ahk(s, f)
+    bodies = [p.content for p in s.phrases(rep.folder_id)]
+    assert len(bodies) == 2
+    for b in bodies:
+        assert not any(isinstance(n, parser.Call) for n in parser.parse(b)), b
+    assert "".join(n.text for n in parser.parse(bodies[0])) in ("{#clipboard}", "{#textfile C:\\x.txt}")
+
+
+def test_ahk_import_is_bounded(tmp_path):
+    """R148: 700k hotstrings froze the window for minutes."""
+    from phraseforge.importers import autohotkey
+    f = tmp_path / "big.ahk"
+    f.write_text("".join(f"::a{i}::b\n" for i in range(autohotkey.MAX_HOTSTRINGS + 1)), encoding="utf-8")
+    with pytest.raises(ValueError, match="more than"):
+        autohotkey.import_ahk(Store(":memory:"), f)
+
+
+def test_old_signed_setup_is_not_a_new_version(tmp_path):
+    """R149: the signature covered only the hash, so an old signed setup could be published
+    again under a newer tag and installed as the update."""
+    from phraseforge import updates
+    from phraseforge.plugins.signing import new_key
+    priv, pub = new_key()
+    old = tmp_path / "B-PhraseForgeExpress-Setup-0.1.0.exe"
+    old.write_bytes(b"MZ old vulnerable setup")
+    sig = updates.sign_file(old, priv, "0.1.0")
+    updates.verify_file(old, sig, {pub}, "0.1.0")               # genuine
+    with pytest.raises(updates.UpdateError):
+        updates.verify_file(old, sig, {pub}, "99.0.0")          # same file as "v99"
+    renamed = tmp_path / "B-PhraseForgeExpress-Setup-99.0.0.exe"
+    renamed.write_bytes(old.read_bytes())
+    with pytest.raises(updates.UpdateError):
+        updates.verify_file(renamed, sig, {pub}, "99.0.0")      # renamed: the name is signed
+
+
+def test_release_tag_must_be_a_version():
+    """R150: the tag is shown in dialogs; v9<br>Evil was rich text."""
+    import json
+    from phraseforge import updates
+
+    class R:
+        def __init__(self, body):
+            self.body = body
+
+        def read(self, *a):
+            return self.body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+    for tag in ("v9.9<img src=x>", "v9<br>Evil", "latest"):
+        body = json.dumps({"tag_name": tag}).encode()
+        with pytest.raises(OSError):
+            updates.latest_release(opener=lambda req, timeout=None: R(body))
+    ok = json.dumps({"tag_name": "v0.6.17"}).encode()
+    assert updates.latest_release(opener=lambda req, timeout=None: R(ok))["version"] == "0.6.17"
+
+
+def test_release_signing_only_on_release_builds():
+    """R151: the signing step ran on every pull request and branch push."""
+    from pathlib import Path
+    wf = (Path(__file__).resolve().parents[1] / ".github/workflows/windows-build.yml").read_text()
+    step = wf[wf.index("name: Sign the setup"):]
+    step = step[:step.index("run:")]
+    assert "if:" in step and "refs/heads/main" in step and "refs/tags/v" in step
+
+
+def test_model_download_stops_with_the_plugin(plugin_mgr, tmp_path, monkeypatch):
+    """R152: the download's process kept running (with the plugin's secrets) after the plugin
+    was switched off or removed, and any number could be started."""
+    from phraseforge.plugins import manager as pm
+    stopped = []
+
+    class FakeProc:
+        def __init__(self, *a, **k):
+            pass
+
+        def stop(self):
+            stopped.append(self)
+    plugin_mgr.install(_plugin_dir(tmp_path), accept=True)
+    monkeypatch.setattr(pm, "PluginProcess", FakeProc)
+    mgr, pid = plugin_mgr, "quiet"
+    mgr.set_enabled(pid, True)
+    side = mgr.side_process(pid)
+    with pytest.raises(Exception, match="already"):
+        mgr.side_process(pid)
+    mgr.set_enabled(pid, False)
+    assert side in stopped
+    mgr.end_side(pid, side)               # the call's own finally: no error, frees the slot
+    mgr.side_process(pid)
+
+
+def test_instant_translation_needs_a_chosen_service(monkeypatch):
+    """R153: the hotkey sent the selection to MyMemory with no choice made, also when DeepL
+    was chosen without a key."""
+    from phraseforge import ai, instant_translate as it
+    sent = []
+    monkeypatch.setattr(ai, "free_translate", lambda t, to, src: sent.append(t) or "x")
+    for settings in ({}, {"translation.provider": "deepl"}):
+        with pytest.raises(ValueError):
+            it.translate(settings, "my password is hunter2")
+    assert sent == []
+    it.translate({it.FREE_CONSENT: "1"}, "hello")           # allowed in Settings
+    assert sent == ["hello"]
+
+
+def test_instant_translation_is_not_cut():
+    """R154: a cut translation replaced the whole selection, deleting the rest. Main shows the
+    translation of the first part and says it was cut (was_cut), so Replace is never silent."""
+    from phraseforge import instant_translate as it
+    seen = []
+    out, _ = it.translate({}, "x" * (it.MAX_CHARS + 1), translate_fn=lambda t, lang: seen.append(t) or t)
+    assert it.was_cut("x" * (it.MAX_CHARS + 1)) and len(seen[0]) == it.MAX_CHARS
+
+
+def test_replace_needs_the_original_window(monkeypatch):
+    """R155: Replace typed into whatever window was in front when the original was gone."""
+    from phraseforge import app as appmod
+    typed, notes = [], []
+
+    class U:
+        def IsWindow(self, h):
+            return False
+
+        def GetForegroundWindow(self):
+            return 999
+    monkeypatch.setattr(appmod, "user32", U())
+    fake = appmod.PhraseForgeApp.__new__(appmod.PhraseForgeApp)
+    fake._translate_hwnd = 123
+    fake._target_elevated = lambda h: False
+    fake._prepare_target = lambda h: h
+    fake.output = type("O", (), {"execute": lambda self, a, app_exe="": typed.append(a)})()
+    fake._with_triggers_paused = lambda fn: fn()
+    fake._exe_of = lambda h: ""
+    fake.poster = type("P", (), {"posted": type("S", (), {"emit": lambda self, fn: notes.append(fn)})()})()
+    jobs = []
+    fake._jobs = type("J", (), {"put": lambda self, j: jobs.append(j)})()
+    fake._replace_with_translation("translated")
+    jobs[0][1]()
+    assert typed == [] and notes

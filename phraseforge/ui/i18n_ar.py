@@ -1722,6 +1722,7 @@ AR_EXTRA = {
     "Google opens this account directly, and its passkey prompt if it has one": "يفتح Google هذا الحساب مباشرة، وطلب مفتاح المرور إن كان له مفتاح",
     "Translate into:": "الترجمة إلى:",
     "Text already in that language goes into:": "النص المكتوب بتلك اللغة يُترجم إلى:",
+    "Allow the free MyMemory service for instant translation": "السماح بخدمة MyMemory المجانية للترجمة الفورية",
     "Google account:": "حساب Google:",
     "Translation": "الترجمة",
     "Replace selection": "استبدال التحديد",

@@ -185,6 +185,28 @@ def first_strong_rtl(text: str) -> bool:
     return False
 
 
+def local_resource(name) -> bool:
+    """True for a data: URL or a file on this PC; False for UNC, web and other remote names."""
+    from urllib.parse import unquote
+    from PySide6.QtCore import QUrl
+    raw = name.toString() if isinstance(name, QUrl) else str(name or "")
+    norm = unquote(raw).strip().replace("\\", "/")
+    if norm.lower().startswith("data:"):
+        return True
+    if norm.lower().startswith("file:"):
+        norm = norm[5:]
+        if norm.startswith("///"):          # file:///C:/x.png
+            norm = norm[3:]
+            if norm.startswith("/"):        # file:////host/share
+                return False
+        elif norm.startswith("//"):         # file://host/share
+            return False
+    if norm.startswith("/") and norm[1:2] == "/":
+        return False                        # //host/share or \\host\share
+    scheme = QUrl(norm).scheme().lower()
+    return scheme == "" or len(scheme) == 1  # a relative path, or C:/pictures/x.png
+
+
 class ChipTextEdit(QTextEdit):
     focus_changed = Signal(bool)
     chip_activated = Signal(int)          # document position of a double-clicked chip
@@ -207,6 +229,15 @@ class ChipTextEdit(QTextEdit):
         self.document().setDefaultTextOption(opt)
 
     # -------------------------------------------------- right-to-left writing
+
+    def loadResource(self, kind, name):
+        """Images and backgrounds only from this PC or data: URLs. A network or web address in
+        a phrase (synced, imported or inserted from a file) would make Windows connect to that
+        server and send the user's login (R145, as R83 for tooltips)."""
+        if not local_resource(name):
+            return None
+        return super().loadResource(kind, name)
+
     def set_paragraph_direction(self, rtl: bool) -> None:
         """Make the selected paragraphs right-to-left (Arabic) or left-to-right, like
         Windows' Ctrl+Right Shift / Ctrl+Left Shift. Kept in rich (HTML) phrases."""
@@ -844,9 +875,14 @@ class PhraseEditor(QWidget):
         as imported when it is saved (the file is not the user's own writing)."""
         ed = self.content_edit
         c = ed.textCursor()
+        inserted = content
         if is_html and ed.rich:
             start = c.selectionStart()
             c.insertHtml(content)
+            r = QTextCursor(ed.document())
+            r.setPosition(start)
+            r.setPosition(c.position(), QTextCursor.KeepAnchor)
+            inserted = r.selectedText()            # what chipify reads: {*#run*} is "{#run" here (R144)
             ed.chipify_range(start, c.position())   # only what was inserted, by real positions
         else:
             if is_html:                        # a plain-text phrase keeps the words, not the formatting
@@ -854,7 +890,7 @@ class PhraseEditor(QWidget):
                 content = QTextDocumentFragment.fromHtml(content).toPlainText()
             ed.insert_content(content, c)
         ed.setTextCursor(c)
-        if "{#" in content:
+        if "{#" in content or "{#" in inserted:
             self._from_file = True
         self._mark_dirty()
 

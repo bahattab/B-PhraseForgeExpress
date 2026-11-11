@@ -36,6 +36,7 @@ ESCAPES = {"n": "\n", "t": "\t", "r": "", "`": "`", ";": ";", ":": ":", "{": "{"
 KEYS = {"enter": "\n", "tab": "\t", "space": " ", "{": "{", "}": "}"}
 KEY_RE = re.compile(r"\{([^{}]+|\{|\})\}")
 MAX_FILE = 8 * 1024 * 1024
+MAX_HOTSTRINGS = 20000     # a hotstring list, not a database (R148)
 OPTION = re.compile(r"[*?]0?|[A-Z]\d*", re.I)
 
 
@@ -150,6 +151,16 @@ def parse(text: str) -> tuple[list[Hotstring], int]:
 
 
 def convert(h: Hotstring, unknown: dict[str, int]) -> str:
+    """The phrase text. Braces in the AutoHotkey text are literal there (AutoHotkey has no
+    {#...} macros), so a "{" before "#" or "{" is written "{{" and stays text (R147)."""
+    return _literal(_convert(h, unknown))
+
+
+def _literal(text: str) -> str:
+    return re.sub(r"\{(?=[{#])", "{{", text)
+
+
+def _convert(h: Hotstring, unknown: dict[str, int]) -> str:
     if h.raw:
         return h.text
 
@@ -194,6 +205,8 @@ def import_ahk(store: Store, path: str | Path) -> ImportReport:
         except UnicodeDecodeError:          # older scripts are often saved as ANSI
             text = raw.decode("cp1252", "replace")
     hotstrings, skipped = parse(text)
+    if len(hotstrings) > MAX_HOTSTRINGS:
+        raise ValueError(f"The script has more than {MAX_HOTSTRINGS} hotstrings; split it into smaller files.")
     report = ImportReport(skipped=skipped)
     folder = store.add_folder(Folder(path.stem))
     report.folder_id = folder.id

@@ -208,7 +208,7 @@ class PluginEngine(Engine):
             raise ai.AIError(f"plugin {self.manifest.id}: {e}") from None
         finally:
             if side and proc is not None:
-                proc.stop()
+                self.mgr.end_side(self.manifest.id, proc)
 
     def _dict(self, method: str, keys) -> dict:
         res = self._call(method, timeout=10)

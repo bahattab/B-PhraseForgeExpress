@@ -124,6 +124,7 @@ DEFAULT_SETTINGS = {
     "translate.instant_hotkey": "ctrl+alt+t",   # Instant translation of the selected text
     "translate.instant_to": "Arabic",
     "translate.instant_back": "English",
+    "translate.instant_free_ok": "0",           # may Instant translation use MyMemory (R153)
     "promptboost.hotkey": "ctrl+alt+b",    # Boost prompt: improve the selected prompt in any program     # Search files (Listary-style launcher)
     "filesearch.enabled": "1",
     "filesearch.roots": "",               # one folder per line; empty = Start menu, Desktop, Documents, Downloads

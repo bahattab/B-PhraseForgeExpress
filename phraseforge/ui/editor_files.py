@@ -14,7 +14,8 @@ import re
 from pathlib import Path
 
 _IMG = re.compile(r"<img\b[^>]*>", re.I)
-_SRC = re.compile(r"""\bsrc\s*=\s*["']\s*data:image/""", re.I)
+_BACKGROUND = re.compile(r"""\sbackground\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)""", re.I)
+_URL = re.compile(r"url\s*\(", re.I)
 _HREF = re.compile(r"""\bhref\s*=\s*(["'])(.*?)\1""", re.I | re.S)
 SAFE_LINK = ("http://", "https://", "mailto:")
 
@@ -43,13 +44,32 @@ def read_for_editor(path: str | Path) -> tuple[str, bool]:
 
 
 def clean_html(html: str) -> str:
-    """Drop images that are not data: images and link targets other than http(s)/mailto."""
-    html = _IMG.sub(lambda m: m.group(0) if _SRC.search(m.group(0)) else "", html)
+    """Drop images that are not data: images, any other resource Qt would load (table
+    backgrounds, CSS url()) and link targets other than http(s)/mailto. The src is read as an
+    attribute, not searched for in the tag: a title could say "src='data:image/'" (R145)."""
+    html = _IMG.sub(lambda m: m.group(0) if _img_src(m.group(0)).lower().startswith("data:image/") else "", html)
+    html = _BACKGROUND.sub("", html)
+    if _URL.search(html):
+        html = _URL.sub("blocked(", html)
 
     def href(m):
         url = m.group(2).strip()
         return m.group(0) if url.lower().startswith(SAFE_LINK) else 'href=""'
     return _HREF.sub(href, html)
+
+
+def _img_src(tag: str) -> str:
+    """The src attribute of one <img> tag ("" when it has none or two)."""
+    from html.parser import HTMLParser
+    found: list = []
+
+    class P(HTMLParser):
+        def handle_starttag(self, name, attrs):
+            found.append([v or "" for k, v in attrs if k == "src"])
+        handle_startendtag = handle_starttag
+    P().feed(tag)
+    srcs = found[0] if found else []
+    return srcs[0].strip() if len(srcs) == 1 else ""
 
 
 def markdown_to_plain(text: str) -> str:
