@@ -116,3 +116,71 @@ def test_export_uses_language_version(tmp_path, store):
     pe.export_any(store, out, "phraseexpress", language="ar")
     rows = list(csv.reader(open(out, encoding="utf-8-sig")))
     assert rows[1][1] == "مرحبا"
+
+
+def _tree(store):
+    top = store.add_folder(Folder("Work"))
+    sub = store.add_folder(Folder("Mail", parent_id=top.id))
+    store.add_folder(Folder("Empty", parent_id=top.id))
+    store.add_phrase(Phrase("Greeting", "Hello {#clipboard}", folder_id=sub.id,
+                            triggers=[Trigger(TriggerKind.AUTOTEXT, "hi"), Trigger(TriggerKind.AUTOTEXT, "hey"),
+                                      Trigger(TriggerKind.HOTKEY, "Ctrl+Alt+G")]))
+    store.add_phrase(Phrase("Formula", "=1+1\x01 <b>&</b>", folder_id=top.id, content_format="html"))
+    store.add_phrase(Phrase("عربي", "مرحبا بالعالم"))
+    return top
+
+
+def _snapshot(store, root_id):
+    """{(folder path below root, description): (content, format, autotexts, hotkey)}"""
+    from phraseforge.io_formats import folder_path
+    base = folder_path(store, root_id)
+    out = {}
+    for p in pe._phrases(store, root_id):
+        rel = folder_path(store, p.folder_id)[len(base):].strip("/")
+        out[(rel, p.description)] = (p.content, p.content_format, pe._autotexts(p), pe._trigger(p, TriggerKind.HOTKEY))
+    return out
+
+
+EXPECTED = {("Work/Mail", "Greeting"): ("Hello {#clipboard}", "text", "hi|hey", "Ctrl+Alt+G"),
+            ("Work", "Formula"): ("=1+1 <b>&</b>", "html", "", ""),
+            ("", "عربي"): ("مرحبا بالعالم", "text", "", "")}
+
+
+def test_xml_export_round_trip(tmp_path, store):
+    _tree(store)
+    out = tmp_path / "phrases.xml"
+    rep = pe.export_any(store, out, "xml")
+    assert rep.exported == 3
+    text = out.read_text(encoding="utf-8")
+    assert "Empty" not in text and "\x01" not in text
+    back = pe.import_any(store, out)
+    assert back.imported == 3
+    assert _snapshot(store, back.folder_id) == EXPECTED
+
+
+def test_xml_export_of_one_folder(tmp_path, store):
+    top = _tree(store)
+    out = tmp_path / "work.xml"
+    assert pe.export_xml(store, out, folder_id=top.id).exported == 2
+    assert "مرحبا" not in out.read_text(encoding="utf-8")
+
+
+def test_xlsx_export_round_trip_and_no_formula(tmp_path, store):
+    from openpyxl import load_workbook
+    _tree(store)
+    out = tmp_path / "phrases.xlsx"
+    rep = pe.export_any(store, out, "xlsx")
+    assert rep.exported == 3
+    ws = load_workbook(out).active
+    assert [c.value for c in ws[1]] == pe.PE_HEADER + ["Format"]
+    cell = next(r[1] for r in ws.iter_rows(min_row=2) if r[0].value == "Formula")
+    assert cell.data_type == "s" and cell.value == "=1+1 <b>&</b>"        # text, not a formula
+    back = pe.import_any(store, out)
+    assert back.imported == 3
+    assert _snapshot(store, back.folder_id) == EXPECTED
+
+
+def test_xlsx_export_cuts_very_long_text(tmp_path, store):
+    store.add_phrase(Phrase("Long", "x" * (pe.XLSX_CELL_MAX + 10)))
+    rep = pe.export_xlsx(store, tmp_path / "l.xlsx")
+    assert rep.exported == 1 and "cut" in rep.notes[0]
