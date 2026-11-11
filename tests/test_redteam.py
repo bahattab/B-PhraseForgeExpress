@@ -2515,3 +2515,78 @@ def test_refused_glossary_is_not_sent_again(deepl_account):
     for _ in range(5):
         assert ai.deepl_translate(st, "hi", "German") == "ok"
     assert fake.calls.count("POST") == 1
+
+
+# ---------------------------------------------------------------- 0.6.15: review of #65 (sandbox)
+def _as_windows(monkeypatch, H):
+    import subprocess as sp
+    import sys as _sys
+    import types
+    monkeypatch.setattr(H, "sys", types.SimpleNamespace(platform="win32", executable=_sys.executable))
+    real = sp.Popen
+    monkeypatch.setattr(H, "subprocess", types.SimpleNamespace(
+        Popen=lambda *a, creationflags=0, **k: real(*a, **k), PIPE=sp.PIPE, TimeoutExpired=sp.TimeoutExpired))
+
+
+def _one_shot_plugin(tmp_path, body):
+    from phraseforge.plugins import manifest as mf
+    (tmp_path / "p.py").write_text(body)
+    return mf.parse('id = "p"\nname = "P"\nversion = "1.0.0"\napi_version = "1.0"\nentry = "p.py"\n'
+                    'runtime = "python-subprocess"\nkinds = ["macro"]\nmacros = ["x"]\n')
+
+
+def test_unsandboxed_plugin_still_needs_its_job(tmp_path, monkeypatch):
+    """R135: with plugins.sandbox = 0 a plugin whose job object failed ran with no limits."""
+    from phraseforge.plugins import host as H
+    _as_windows(monkeypatch, H)
+    monkeypatch.setattr(H, "_windows_job", lambda proc, mb: None)
+    monkeypatch.setattr(H, "_close_job", lambda job: None)
+    m = _one_shot_plugin(tmp_path, "import sys,json\nfor l in sys.stdin:\n m=json.loads(l); "
+                                   "print(json.dumps({'jsonrpc':'2.0','id':m['id'],'result':'RAN'}),flush=True)\n")
+    p = H.PluginProcess(m, tmp_path, sandbox=False)
+    try:
+        with pytest.raises(H.PluginError, match="limited job"):
+            p.call("x", {}, timeout=10)
+    finally:
+        p.stop()
+
+
+def test_restart_closes_the_old_job(tmp_path, monkeypatch):
+    """R136: each restart of a plugin that ended leaked its job handle."""
+    import itertools
+    import time
+    from phraseforge.plugins import host as H
+    _as_windows(monkeypatch, H)
+    ids, opened, closed = itertools.count(1), [], []
+    monkeypatch.setattr(H, "_windows_job", lambda proc, mb: opened.append(n := next(ids)) or n)
+    monkeypatch.setattr(H, "_close_job", lambda job: job and closed.append(job))
+    m = _one_shot_plugin(tmp_path, "import sys,json\nm=json.loads(sys.stdin.readline()); "
+                                   "print(json.dumps({'jsonrpc':'2.0','id':m['id'],'result':1}),flush=True)\n")
+    p = H.PluginProcess(m, tmp_path, sandbox=False)
+    for _ in range(3):
+        p.call("x", {}, timeout=10)
+        time.sleep(0.3)                                  # the plugin ends after each answer
+    p.stop()
+    assert sorted(closed) == opened == [1, 2, 3]
+
+
+def test_frozen_plugins_get_a_cache_folder_made_by_phraseforge(tmp_path):
+    """R138: in the EXE the bytecode cache was made inside the sandbox's shared, writable temp."""
+    from phraseforge.plugins import host as H
+    m = _one_shot_plugin(tmp_path, "import os,sys,json\nm=json.loads(sys.stdin.readline()); "
+                                   "print(json.dumps({'jsonrpc':'2.0','id':m['id'],"
+                                   "'result':os.environ.get('PHRASEFORGE_PYCACHE','')}),flush=True)\n")
+    p = H.PluginProcess(m, tmp_path, sandbox=False)
+    try:
+        assert p.call("x", {}, timeout=10) == H._pycache_dir()
+    finally:
+        p.stop()
+
+
+def test_portable_mode_keeps_plugin_temp_in_the_data_folder(tmp_path, monkeypatch):
+    """R139: the sandbox created AppData\\LocalLow\\PhraseForge even in portable mode."""
+    from phraseforge import paths
+    from phraseforge.plugins import sandbox
+    monkeypatch.setattr(paths, "is_portable", lambda: True)
+    monkeypatch.setattr(paths, "data_dir", lambda: tmp_path / "PhraseForgeData")
+    assert sandbox.low_temp_dir() == tmp_path / "PhraseForgeData" / "PluginTemp"

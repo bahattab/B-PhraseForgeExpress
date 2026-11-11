@@ -143,6 +143,10 @@ settings (HKCU), the PhraseForge database and other programs. Its temp folder is
 `%USERPROFILE%\AppData\LocalLow\PhraseForge\Temp`, the one place it can write. A plugin that cannot
 be started this way does not run.
 
-Not covered: a sandboxed plugin can still **read** what you can read, and could open network
-connections itself instead of through its proxy. Install only plugins you trust. The sandbox can be
+Not covered: a sandboxed plugin can still **read** what you can read, including the PhraseForge
+database, and Windows lets it decrypt the API keys and plugin secrets stored there (DPAPI has no
+integrity check); it could also open network connections itself instead of through its proxy.
+Integrity labels exist only on NTFS: with a portable data folder on a FAT/exFAT stick (or some
+network shares) a plugin can write there too. In portable mode the plugin temp folder is
+`PhraseForgeData\PluginTemp`, so nothing is left on the PC. Install only plugins you trust. The sandbox can be
 switched off for one PC with the setting `plugins.sandbox = 0` (not synced).

@@ -140,7 +140,12 @@ class PluginProcess:
         if self._proxy is None:                             # only the manifest's hosts are reachable
             self._proxy = FilterProxy(self.manifest.id, self.manifest.permissions.network, self._error)
             self._proxy.start()
+        _close_job(self._job)                               # a restart: the old job's handle (R110)
+        self._job = None
         env = dict(_env(), **self._proxy.env())
+        # the frozen EXE runs plugins itself: its bytecode cache must be made by this (Medium)
+        # process, not in the sandbox's writable temp, where one plugin could plant code for another
+        env["PHRASEFORGE_PYCACHE"] = _pycache_dir()
         args = command(self.manifest, self.folder)
         if self.sandbox and sys.platform == "win32":
             from phraseforge.plugins import sandbox
@@ -155,8 +160,12 @@ class PluginProcess:
         else:
             self._proc = subprocess.Popen(args, cwd=str(self.folder), env=env,
                                           stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                          creationflags=flags, bufsize=0)
+                                          creationflags=flags)
             self._job = _windows_job(self._proc, self.memory_mb)
+            if sys.platform == "win32" and self._job is None:     # never run outside its job (R110)
+                self.stop()
+                self._error("the plugin could not be started in its limited job")
+                raise PluginError("the plugin could not be started in its limited job")
         self._replies = queue.Queue()
         proc, replies = self._proc, self._replies
         threading.Thread(target=self._read, args=(proc, replies), daemon=True,

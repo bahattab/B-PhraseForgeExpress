@@ -29,9 +29,9 @@ def signature_text(sig) -> str:
     return tr("The signature is not valid: the files were changed after signing.")
 
 
-SANDBOXED_NOTE = ("A plugin is a program. PhraseForge runs it with limited Windows rights: it cannot change your "
-                  "files or settings, but it can still read your files and may reach the internet on its own. "
-                  "Install only plugins you trust.")
+SANDBOXED_NOTE = ("A plugin is a program. PhraseForge runs it with limited Windows rights: on NTFS drives it "
+                  "cannot change your files or settings, but it can still read your files (including the API "
+                  "keys PhraseForge keeps) and may reach the internet on its own. Install only plugins you trust.")
 
 
 def consent_text(manifest, asked: list[str], update: bool, old=None, sig=None, sandboxed: bool = False) -> str:
