@@ -52,6 +52,7 @@ SCHEMA: dict[str, str] = {
     "popup.hotkey": DEFAULT_SETTINGS["popup.hotkey"],
     "hotkey.clear_clipboard_cache": "",
     "hotkey.pause": "",
+    "hotkey.next_language": "",
     "hotkey.popup_search": "",
     "pause.repetitions": "1",
     "pause.seconds": "10",
@@ -105,7 +106,11 @@ SCHEMA: dict[str, str] = {
     "ai.instructions.about": "",
     "ai.instructions.respond": "",
     # Translation
+    "gdrive.login_hint": "",                   # Google account to open at sign-in (passkey prompt)
     "translation.provider": "free",
+    "translate.instant_hotkey": "ctrl+alt+t",   # Instant translation of the selected text
+    "translate.instant_to": "Arabic",
+    "translate.instant_back": "English",        # used when the selection is already in the target
     "translation.ignored_words": "",
     "translation.glossaries": "{}",
     "translation.glossary_langs": "{}",
@@ -242,7 +247,7 @@ SCHEMA: dict[str, str] = {
 
 # Keys only the Settings dialog itself needs (no runtime reader is expected).
 # tests/test_settings_dialog.py fails if any other SCHEMA key has no runtime reader.
-UI_ONLY_KEYS: set[str] = set()
+UI_ONLY_KEYS: set[str] = {"gdrive.login_hint"}    # read by the Settings dialog at sign-in
 
 # Old key -> (new key, value mapping or None to copy). Applied once, when the new key
 # is not stored yet: earlier builds of the popup read popup.*, the stats window

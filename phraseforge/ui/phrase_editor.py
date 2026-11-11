@@ -277,6 +277,25 @@ class ChipTextEdit(QTextEdit):
         self.moveCursor(QTextCursor.Start)
         self.viewport().update()
 
+    MACRO_FIND = r"\{#(?:[^{}]|\{[^{}]*\})*\}"     # a macro, one level of nested braces
+
+    def chipify_range(self, start: int, end: int) -> None:
+        """Turn the {#macros} between two document positions into chips (end to start). Uses the
+        document's own positions, which stay right across tables and lists."""
+        from PySide6.QtCore import QRegularExpression
+        doc = self.document()
+        rx = QRegularExpression(self.MACRO_FIND)
+        hits, c = [], doc.find(rx, start)
+        while not c.isNull() and c.selectionEnd() <= end:
+            hits.append((c.selectionStart(), c.selectionEnd(), c.selectedText()))
+            c = doc.find(rx, c.selectionEnd())
+        for a, b, token in reversed(hits):
+            cur = QTextCursor(doc)
+            cur.setPosition(a)
+            cur.setPosition(b, QTextCursor.KeepAnchor)
+            base = cur.charFormat()
+            cur.insertText(OBJ, self.chip_format(token, base))
+
     def _chipify_document(self) -> None:
         """Replace macro text inside a rich document with chips (end to start)."""
         doc = self.document()
@@ -654,7 +673,8 @@ class PhraseEditor(QWidget):
         try:                              # spell check (Settings > Spell check); optional
             from phraseforge import spell
             from phraseforge.ui.spell_ui import SpellHighlighter
-            self.spell_checker = spell.checker_for(store)
+            # seen through the language version being edited (G-17): German text, German dictionary
+            self.spell_checker = spell.LanguageChecker(spell.checker_for(store))
             self.spell_highlighter = SpellHighlighter(self.content_edit.document(), self.spell_checker)
         except Exception:
             log.exception("spell check unavailable")
@@ -710,6 +730,8 @@ class PhraseEditor(QWidget):
             self._versions = dict(self.store.phrase_versions(p.id)) if hasattr(self.store, "phrase_versions") else {}
             self._deleted_versions = set()
             self._lang = ""
+            self._spell_language()
+            self._from_file = False
             self._default = (p.content, p.content_format)
             self._fill_lang_bar()
         finally:
@@ -737,8 +759,11 @@ class PhraseEditor(QWidget):
                 if old.get(lang) != (text, fmt):
                     self.store.set_phrase_version(p.id, lang, text, fmt)
             self._deleted_versions = set()
-        if hasattr(self.store, "release_quarantine"):
+        if getattr(self, "_from_file", False) and hasattr(self.store, "quarantine"):
+            self.store.quarantine(p.id, "imported")   # macros came from a file: they ask first
+        elif hasattr(self.store, "release_quarantine"):
             self.store.release_quarantine(p.id)   # edited and saved here: the user has seen it
+        self._from_file = False
         self.dirty = False
         self.saved.emit(p.id)
         return True
@@ -790,7 +815,8 @@ class PhraseEditor(QWidget):
         was_dirty = self.dirty
         self._stash_language()
         self._lang = self.lang_bar.tabData(index) or ""
-        text, fmt = self._versions.get(self._lang, self._default) if self._lang else self._default
+        self._spell_language()
+        text, fmt =self._versions.get(self._lang, self._default) if self._lang else self._default
         self._loading = True
         try:
             self.content_edit.set_content(text, html=(fmt == "html"))
@@ -798,6 +824,45 @@ class PhraseEditor(QWidget):
             self._loading = False
         self.dirty = was_dirty
         self._fill_lang_bar()
+
+    def _insert_file(self) -> None:
+        """Insert a Markdown (formatted), Word, RTF or text file at the cursor (G-21)."""
+        from PySide6.QtWidgets import QFileDialog
+        from phraseforge.ui import editor_files
+        path, _ = QFileDialog.getOpenFileName(self, "Insert from file", "", editor_files.FILTER)
+        if not path:
+            return
+        try:
+            content, is_html = editor_files.read_for_editor(path)
+        except Exception as e:                 # noqa: BLE001 - unreadable, too big, wrong type
+            QMessageBox.warning(self, "Insert from file", str(e))
+            return
+        self.insert_document(content, is_html)
+
+    def insert_document(self, content: str, is_html: bool) -> None:
+        """Insert a file's content at the cursor. Its macros become chips, and the phrase counts
+        as imported when it is saved (the file is not the user's own writing)."""
+        ed = self.content_edit
+        c = ed.textCursor()
+        if is_html and ed.rich:
+            start = c.selectionStart()
+            c.insertHtml(content)
+            ed.chipify_range(start, c.position())   # only what was inserted, by real positions
+        else:
+            if is_html:                        # a plain-text phrase keeps the words, not the formatting
+                from PySide6.QtGui import QTextDocumentFragment
+                content = QTextDocumentFragment.fromHtml(content).toPlainText()
+            ed.insert_content(content, c)
+        ed.setTextCursor(c)
+        if "{#" in content:
+            self._from_file = True
+        self._mark_dirty()
+
+    def _spell_language(self) -> None:
+        if self.spell_checker is not None and self.spell_checker.language != self._lang:
+            self.spell_checker.language = self._lang
+            if self.spell_highlighter is not None:
+                self.spell_highlighter.rehighlight()
 
     def current_language(self) -> str:
         return self._lang
@@ -1014,6 +1079,7 @@ class PhraseEditor(QWidget):
         ins = m.addMenu("Insert macro")
         self._fill_insert_macro_menu(ins)
         m.addAction("AI text generator").triggered.connect(self._ai_generator)
+        m.addAction("Insert from file (Markdown, Word, RTF)...").triggered.connect(self._insert_file)
         m.addSeparator()
         a = m.addAction("Right-to-left paragraph"); a.setShortcut("Ctrl+Right Shift")
         a.triggered.connect(lambda: ed.set_paragraph_direction(True))

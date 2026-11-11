@@ -10,8 +10,17 @@ methods a plugin of kind "ai_engine" or "translator" implements:
   settings_schema()   JSON Schema of the engine's own settings
   list_models()       [model names]
   list_languages()    [language names or codes]
-  generate(messages, params)      -> {text}      ai_engine
+  generate(messages, params)      -> {text, usage?}  ai_engine
   translate(text, from, to)       -> {text}      translator
+
+Optional, announced by capabilities() (ai_engine only):
+
+  generate_image(prompt, model, size) -> {image: base64 PNG/JPEG/GIF/WebP, usage?}   image_gen
+  pull_model(model)                   -> {}  with $/progress {text: status} pieces    model_management
+
+usage is {input_tokens, output_tokens}; when present it is added to Settings > AI > Usage
+(usage_stats). Vision needs no extra method: images arrive in generate()'s last message as
+OpenAI-style content parts.
 
 The built-in engines (OpenAI, Anthropic, OpenRouter, Gemini, OpenCode Zen, Kilo Code, Ollama,
 GPT4All, DeepL and the free MyMemory service) are "builtin" plugins: they run inside
@@ -27,6 +36,10 @@ CAPABILITY_KEYS = ("glossaries", "ignored_words", "custom_instructions", "vision
                    "usage_stats", "model_management")
 DESCRIBE_KEYS = ("type", "provider", "name", "urls", "is_local", "needs_api_key", "configurable")
 AI_TIMEOUT_S = 60.0
+IMAGE_TIMEOUT_S = 180.0
+PULL_TIMEOUT_S = 120.0       # per progress piece; a pull may last 10x this in all (host.MAX_CALL_FACTOR)
+MAX_IMAGE = 12 * 1024 * 1024
+MAX_TOKENS_COUNT = 10 ** 9
 PLUGIN_PREFIX = "plugin:"
 
 _URLS = {"openai": "https://platform.openai.com/api-keys", "anthropic": "https://console.anthropic.com/settings/keys",
@@ -169,7 +182,9 @@ class PluginEngine(Engine):
         self.kind = "ai_engine" if "ai_engine" in manifest.kinds else "translator"
 
     def _call(self, method: str, params: dict | None = None, timeout: float = AI_TIMEOUT_S, settings=None,
-              on_progress=None):
+              on_progress=None, side: bool = False):
+        """side=True runs the call in a second process of the plugin, stopped afterwards, so a long
+        call (a model download) does not block every other call to the plugin."""
         from phraseforge import policy
         from phraseforge.plugins.host import PluginError, PluginTimeout
         if not self.mgr.is_enabled(self.manifest.id):
@@ -183,12 +198,17 @@ class PluginEngine(Engine):
             if typed:
                 secrets[name] = typed
         p["secrets"] = secrets
+        proc = None
         try:
-            return self.mgr.process(self.manifest.id).call(method, p, timeout=timeout, on_progress=on_progress)
+            proc = self.mgr.side_process(self.manifest.id) if side else self.mgr.process(self.manifest.id)
+            return proc.call(method, p, timeout=timeout, on_progress=on_progress)
         except PluginTimeout:
             raise ai.AIError(f"plugin {self.manifest.id}: timeout") from None
         except Exception as e:                    # noqa: BLE001 - uninstalled meanwhile, bad answer, ...
             raise ai.AIError(f"plugin {self.manifest.id}: {e}") from None
+        finally:
+            if side and proc is not None:
+                proc.stop()
 
     def _dict(self, method: str, keys) -> dict:
         res = self._call(method, timeout=10)
@@ -214,8 +234,49 @@ class PluginEngine(Engine):
     def settings_schema(self) -> dict:
         return self._dict("settings_schema", ())
 
-    def list_models(self, settings: dict) -> list[str]:
-        return [str(x) for x in (self._call("list_models", {"kind": "text"}, timeout=10) or [])]
+    def list_models(self, settings: dict, kind: str = "text") -> list[str]:
+        res = self._call("list_models", {"kind": kind}, timeout=10) or []
+        return [str(x) for x in res] if isinstance(res, list) else []
+
+    def _record(self, model: str, res, images: int = 0) -> None:
+        """Add the plugin's usage numbers to Settings > AI > Usage; bad values count as 0."""
+        u = res.get("usage") if isinstance(res, dict) else None
+        u = u if isinstance(u, dict) else {}
+
+        def n(key):
+            v = u.get(key)
+            return v if isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= MAX_TOKENS_COUNT else 0
+        if not u and not images:
+            return
+        ai._record(self.provider, model or "default", {"usage": {"input_tokens": n("input_tokens"),
+                                                                 "output_tokens": n("output_tokens")}}, images)
+
+    def _need(self, cap: str, what: str) -> None:
+        if self.kind != "ai_engine" or not self.capabilities().get(cap):
+            raise ai.AIError(f"the plugin {self.manifest.id} cannot {what}")
+
+    def generate_image(self, settings: dict, prompt: str, model: str = "", size: str = "1024x1024") -> bytes:
+        import base64
+        import binascii
+        self._need("image_gen", "make images")
+        res = self._call("generate_image", {"prompt": prompt, "model": model, "size": size},
+                         timeout=IMAGE_TIMEOUT_S, settings=settings)
+        b64 = res.get("image") if isinstance(res, dict) else None
+        if not isinstance(b64, str) or not b64 or len(b64) > MAX_IMAGE * 4 // 3 + 4:
+            raise ai.AIError("the plugin answered without an image (or one larger than 12 MB)")
+        try:
+            data = base64.b64decode(b64, validate=True)
+        except (binascii.Error, ValueError):
+            raise ai.AIError("the plugin sent an image that could not be read") from None
+        ai.image_mime(data)                       # PNG, JPEG, GIF or WebP only
+        self._record(model, res, images=1)
+        return data
+
+    def pull_model(self, settings: dict, model: str, progress=None) -> None:
+        """Download a model through the plugin; progress(status) gets each $/progress piece."""
+        self._need("model_management", "download models")
+        self._call("pull_model", {"model": model}, timeout=PULL_TIMEOUT_S, settings=settings, side=True,
+                   on_progress=(lambda text: progress(_status(text))) if progress else (lambda text: None))
 
     def list_languages(self, settings: dict) -> list[str]:
         return [str(x) for x in (self._call("list_languages", timeout=10) or [])]
@@ -234,14 +295,22 @@ class PluginEngine(Engine):
         on_delta = params.get("on_delta")
         if on_delta is not None:
             clean["stream"] = True                # the plugin may send $/progress pieces first
-        return self._text(self._call("generate", {"messages": messages, "params": clean},
-                                     timeout=float(params.get("timeout", AI_TIMEOUT_S)), settings=settings,
-                                     on_progress=on_delta))
+        res = self._call("generate", {"messages": messages, "params": clean},
+                         timeout=float(params.get("timeout", AI_TIMEOUT_S)), settings=settings,
+                         on_progress=on_delta)
+        text = self._text(res)
+        self._record(str(clean.get("model") or ""), res)
+        return text
 
     def translate(self, settings: dict, text: str, src: str, to: str) -> str:
         if "translator" not in self.manifest.kinds:
             return super().translate(settings, text, src, to)
         return self._text(self._call("translate", {"text": text, "from": src, "to": to}, settings=settings))
+
+
+def _status(text: str) -> str:
+    """A plugin's status line as shown in a dialog: one short line, never read as rich text."""
+    return " ".join(text.split())[:200].replace("<", "\u2039").replace(">", "\u203a")
 
 
 BUILTIN: dict[str, Engine] = {p: BuiltinChatEngine(p) for p in ai.DEFAULT_MODELS}

@@ -73,8 +73,10 @@ def capabilities(provider: str) -> dict:
             caps = eng.capabilities() if eng is not None else {}
         except Exception:     # noqa: BLE001 - a broken plugin has no capabilities
             caps = {}
-        return {"vision": bool(caps.get("vision")), "image": False}
-    return {"vision": provider in VISION_PROVIDERS, "image": provider in IMAGE_PROVIDERS}
+        return {"vision": bool(caps.get("vision")), "image": bool(caps.get("image_gen")),
+                "models": bool(caps.get("model_management"))}
+    return {"vision": provider in VISION_PROVIDERS, "image": provider in IMAGE_PROVIDERS,
+            "models": provider == "ollama"}
 
 
 def _record(provider: str, model: str, data: dict, images: int = 0) -> None:
@@ -482,6 +484,14 @@ def generate_image(settings: dict[str, str], prompt: str, provider: str = "", mo
     """Image bytes for a text prompt ({#aiimage}). Uses the OpenAI images API format, which
     OpenAI and Gemini (OpenAI compatibility) serve; Settings > AI > Image engine picks one."""
     provider = (provider or settings.get("ai.image_provider") or settings.get("ai.provider") or "openai").lower()
+    if provider.startswith("plugin:"):                  # an image engine from a plugin (plugins/engines.py)
+        if not prompt.strip():
+            raise AIError("describe the image to make")
+        from phraseforge.plugins import engines
+        eng = engines.engine(provider)
+        if eng is None or eng.kind != "ai_engine":
+            raise AIError(f"the AI plugin '{provider[7:]}' is not installed or switched off")
+        return eng.generate_image(settings, prompt, model or settings.get("ai.image_model", ""), size or "1024x1024")
     if provider not in IMAGE_PROVIDERS or provider == "openrouter":
         raise AIError(f"{PROVIDER_NAMES.get(provider, provider)} cannot make images; choose OpenAI or Gemini "
                       "as the image engine in Settings > AI")
@@ -513,6 +523,24 @@ def generate_image(settings: dict[str, str], prompt: str, provider: str = "", mo
         return base64.b64decode(b64)
     except ValueError as e:
         raise AIError("the image engine sent an image that could not be read") from e
+
+
+# ---------------------------------------------------------------- model downloads
+def pull_model(settings: dict[str, str], provider: str, model: str, progress=None, cancelled=lambda: False) -> None:
+    """Download a model with Ollama or a plugin engine that has model_management.
+    progress(status, done, total); a plugin reports status text only (done = total = 0) and
+    cannot be cancelled once started."""
+    provider = (provider or "").lower()
+    if provider.startswith("plugin:"):
+        from phraseforge.plugins import engines
+        eng = engines.engine(provider)
+        if eng is None or eng.kind != "ai_engine":
+            raise AIError(f"the AI plugin '{provider[7:]}' is not installed or switched off")
+        if not model.strip() or any(c.isspace() for c in model.strip()):
+            raise AIError("type a model name without spaces")
+        eng.pull_model(settings, model.strip(), (lambda st: progress(st, 0, 0)) if progress else None)
+        return
+    ollama_pull(settings, model, progress, cancelled)
 
 
 # ---------------------------------------------------------------- Ollama model downloads

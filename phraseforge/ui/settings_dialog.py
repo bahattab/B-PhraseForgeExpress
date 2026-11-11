@@ -935,6 +935,7 @@ class SettingsDialog(QDialog):
                          else self.active_lang.currentText().strip(),
                          self._set_active_language)
         gl.addWidget(_row("Version inserted by autotext and hotkeys:", self.active_lang))
+        gl.addWidget(_row("Hotkey to switch to the next language:", self.bind("hotkey.next_language", Hotkey())))
         lay.addWidget(g)
         g, gl = _group("Dates in phrases")
         self.date_lang = self.bind("date.lang", DataCombo([("English", "en"), ("Arabic", "ar"), ("German", "de")]))
@@ -1087,14 +1088,16 @@ class SettingsDialog(QDialog):
         lay.addWidget(self.ai_model)
         lay.addSpacing(6)
         lay.addWidget(QLabel("Image engine for {#aiimage} (uses that engine's API key) and model:"))
-        self.ai_image_provider = self.bind("ai.image_provider", DataCombo([("OpenAI", "openai"), ("Gemini", "gemini")]))
+        self.ai_image_provider = self.bind("ai.image_provider", DataCombo([("OpenAI", "openai"), ("Gemini", "gemini")]
+                                                                         + _engines.choices("ai_engine")))
         self.ai_image_provider.setFixedWidth(181)
         self.ai_image_model = self.bind("ai.image_model", QLineEdit())
         self.ai_image_model.setPlaceholderText("default")
         self.ai_image_model.setFixedWidth(200)
         lay.addWidget(_row(self.ai_image_provider, self.ai_image_model))
         lay.addSpacing(6)
-        pull = QPushButton("Download Ollama model...")
+        pull = QPushButton("Download model...")
+        pull.setToolTip("Downloads a model for Ollama, or for the chosen plugin engine if it can")
         pull.clicked.connect(self._pull_ollama_model)
         usage = QPushButton("Usage...")
         usage.clicked.connect(self._show_ai_usage)
@@ -1152,6 +1155,10 @@ class SettingsDialog(QDialog):
         from PySide6.QtWidgets import QProgressDialog
         from phraseforge import ai
         settings = dict(self.store.settings())
+        provider = self.ai_provider.value() or ""
+        if provider.startswith("plugin:"):
+            self._pull_plugin_model(settings, provider)
+            return
         if self.ai_provider.value() == "ollama":
             self._stash_ai_key()
             settings["ai.ollama_url"] = self._ai_keys.get("ollama", "") or settings.get("ai.ollama_url", "")
@@ -1199,6 +1206,48 @@ class SettingsDialog(QDialog):
                     QMessageBox.information(self, APP, f"{name.strip()} is ready to use with Ollama.")
         timer.timeout.connect(tick)
         threading.Thread(target=work, daemon=True, name="ollama-pull").start()
+        timer.start(200)
+
+    def _pull_plugin_model(self, settings: dict, provider: str) -> None:
+        import threading
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QProgressDialog
+        from phraseforge import ai
+        # whether the plugin can download models is asked on the worker thread (pull_model), so a
+        # slow plugin cannot freeze this dialog
+        name, ok = QInputDialog.getText(self, APP, "Model to download with the plugin engine:")
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        state = {"status": "starting", "error": None, "finished": False}
+
+        def work():
+            try:
+                ai.pull_model(settings, provider, name, lambda st, _d, _t: state.update(status=st))
+            except Exception as e:     # noqa: BLE001 - any failure must end the dialog
+                state["error"] = str(e) or type(e).__name__
+            finally:
+                state["finished"] = True
+        dlg = QProgressDialog(f"Downloading {name}...", "Hide", 0, 0, self)
+        lbl = QLabel(dlg)
+        lbl.setTextFormat(Qt.PlainText)
+        dlg.setLabel(lbl)
+        dlg.setWindowTitle(APP)
+        dlg.setMinimumDuration(0)
+        timer = QTimer(dlg)
+
+        def tick():
+            dlg.setLabelText(f"{name}: {state['status']}")
+            if state["finished"]:
+                timer.stop()
+                dlg.reset()
+                box = QMessageBox(QMessageBox.Warning if state["error"] else QMessageBox.Information, APP,
+                                  f"The download failed: {state['error'][:300]}" if state["error"]
+                                  else f"{name} is ready to use.", QMessageBox.Ok, self)
+                box.setTextFormat(Qt.PlainText)   # the plugin wrote the error text: never rich text
+                box.exec()
+        timer.timeout.connect(tick)
+        threading.Thread(target=work, daemon=True, name="plugin-pull").start()
         timer.start(200)
 
     def _show_ai_usage(self) -> None:
@@ -1425,6 +1474,16 @@ class SettingsDialog(QDialog):
     def _page_translation_ignored(self) -> QWidget:
         w, lay = self._page()
         lay.setSpacing(4)
+        g, gl = _group("Instant translation")
+        gl.addWidget(_wrap_label("Select text in any program and press the hotkey: a small window shows "
+                                 "its translation, with Copy, Replace selection, Swap and Listen."))
+        gl.addWidget(_row("Hotkey:", self.bind("translate.instant_hotkey", Hotkey())))
+        from phraseforge import instant_translate as _it
+        to = self.bind("translate.instant_to", DataCombo([(x, x) for x in _it.LANGUAGES]))
+        back = self.bind("translate.instant_back", DataCombo([(x, x) for x in _it.LANGUAGES]))
+        gl.addWidget(_row("Translate into:", to))
+        gl.addWidget(_row("Text already in that language goes into:", back))
+        lay.addWidget(g)
         lay.addWidget(QLabel("Words excluded from translation (one word per line):"))
         lay.addWidget(self.bind("translation.ignored_words", QPlainTextEdit()), 1)
         return w
@@ -1900,6 +1959,12 @@ class SettingsDialog(QDialog):
         help_btn = QPushButton("How to set up")
         help_btn.clicked.connect(self._gdrive_help)
         gb.addWidget(_row(self.gdrive_client_btn, self.gdrive_signin_btn, help_btn))
+        self.gdrive_hint = self.bind("gdrive.login_hint", QLineEdit())
+        self.gdrive_hint.setPlaceholderText("you@gmail.com (optional)")
+        self.gdrive_hint.setToolTip("Google opens this account directly, and its passkey prompt if it has one")
+        gb.addWidget(_row("Google account:", self.gdrive_hint))
+        gb.addWidget(_wrap_label("Sign-in happens on Google's page in your browser, so passkeys (Windows Hello, "
+                                 "your phone or a security key) work there like on any Google sign-in."))
         self.gdrive_folder = self.bind("sync.gdrive_folder", QLineEdit())
         gb.addWidget(_row("Drive folder:", self.gdrive_folder))
         lay.addWidget(self.gdrive_box)
@@ -2018,7 +2083,9 @@ class SettingsDialog(QDialog):
             return True
         if not d.has_client() and (quiet or not self._choose_gdrive_client()):
             return False
-        ok, err = _run_with_wait(self, "Waiting for Google sign-in in your browser...", d.sign_in)
+        hint = self.gdrive_hint.text().strip()
+        ok, err = _run_with_wait(self, "Waiting for Google sign-in in your browser...",
+                                 (lambda: d.sign_in(login_hint=hint)) if hint else d.sign_in)
         if not ok:
             if not quiet:
                 QMessageBox.warning(self, "Google Drive", f"Sign-in did not complete.\n\n{err}\n\n"

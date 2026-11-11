@@ -74,13 +74,15 @@ COMMAND_HOTKEY_SETTINGS = {
     "hotkey.open_settings": "open_settings",
     "hotkey.clear_clipboard_cache": "clear_clipboard_cache",
     "hotkey.pause": "pause",
+    "hotkey.next_language": "next_language",      # G-17: cycle the phrase language level
     "hotkey.popup_search": "popup_search",
     "onenote.send_hotkey": "onenote_send_clipboard",
     "onenote.clip_hotkey": "onenote_clip",
     "stickynotes.hotkey": "open_sticky_notes",
     "filesearch.hotkey": "file_search",
     "onenote.quick_note_hotkey": "quick_note",
-    "promptboost.hotkey": "boost_selection",    # PromptBoost on the selected text, any program
+    "promptboost.hotkey": "boost_selection",
+    "translate.instant_hotkey": "instant_translate",   # translate the selected text, any program    # PromptBoost on the selected text, any program
 }
 
 NAV_KEYS = {0x21: "pgup", 0x22: "pgdn", 0x23: "end", 0x24: "home", 0x25: "left", 0x26: "up",
