@@ -1,161 +1,306 @@
-"""Caret position for programs without a Win32 caret (PRD G-07, FR-INP-05).
+"""Where the text caret is, in more programs (PRD FR-INP-05, G-07).
 
-GetGUIThreadInfo (windows.caret_position) only knows the classic Win32 caret. Browsers,
-Electron programs, modern Office and UWP apps draw their own, so for them PhraseForge asks:
+Chain, first answer wins:
+  1. win32: GetGUIThreadInfo, the classic Win32 caret (Notepad, most dialogs, Qt).
+  2. msaa:  AccessibleObjectFromWindow(OBJID_CARET), which Chrome, Edge, Electron apps
+            (VS Code, Teams) and Office provide for screen magnifiers.
+  3. uia:   UI Automation, TextPattern2.GetCaretRange (or the selection of TextPattern),
+            for WPF, UWP / WinUI and modern Office.
+When none answers, callers fall back to the mouse (Settings > Popup menu > position).
 
-1. MSAA: the window's caret object (OBJID_CARET). Chrome, Edge, Firefox and many others
-   expose it.
-2. UI Automation: the focused element's text pattern, caret range first (TextPattern2),
-   else the selection; its bounding rectangle.
-
-Every step is best effort: any error means "no answer" and the caller falls back to the
-mouse position. The questions are cross-process COM calls that a hung program never answers,
-so they run on one worker thread of their own (its own COM apartment) and lookup() waits at
-most TIMEOUT_S; while an earlier question is still stuck, lookup() answers None at once.
-Nothing here runs off Windows.
+MSAA and UIA ask the target program over COM, which can take long when it is busy. They run
+on one worker thread and the caller waits at most TIMEOUT_S; a hung window is not asked at all.
+All rectangles are physical screen pixels (left, top, right, bottom).
 """
 from __future__ import annotations
 
 import logging
+import os
 import queue
-import sys
 import threading
+import time
+from typing import Callable
 
 log = logging.getLogger(__name__)
 
-OBJID_CARET = -8
-CHILDID_SELF = 0
-UIA_TEXT_PATTERN = 10014
-UIA_TEXT_PATTERN2 = 10024
-TEXT_UNIT_CHARACTER = 0
 TIMEOUT_S = 0.25
-MAX_SIDE = 2000          # a "caret" larger than this is the whole control, not a caret
+STUCK_S = 5                 # a lookup hung this long: start a fresh worker thread
+OBJID_CARET = 0xFFFFFFF8
+CHILDID_SELF = 0
+UIA_TextPatternId, UIA_TextPattern2Id = 10014, 10024
+TextUnit_Character = 0
+TextPatternRangeEndpoint_Start = 0
+
+Rect = tuple[int, int, int, int]
 
 
-def pick_point(rects) -> tuple[int, int] | None:
-    """(left, bottom) of the first usable (left, top, width, height) rectangle, else None.
-    A caret is often 0 or 1 pixel wide; a zero-height or giant one is not a caret."""
-    for r in rects or ():
+# ---------------------------------------------------------------- pure helpers (tested anywhere)
+def rect_from_uia(values, at_end: bool = False) -> Rect | None:
+    """UIA GetBoundingRectangles() gives (left, top, width, height) per line. The caret is at
+    the start of the first rectangle, or at the end of the last one when the range was
+    widened backwards (caret after the last character)."""
+    vals = [float(v) for v in (values or ())]
+    if len(vals) < 4:
+        return None
+    l, t, w, h = vals[-4:] if at_end else vals[:4]
+    if h <= 0:
+        return None
+    x = l + w if at_end else l
+    return int(round(x)), int(round(t)), int(round(x)) + 1, int(round(t + h))
+
+
+def plausible(rect: Rect | None, window: Rect | None, slack: int = 80) -> bool:
+    """Reject empty rectangles, (0,0) and rectangles far outside the foreground window."""
+    if not rect:
+        return False
+    l, t, r, b = rect
+    if b <= t or (l == 0 and t == 0):
+        return False
+    if window:
+        wl, wt, wr, wb = window
+        if l < wl - slack or l > wr + slack or t < wt - slack or b > wb + slack:
+            return False
+    return True
+
+
+def first_caret(sources: list[tuple[str, Callable[[], Rect | None]]], window: Rect | None):
+    """(rect, source name) from the first source that gives a plausible rectangle."""
+    for name, fn in sources:
         try:
-            left, top, width, height = (int(round(float(v))) for v in r)
-        except (TypeError, ValueError):
+            rect = fn()
+        except Exception:
+            log.debug("caret source %s failed", name, exc_info=True)
             continue
-        if height <= 0 or width < 0 or height > MAX_SIDE or width > MAX_SIDE:
-            continue
-        if left == 0 and top == 0:
-            continue
-        return left, top + height
-    return None
+        if plausible(rect, window):
+            return rect, name
+    return None, ""
 
 
-def flat_rects(values) -> list[tuple[float, float, float, float]]:
-    """UI Automation's GetBoundingRectangles answer: one flat list l, t, w, h, l, t, w, h, ..."""
-    v = list(values or ())
-    return [tuple(v[i:i + 4]) for i in range(0, len(v) - len(v) % 4, 4)]
+# ---------------------------------------------------------------- Windows sources
+def _foreground():
+    from phraseforge.platform._win32 import user32
+    return user32.GetForegroundWindow()
 
 
-def msaa_caret(hwnd: int) -> tuple[int, int] | None:
-    if sys.platform != "win32" or not hwnd:
+def _window_rect(hwnd) -> Rect | None:
+    import ctypes
+    from ctypes import wintypes as wt
+    from phraseforge.platform._win32 import user32
+    r = wt.RECT()
+    if not hwnd or not user32.GetWindowRect(hwnd, ctypes.byref(r)):
         return None
-    try:
+    return r.left, r.top, r.right, r.bottom
+
+
+def win32_caret() -> Rect | None:
+    import ctypes
+    from ctypes import wintypes as wt
+    from phraseforge.platform._win32 import GUITHREADINFO, user32
+    hwnd = _foreground()
+    if not hwnd:
+        return None
+    info = GUITHREADINFO()
+    info.cbSize = ctypes.sizeof(GUITHREADINFO)
+    if not user32.GetGUIThreadInfo(user32.GetWindowThreadProcessId(hwnd, None), ctypes.byref(info)):
+        return None
+    if not info.hwndCaret:
+        return None
+    tl = wt.POINT(info.rcCaret.left, info.rcCaret.top)
+    br = wt.POINT(info.rcCaret.right, info.rcCaret.bottom)
+    if not (user32.ClientToScreen(info.hwndCaret, ctypes.byref(tl))
+            and user32.ClientToScreen(info.hwndCaret, ctypes.byref(br))):
+        return None
+    return tl.x, tl.y, max(br.x, tl.x + 1), br.y
+
+
+def _focus_hwnd():
+    import ctypes
+    from phraseforge.platform._win32 import GUITHREADINFO, user32
+    hwnd = _foreground()
+    info = GUITHREADINFO()
+    info.cbSize = ctypes.sizeof(GUITHREADINFO)
+    if hwnd and user32.GetGUIThreadInfo(user32.GetWindowThreadProcessId(hwnd, None), ctypes.byref(info)):
+        return info.hwndFocus or hwnd
+    return hwnd
+
+
+class _Com:
+    """COM objects of the worker thread (created there, used only there)."""
+
+    def __init__(self):
+        import comtypes
+        import comtypes.client as cc
+        try:
+            comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
+        except OSError:
+            # importing comtypes already initialised COM on this thread, as a single-threaded
+            # apartment (its default; the Qt thread needs that too, so sys.coinit_flags is not
+            # changed). The objects are only ever used on this thread, which is all STA needs.
+            pass
+        cc.GetModule("oleacc.dll")
+        cc.GetModule("UIAutomationCore.dll")
+        from comtypes.gen import Accessibility, UIAutomationClient as U
+        self.A, self.U = Accessibility, U
+        self.uia = cc.CreateObject(U.CUIAutomation, interface=U.IUIAutomation)
+        try:                       # Windows 8+: never wait long on a busy program
+            u2 = self.uia.QueryInterface(U.IUIAutomation2)
+            u2.ConnectionTimeout = 300
+            u2.TransactionTimeout = 300
+        except Exception:
+            pass
         import ctypes
-        import comtypes.client
-        from comtypes.automation import VARIANT
-        oleacc = ctypes.oledll.oleacc
-        mod = comtypes.client.GetModule("oleacc.dll")
-        acc = ctypes.POINTER(mod.IAccessible)()
-        oleacc.AccessibleObjectFromWindow(hwnd, OBJID_CARET, ctypes.byref(mod.IAccessible._iid_),
-                                          ctypes.byref(acc))
-        if not acc:
+        self.oleacc = ctypes.oledll.oleacc
+
+    def msaa(self) -> Rect | None:
+        import ctypes
+        hwnd = _focus_hwnd()
+        if not hwnd:
             return None
-        # the four [out] numbers come back as a tuple (comtypes)
-        return pick_point([tuple(acc.accLocation(VARIANT(CHILDID_SELF)))])
-    except Exception:            # noqa: BLE001 - no caret object, no oleacc, a hung program
-        log.debug("MSAA caret not available", exc_info=True)
-        return None
+        ptr = ctypes.POINTER(self.A.IAccessible)()
+        self.oleacc.AccessibleObjectFromWindow(hwnd, OBJID_CARET, ctypes.byref(self.A.IAccessible._iid_),
+                                               ctypes.byref(ptr))
+        if not ptr:
+            return None
+        loc = ptr.accLocation(CHILDID_SELF)
+        l, t, w, h = (int(v) for v in loc)
+        if h <= 0:
+            return None
+        return l, t, l + max(1, w), t + h
 
-
-_UIA = None
-
-
-def _automation():
-    global _UIA
-    if _UIA is None:
-        import comtypes.client
-        comtypes.client.GetModule("UIAutomationCore.dll")
-        from comtypes.gen import UIAutomationClient as uia
-        _UIA = (uia, comtypes.client.CreateObject(uia.CUIAutomation, interface=uia.IUIAutomation))
-    return _UIA
-
-
-def uia_caret() -> tuple[int, int] | None:
-    if sys.platform != "win32":
-        return None
-    try:
-        uia, auto = _automation()
-        el = auto.GetFocusedElement()
+    def uia_caret(self) -> Rect | None:
+        U = self.U
+        el = self.uia.GetFocusedElement()
         if not el:
             return None
         rng = None
-        try:
-            p2 = el.GetCurrentPattern(UIA_TEXT_PATTERN2)
-            if p2:
-                active, rng = p2.QueryInterface(uia.IUIAutomationTextPattern2).GetCaretRange()
-        except Exception:        # noqa: BLE001 - TextPattern2 is Windows 8+ and not everywhere
-            rng = None
-        if rng is None:
-            p = el.GetCurrentPattern(UIA_TEXT_PATTERN)
-            if not p:
+        pat = el.GetCurrentPattern(UIA_TextPattern2Id)
+        if pat:
+            got = pat.QueryInterface(U.IUIAutomationTextPattern2).GetCaretRange()
+            rng = got[-1] if isinstance(got, tuple) else got
+        if not rng:
+            pat = el.GetCurrentPattern(UIA_TextPatternId)
+            if not pat:
                 return None
-            sel = p.QueryInterface(uia.IUIAutomationTextPattern).GetSelection()
-            if not sel or sel.Length < 1:
+            sel = pat.QueryInterface(U.IUIAutomationTextPattern).GetSelection()
+            if not sel or not sel.Length:
                 return None
             rng = sel.GetElement(0)
-        point = pick_point(flat_rects(rng.GetBoundingRectangles()))
-        if point is None:        # an empty range has no rectangle: measure the next character
-            rng = rng.Clone()
-            rng.ExpandToEnclosingUnit(TEXT_UNIT_CHARACTER)
-            point = pick_point(flat_rects(rng.GetBoundingRectangles()))
-        return point
-    except Exception:            # noqa: BLE001 - no UI Automation, element gone, hung program
-        log.debug("UI Automation caret not available", exc_info=True)
-        return None
+        rect = rect_from_uia(rng.GetBoundingRectangles())
+        if rect:
+            return rect
+        wide = rng.Clone()                              # an empty range has no rectangle: widen it
+        wide.ExpandToEnclosingUnit(TextUnit_Character)
+        rect = rect_from_uia(wide.GetBoundingRectangles())
+        if rect:
+            return rect
+        back = rng.Clone()                              # caret after the last character
+        back.MoveEndpointByUnit(TextPatternRangeEndpoint_Start, TextUnit_Character, -1)
+        return rect_from_uia(back.GetBoundingRectangles(), at_end=True)
 
 
-_jobs: "queue.Queue" = queue.Queue()
-_worker: threading.Thread | None = None
-_busy = threading.Event()
+class _Worker:
+    """One thread for the COM lookups; a call that is still running blocks no one."""
+
+    def __init__(self):
+        self._jobs: queue.Queue = queue.Queue()
+        self._busy = threading.Lock()
+        self.since = 0.0                    # when the running lookup started (0: none)
+        self._com = None
+        self._com_failed = False
+        threading.Thread(target=self._run, name="pf-caret", daemon=True).start()
+
+    def _run(self):
+        while True:
+            fn, box, done = self._jobs.get()
+            try:
+                if self._com is None and not self._com_failed:
+                    try:
+                        self._com = _Com()
+                    except Exception:
+                        self._com_failed = True
+                        log.info("accessibility caret lookup unavailable", exc_info=True)
+                box.append(fn(self._com) if self._com is not None else None)
+            except Exception:
+                log.debug("caret lookup failed", exc_info=True)
+                box.append(None)
+            finally:
+                done.set()
+                self.since = 0.0
+                self._busy.release()
+
+    def stuck(self) -> bool:
+        """A lookup has hung for longer than STUCK_S (a program that never answers COM)."""
+        since = self.since
+        return bool(since) and time.monotonic() - since > STUCK_S
+
+    def call(self, fn, timeout: float):
+        if timeout <= 0 or not self._busy.acquire(blocking=False):
+            return None                     # no time left, or the previous lookup still hangs
+        self.since = time.monotonic()
+        box: list = []
+        done = threading.Event()
+        self._jobs.put((fn, box, done))
+        done.wait(timeout)
+        return box[0] if box else None
 
 
-def _serve() -> None:
-    try:
-        import comtypes
-        comtypes.CoInitialize()
-    except Exception:            # noqa: BLE001
-        log.debug("COM could not start on the caret thread", exc_info=True)
-    while True:
-        hwnd, box, done = _jobs.get()
-        try:
-            box.append(msaa_caret(hwnd) or uia_caret())
-        except Exception:        # noqa: BLE001
-            box.append(None)
-        finally:
-            _busy.clear()
-            done.set()
+_worker: _Worker | None = None
+_worker_lock = threading.Lock()
 
 
-def lookup(hwnd: int, timeout: float = TIMEOUT_S) -> tuple[int, int] | None:
-    """MSAA then UI Automation, asked on the caret thread; None after `timeout` seconds."""
+def _get_worker() -> _Worker:
     global _worker
-    if sys.platform != "win32" or _busy.is_set():
-        return None
-    if _worker is None or not _worker.is_alive():
-        _worker = threading.Thread(target=_serve, name="caret-com", daemon=True)
-        _worker.start()
-    box: list = []
-    done = threading.Event()
-    _busy.set()
-    _jobs.put((hwnd, box, done))
-    if not done.wait(timeout):
-        return None              # still asking a hung program: the next lookup returns None until it ends
-    return box[0] if box else None
+    with _worker_lock:
+        if _worker is not None and _worker.stuck():
+            # leave the hung thread behind (a daemon) so other programs get the caret again
+            log.info("caret lookup: a program did not answer for %d s; starting a new lookup thread", STUCK_S)
+            _worker = None
+        if _worker is None:
+            _worker = _Worker()
+        return _worker
+
+
+def warm_up() -> None:
+    """Create the COM objects early (the first use generates wrappers, about a second)."""
+    if os.name == "nt":
+        _get_worker().call(lambda com: None, 5.0)
+
+
+def _own_window(hwnd) -> bool:
+    import ctypes
+    from ctypes import wintypes as wt
+    from phraseforge.platform._win32 import user32
+    pid = wt.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return pid.value == os.getpid()
+
+
+def com_sources(w: "_Worker", msaa=None, uia=None) -> list:
+    """The MSAA and UIA lookups, sharing ONE wait of TIMEOUT_S (each used to get its own)."""
+    end = time.monotonic() + TIMEOUT_S
+    msaa = msaa or (lambda com: com.msaa())
+    uia = uia or (lambda com: com.uia_caret())
+    return [("msaa", lambda: w.call(msaa, end - time.monotonic())),
+            ("uia", lambda: w.call(uia, end - time.monotonic()))]
+
+
+def caret_rect(use_accessibility: bool = True) -> tuple[Rect | None, str]:
+    """(rect, source) of the caret in the foreground window, or (None, "")."""
+    if os.name != "nt":
+        return None, ""
+    from phraseforge.platform._win32 import user32
+    hwnd = _foreground()
+    if not hwnd:
+        return None, ""
+    window = _window_rect(hwnd)
+    sources = [("win32", win32_caret)]
+    # never ask our own windows over COM (this thread would have to answer itself) or a hung one
+    if use_accessibility and not _own_window(hwnd) and not user32.IsHungAppWindow(hwnd):
+        sources += com_sources(_get_worker())
+    return first_caret(sources, window)
+
+
+def caret_point(use_accessibility: bool = True) -> tuple[int, int] | None:
+    """Physical screen point just below the caret (where a menu or tip should open)."""
+    rect, _src = caret_rect(use_accessibility)
+    return (rect[0], rect[3]) if rect else None

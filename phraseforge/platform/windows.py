@@ -137,27 +137,12 @@ def _gui_info() -> GUITHREADINFO | None:
     return info
 
 
-def caret_position() -> tuple[int, int] | None:
-    """Screen position just below the text caret: the Win32 caret, else MSAA's caret object,
-    else UI Automation (browsers, Electron, modern Office; platform/caret.py, G-07). None
-    when no layer knows it."""
-    pos = _win32_caret()
-    if pos is not None:
-        return pos
+def caret_position(use_accessibility: bool = True) -> tuple[int, int] | None:
+    """Physical screen position just below the text caret, or None when no program API tells
+    where it is. Asks the Win32 caret, then MSAA and UI Automation (platform/caret.py, so
+    browsers, Electron apps, Office and WPF work too)."""
     from phraseforge.platform import caret
-    return caret.lookup(user32.GetForegroundWindow())
-
-
-def _win32_caret() -> tuple[int, int] | None:
-    info = _gui_info()
-    if not info or not info.hwndCaret:
-        return None
-    pt = wt.POINT(info.rcCaret.left, info.rcCaret.bottom)
-    if not user32.ClientToScreen(info.hwndCaret, ctypes.byref(pt)):
-        return None
-    if pt.x == 0 and pt.y == 0:
-        return None
-    return pt.x, pt.y
+    return caret.caret_point(use_accessibility)
 
 
 def mouse_position() -> tuple[int, int]:
