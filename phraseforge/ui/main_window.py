@@ -854,6 +854,7 @@ class MainWindow(QMainWindow):
                                ("From PhraseExpress (folder of .txt files)...", "folder_tree",
                                 self.import_phraseexpress_folder),
                                ("TextExpander / macOS (.csv / .textexpander / .plist)...", "textexpander", self.import_textexpander),
+                               ("AutoHotkey hotstrings (.ahk)...", "import", self.import_autohotkey),
                                None,
                                ("From OneNote (running)...", "on_notebook", self.import_onenote),
                                ("From a OneNote file (.one)...", "on_notebook", self.import_onenote_file)])
@@ -2547,6 +2548,31 @@ class MainWindow(QMainWindow):
         if show_message:
             QMessageBox.information(self, title, "\n".join(lines))
         return rep
+
+    def import_autohotkey(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Import AutoHotkey hotstrings", "",
+                                              "AutoHotkey scripts (*.ahk);;All files (*)")
+        if not path:
+            return
+        try:
+            from phraseforge.importers.autohotkey import import_ahk
+            rep = import_ahk(self.store, path)
+        except Exception as e:
+            QMessageBox.warning(self, "Import AutoHotkey hotstrings", str(e))
+            return
+        self.refresh_tree()
+        if rep.folder_id is not None:
+            self.select_folder(rep.folder_id)
+        lines = [f"Imported {rep.imported} hotstrings."]
+        if rep.skipped:
+            lines.append(f"Skipped {rep.skipped} that run code instead of writing text.")
+        if rep.unknown_macros:
+            lines.append("Kept as text, review them: " + ", ".join(sorted(rep.unknown_macros)))
+        lines.append("Imported phrases ask before running privileged macros.")
+        box = QMessageBox(QMessageBox.Information, "Import AutoHotkey hotstrings", "\n".join(lines),
+                          QMessageBox.Ok, self)
+        box.setTextFormat(Qt.PlainText)        # key names from the file are shown as written
+        box.exec()
 
     def import_textexpander(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Import from TextExpander", "",
