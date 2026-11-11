@@ -415,7 +415,8 @@ def export_macos_plist(store: Store, path: str | Path, folder_id: int | None = N
     return rep
 
 
-_XML_BAD = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]")     # not allowed in XML 1.0
+# characters XML 1.0 does not allow: C0 controls except tab, LF and CR, plus U+FFFE / U+FFFF
+_XML_BAD = dict.fromkeys([c for c in range(0x20) if c not in (0x09, 0x0A, 0x0D)] + [0xFFFE, 0xFFFF])
 XLSX_CELL_MAX = 32767                                                    # Excel's limit per cell
 
 
@@ -433,7 +434,7 @@ def export_xml(store: Store, path: str | Path, folder_id: int | None = None,
     it back with the folder tree, autotexts, hotkey and format. Macros stay in PhraseForge syntax."""
     import xml.etree.ElementTree as ET
     rep = ExchangeReport()
-    clean = lambda t: _XML_BAD.sub("", t or "")
+    clean = lambda t: (t or "").translate(_XML_BAD)
     root = ET.Element("phrases", {"generator": "PhraseForge", "version": "1"})
     folders = store.folders()
     children: dict = {}
