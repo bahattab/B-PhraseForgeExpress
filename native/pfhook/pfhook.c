@@ -23,7 +23,7 @@
 #include <windows.h>
 
 #define PF_API __declspec(dllexport)
-#define PF_VERSION 2
+#define PF_VERSION 3
 
 #define RING_SIZE 1024u                 /* power of two */
 #define MAX_RULES 256
@@ -462,3 +462,134 @@ PF_API void pf_stats(PFStats *out) {
     s.running = (UINT32)g_running;
     *out = s;
 }
+
+/* ---------------------------------------------------------------- mouse (v3, macro recorder)
+ * WH_MOUSE_LL for the macro recorder (recorder.py), so recording never makes the mouse lag.
+ * It only observes: every event is passed on at once. Left and right clicks and the wheel
+ * are queued for Python, without PhraseForge's own input, input other programs inject and
+ * clicks on PhraseForge's own windows (the recording bar's Stop button). Middle clicks are
+ * not recorded (replayed they would be left clicks, R58). */
+#define MRING_SIZE 512u                 /* power of two */
+#define MK_LEFT 1u
+#define MK_RIGHT 2u
+#define MK_WHEEL 3u
+
+typedef struct {
+    UINT32 kind;                        /* MK_LEFT | MK_RIGHT | MK_WHEEL */
+    INT32 x, y;                         /* screen point, physical pixels */
+    INT32 rx, ry;                       /* point inside the top-level window under it */
+    UINT32 has_rel;                     /* rx, ry are valid */
+    UINT32 mouse_data;                  /* MSLLHOOKSTRUCT.mouseData (wheel delta in the high word) */
+    UINT32 time;
+} PFMouse;
+
+static PFMouse g_mring[MRING_SIZE];
+static volatile LONG g_mhead, g_mtail, g_mrunning, g_mdropped;
+static HANDLE g_mavail, g_mready, g_mthread;
+static HHOOK g_mhook;
+static DWORD g_mtid, g_mstart_error, g_own_pid;
+
+static LRESULT CALLBACK mouse_proc(int code, WPARAM wp, LPARAM lp) {
+    if (code == HC_ACTION && (wp == WM_LBUTTONDOWN || wp == WM_RBUTTONDOWN || wp == WM_MOUSEWHEEL)) {
+        const MSLLHOOKSTRUCT *ms = (const MSLLHOOKSTRUCT *)lp;
+        if (ms->dwExtraInfo != g_magic && !(ms->flags & LLMHF_INJECTED)) {
+            HWND hit = WindowFromPoint(ms->pt);
+            HWND root = hit ? GetAncestor(hit, GA_ROOT) : NULL;
+            DWORD pid = 0;
+            if (root) GetWindowThreadProcessId(root, &pid);
+            if (!root || pid != g_own_pid) {
+                LONG head = g_mhead;
+                if ((UINT32)(head - g_mtail) < MRING_SIZE) {
+                    PFMouse *m = &g_mring[(UINT32)head & (MRING_SIZE - 1)];
+                    RECT r;
+                    ZeroMemory(m, sizeof *m);
+                    m->kind = wp == WM_LBUTTONDOWN ? MK_LEFT : wp == WM_RBUTTONDOWN ? MK_RIGHT : MK_WHEEL;
+                    m->x = ms->pt.x;
+                    m->y = ms->pt.y;
+                    if (root && GetWindowRect(root, &r)) {
+                        m->rx = ms->pt.x - r.left;
+                        m->ry = ms->pt.y - r.top;
+                        m->has_rel = 1;
+                    }
+                    m->mouse_data = ms->mouseData;
+                    m->time = ms->time;
+                    MemoryBarrier();
+                    InterlockedExchange(&g_mhead, head + 1);
+                    SetEvent(g_mavail);
+                } else {
+                    InterlockedIncrement(&g_mdropped);
+                }
+            }
+        }
+    }
+    return CallNextHookEx(NULL, code, wp, lp);
+}
+
+static DWORD WINAPI mouse_thread(LPVOID unused) {
+    MSG msg;
+    HMODULE self = NULL;
+    (void)unused;
+    PeekMessageW(&msg, NULL, 0, 0, PM_NOREMOVE);
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       (LPCWSTR)(const void *)&g_mring, &self);
+    g_mhook = SetWindowsHookExW(WH_MOUSE_LL, mouse_proc, self, 0);
+    g_mstart_error = g_mhook ? 0 : GetLastError();
+    SetEvent(g_mready);
+    if (!g_mhook) return 1;
+    while (GetMessageW(&msg, NULL, 0, 0) > 0) DispatchMessageW(&msg);
+    UnhookWindowsHookEx(g_mhook);
+    g_mhook = NULL;
+    return 0;
+}
+
+/* magic: dwExtraInfo of PhraseForge's own output. Returns 0 on success, else the Windows error. */
+PF_API DWORD pf_mouse_start(ULONG_PTR magic) {
+    if (g_mrunning) return 0;
+    if (!g_magic) g_magic = magic;
+    g_own_pid = GetCurrentProcessId();
+    if (!g_mavail) g_mavail = CreateEventW(NULL, FALSE, FALSE, NULL);
+    if (!g_mready) g_mready = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (!g_mavail || !g_mready) return GetLastError();
+    g_mhead = g_mtail = 0;
+    g_mdropped = 0;
+    ResetEvent(g_mready);
+    g_mthread = CreateThread(NULL, 0, mouse_thread, NULL, 0, &g_mtid);
+    if (!g_mthread) return GetLastError();
+    WaitForSingleObject(g_mready, 5000);
+    if (!g_mhook) {
+        WaitForSingleObject(g_mthread, 1000);
+        CloseHandle(g_mthread);
+        g_mthread = NULL;
+        return g_mstart_error ? g_mstart_error : ERROR_GEN_FAILURE;
+    }
+    SetThreadPriority(g_mthread, THREAD_PRIORITY_TIME_CRITICAL);
+    InterlockedExchange(&g_mrunning, 1);
+    return 0;
+}
+
+PF_API void pf_mouse_stop(void) {
+    if (!g_mthread) return;
+    InterlockedExchange(&g_mrunning, 0);
+    PostThreadMessageW(g_mtid, WM_QUIT, 0, 0);
+    WaitForSingleObject(g_mthread, 3000);
+    CloseHandle(g_mthread);
+    g_mthread = NULL;
+    SetEvent(g_mavail);
+}
+
+/* Next queued mouse event. Returns 1 = event, 0 = timeout, -1 = stopped (queue empty). */
+PF_API int pf_mouse_next(PFMouse *out, DWORD timeout_ms) {
+    for (;;) {
+        LONG tail = g_mtail;
+        if (tail != g_mhead) {
+            MemoryBarrier();
+            *out = g_mring[(UINT32)tail & (MRING_SIZE - 1)];
+            InterlockedExchange(&g_mtail, tail + 1);
+            return 1;
+        }
+        if (!g_mrunning) return -1;
+        if (WaitForSingleObject(g_mavail, timeout_ms) != WAIT_OBJECT_0) return 0;
+    }
+}
+
+PF_API UINT32 pf_mouse_dropped(void) { return (UINT32)g_mdropped; }

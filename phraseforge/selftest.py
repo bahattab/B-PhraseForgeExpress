@@ -207,6 +207,12 @@ def run() -> int:
             lines.append(f"      native keyboard hook: {hook.stats()}")
         finally:
             hook.stop()
+        mouse = nh.NativeMouseHook(object(), lib=lib)        # the macro recorder's mouse hook
+        mouse.start()
+        try:
+            assert mouse.running
+        finally:
+            mouse.stop()
     check("native keyboard hook (pfhook.dll)", native_hook)
 
     def caret_lookup() -> None:

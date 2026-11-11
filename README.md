@@ -68,7 +68,8 @@ C:\venvs\phraseforge\Scripts\python -m pytest -p no:cacheprovider  # full test s
 Builds from GitHub include `pfhook.dll`, a small native keyboard hook
 ([native/pfhook/pfhook.c](native/pfhook/pfhook.c)). Keys never wait on Python for more
 than 40 ms: if PhraseForge is busy, keys pass straight to the program (hotkeys are still
-caught), so typing elsewhere never lags and Windows does not remove the hook. Without the
+caught), so typing elsewhere never lags and Windows does not remove the hook. The macro
+recorder's mouse hook lives in the same DLL, so recording never makes the mouse lag. Without the
 DLL (running from source without building it) PhraseForge uses its older Python hook.
 To force that one, set `PHRASEFORGE_HOOK=python` or the setting `input.native_hook` to `0`.
 
