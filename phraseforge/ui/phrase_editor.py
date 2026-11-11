@@ -839,6 +839,21 @@ class PhraseEditor(QWidget):
             return
         self.insert_document(content, is_html)
 
+    def _attach_file(self, path: str | None = None) -> None:
+        """Keep a copy of a file with PhraseForge and paste it (as a file) with this phrase (G-21)."""
+        from PySide6.QtWidgets import QFileDialog
+        from phraseforge.importers.files import attach_file
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(self, "Attach a file", "", "All files (*)")
+        if not path:
+            return
+        try:
+            macro = attach_file(path)
+        except Exception as e:                 # noqa: BLE001 - too big, unreadable
+            QMessageBox.warning(self, "Attach a file", str(e))
+            return
+        self.insert_macro(macro)
+
     def insert_document(self, content: str, is_html: bool) -> None:
         """Insert a file's content at the cursor. Its macros become chips, and the phrase counts
         as imported when it is saved (the file is not the user's own writing)."""
@@ -1080,6 +1095,9 @@ class PhraseEditor(QWidget):
         self._fill_insert_macro_menu(ins)
         m.addAction("AI text generator").triggered.connect(self._ai_generator)
         m.addAction("Insert from file (Markdown, Word, RTF)...").triggered.connect(self._insert_file)
+        a = m.addAction("Attach a file...")
+        a.setToolTip("Keeps a copy of the file with PhraseForge; the phrase pastes it as a file")
+        a.triggered.connect(lambda: self._attach_file())
         m.addSeparator()
         a = m.addAction("Right-to-left paragraph"); a.setShortcut("Ctrl+Right Shift")
         a.triggered.connect(lambda: ed.set_paragraph_direction(True))

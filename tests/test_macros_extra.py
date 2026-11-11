@@ -231,3 +231,18 @@ def test_outlook_and_ad_degrade_gracefully():
     assert isinstance(run("{#outlook subject}"), str)
     assert isinstance(run("{#ad email}"), str)
     assert run("{#outlook nonsense}").startswith("[outlook:")
+
+
+def test_pastefile_resolves_an_attached_file(tmp_path, monkeypatch):
+    from phraseforge import paths
+    from phraseforge.importers import files
+    monkeypatch.setattr(paths, "data_dir", lambda: tmp_path / "data")
+    (tmp_path / "data").mkdir()
+    src = tmp_path / "offer.docx"
+    src.write_bytes(b"PK demo")
+    macro = files.attach_file(src)
+    h = FakeHost()
+    h.set_clipboard_files = lambda paths: h.calls.append(("files", tuple(paths)))
+    acts(macro, h)
+    (path,), = [c[1] for c in h.calls if c[0] == "files"]
+    assert path.endswith("offer.docx") and "attached" in path and path != str(src)

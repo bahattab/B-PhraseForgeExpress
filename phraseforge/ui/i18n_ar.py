@@ -1291,6 +1291,8 @@ AR_EXTRA = {
     'The phrase could not be translated.\n\n{}': 'تعذّرت ترجمة العبارة.\n\n{}',
     'OneNote is not available.\n\n{}\n\nMake sure the OneNote desktop app is installed and opened once.': 'OneNote غير متاح.\n\n{}\n\nتأكد من أن تطبيق OneNote لسطح المكتب مثبّت وأنه فُتح مرة واحدة.',
     'Insert from file': 'إدراج من ملف',
+    'Attach a file': 'إرفاق ملف',
+    'Keeps a copy of the file with PhraseForge; the phrase pastes it as a file': 'يحتفظ PhraseForge بنسخة من الملف؛ والعبارة تلصقه كملف',
     'Translation failed: {}': 'فشلت الترجمة: {}',
     'Edit macro "{}"': 'تحرير الماكرو «{}»',
     '{} Settings': 'إعدادات {}',
