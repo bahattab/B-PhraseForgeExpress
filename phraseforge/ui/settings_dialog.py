@@ -1087,14 +1087,16 @@ class SettingsDialog(QDialog):
         lay.addWidget(self.ai_model)
         lay.addSpacing(6)
         lay.addWidget(QLabel("Image engine for {#aiimage} (uses that engine's API key) and model:"))
-        self.ai_image_provider = self.bind("ai.image_provider", DataCombo([("OpenAI", "openai"), ("Gemini", "gemini")]))
+        self.ai_image_provider = self.bind("ai.image_provider", DataCombo([("OpenAI", "openai"), ("Gemini", "gemini")]
+                                                                         + _engines.choices("ai_engine")))
         self.ai_image_provider.setFixedWidth(181)
         self.ai_image_model = self.bind("ai.image_model", QLineEdit())
         self.ai_image_model.setPlaceholderText("default")
         self.ai_image_model.setFixedWidth(200)
         lay.addWidget(_row(self.ai_image_provider, self.ai_image_model))
         lay.addSpacing(6)
-        pull = QPushButton("Download Ollama model...")
+        pull = QPushButton("Download model...")
+        pull.setToolTip("Downloads a model for Ollama, or for the chosen plugin engine if it can")
         pull.clicked.connect(self._pull_ollama_model)
         usage = QPushButton("Usage...")
         usage.clicked.connect(self._show_ai_usage)
@@ -1152,6 +1154,10 @@ class SettingsDialog(QDialog):
         from PySide6.QtWidgets import QProgressDialog
         from phraseforge import ai
         settings = dict(self.store.settings())
+        provider = self.ai_provider.value() or ""
+        if provider.startswith("plugin:"):
+            self._pull_plugin_model(settings, provider)
+            return
         if self.ai_provider.value() == "ollama":
             self._stash_ai_key()
             settings["ai.ollama_url"] = self._ai_keys.get("ollama", "") or settings.get("ai.ollama_url", "")
@@ -1199,6 +1205,45 @@ class SettingsDialog(QDialog):
                     QMessageBox.information(self, APP, f"{name.strip()} is ready to use with Ollama.")
         timer.timeout.connect(tick)
         threading.Thread(target=work, daemon=True, name="ollama-pull").start()
+        timer.start(200)
+
+    def _pull_plugin_model(self, settings: dict, provider: str) -> None:
+        import threading
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QProgressDialog
+        from phraseforge import ai
+        if not ai.capabilities(provider).get("models"):
+            QMessageBox.information(self, APP, "This plugin engine cannot download models.")
+            return
+        name, ok = QInputDialog.getText(self, APP, "Model to download with the plugin engine:")
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        state = {"status": "starting", "error": None, "finished": False}
+
+        def work():
+            try:
+                ai.pull_model(settings, provider, name, lambda st, _d, _t: state.update(status=st))
+            except Exception as e:     # noqa: BLE001 - any failure must end the dialog
+                state["error"] = str(e) or type(e).__name__
+            finally:
+                state["finished"] = True
+        dlg = QProgressDialog(f"Downloading {name}...", "Hide", 0, 0, self)
+        dlg.setWindowTitle(APP)
+        dlg.setMinimumDuration(0)
+        timer = QTimer(dlg)
+
+        def tick():
+            dlg.setLabelText(f"{name}: {state['status']}")
+            if state["finished"]:
+                timer.stop()
+                dlg.reset()
+                if state["error"]:
+                    QMessageBox.warning(self, APP, f"The download failed: {state['error'][:300]}")
+                else:
+                    QMessageBox.information(self, APP, f"{name} is ready to use.")
+        timer.timeout.connect(tick)
+        threading.Thread(target=work, daemon=True, name="plugin-pull").start()
         timer.start(200)
 
     def _show_ai_usage(self) -> None:
