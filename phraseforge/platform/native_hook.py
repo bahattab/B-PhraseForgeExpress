@@ -290,7 +290,8 @@ class NativeMouseHook:
 
     @property
     def running(self) -> bool:
-        return self._running
+        # a reader that died leaves the DLL hook armed and queuing clicks: report it as stopped (R156)
+        return self._running and self._thread is not None and self._thread.is_alive()
 
     def handle(self, m: PFMouse) -> None:
         from phraseforge.recorder import wheel_delta
@@ -305,14 +306,27 @@ class NativeMouseHook:
 
     def _read_loop(self) -> None:
         m = PFMouse()
-        while True:
-            r = self._lib.pf_mouse_next(ctypes.byref(m), 250)
-            if r < 0:
-                break
-            if r > 0:
-                self.handle(m)
-            elif not self._running:
-                break
+        try:
+            while True:
+                r = self._lib.pf_mouse_next(ctypes.byref(m), 250)
+                if r < 0:
+                    break
+                if r > 0:
+                    self.handle(m)
+                elif not self._running:
+                    break
+        except Exception:                      # noqa: BLE001 - the thread must not die silently (R156)
+            log.exception("native mouse reader failed; mouse recording stopped")
+        finally:
+            if self._running:                  # stopped by an error, not by stop(): stop the DLL hook too
+                self._running = False
+                try:
+                    self._lib.pf_mouse_stop()
+                except Exception:              # noqa: BLE001
+                    pass
+            dropped = self._lib.pf_mouse_dropped()
+            if dropped:
+                log.warning("native mouse hook dropped %s clicks (the reader was too slow)", dropped)
 
 
 def make_mouse_hook(recorder):

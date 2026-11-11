@@ -581,3 +581,28 @@ def test_real_mouse_hook_runs_and_ignores_injected_input():
     finally:
         hook.stop()
     assert not hook.running
+
+
+def test_dead_mouse_reader_is_not_reported_as_running():
+    """R156: a reader thread that died left the hook armed and reported as running."""
+    import threading
+    from phraseforge.platform import native_hook
+    h = native_hook.NativeMouseHook.__new__(native_hook.NativeMouseHook)
+    stopped = []
+
+    class Lib:
+        def pf_mouse_stop(self):
+            stopped.append(True)
+
+        def pf_mouse_dropped(self):
+            return 0
+    h._lib = Lib()
+    h._running = True
+    dead = threading.Thread(target=lambda: None)
+    dead.start()
+    dead.join()
+    h._thread = dead
+    assert h.running is False
+    h._running = True
+    h._thread = None
+    assert h.running is False
