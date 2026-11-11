@@ -116,9 +116,9 @@ def test_typed_key_is_used_before_saving(plugin_engine, monkeypatch):
     seen = {}
     real = plugin_engine.mgr.process("echo-ai").call
 
-    def spy(method, params, timeout=5.0):
+    def spy(method, params, timeout=5.0, on_progress=None):
         seen.update(params.get("secrets", {}))
-        return real(method, params, timeout=timeout)
+        return real(method, params, timeout=timeout, on_progress=on_progress)
     monkeypatch.setattr(plugin_engine.mgr.process("echo-ai"), "call", spy)
     plugin_engine.generate({"plugins.secret.echo-ai.api_key": "typed", "plugins.secret.echo-ai.other": "x"},
                            [{"role": "user", "content": "hi"}], {})
@@ -129,3 +129,13 @@ def test_errors_become_ai_errors(plugin_engine, monkeypatch):
     monkeypatch.setattr(plugin_engine.mgr, "process", lambda pid: (_ for _ in ()).throw(KeyError(pid)))
     with pytest.raises(ai.AIError):
         plugin_engine.generate({}, [{"role": "user", "content": "hi"}], {})
+
+
+def test_plugin_engine_streams_pieces(plugin_engine):
+    """$/progress: the echo plugin sends its answer word by word before the full answer."""
+    pieces = []
+    out = ai.chat({"ai.provider": "plugin:echo-ai"}, [{"role": "user", "content": "one two"}],
+                  on_delta=pieces.append)
+    assert out.startswith("echo: one two")
+    assert "".join(pieces).strip() == out
+    assert ai.chat({"ai.provider": "plugin:echo-ai"}, [{"role": "user", "content": "x"}]).startswith("echo: x")

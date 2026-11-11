@@ -40,6 +40,8 @@ PRIVILEGED: dict[str, str] = {
     # a value an unapproved phrase leaves behind could become a trusted phrase's
     # {#run {#gettemp x}} argument (security R32); {#set -scope global} below likewise
     "settemp": "change variables other phrases use",
+    # every picture is billed to this user's API key; a loop made 1000 of them (R114)
+    "aiimage": "make AI images (billed to your API key)",
 }
 
 # Macros that read the file named by their first argument. Reading a local file is
@@ -109,7 +111,7 @@ def _ai_network_image(spec: str) -> bool:
                for p in (spec or "").split("|"))
 
 
-_AI_IMAGE = re.compile(r'-image\s+("[^"]*"|\S+)')
+_AI_IMAGE = re.compile(r'-image\s+("[^"]*"|\S+)', re.I)   # option names are case-insensitive
 
 PLUGIN_REASON = "use plugins that may reach the internet, files or the keyboard"
 PLUGIN_ENGINE_REASON = "send text or images to an AI or translation plugin"

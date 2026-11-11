@@ -1056,13 +1056,19 @@ def _ai(rt, args, opts):
                                system=opts.get("system", "")).strip()
 
 
-MAX_AI_IMAGE = 20 * 1024 * 1024
+MAX_AI_IMAGE = 20 * 1024 * 1024        # all the images of one {#ai} together (R115)
+MAX_AI_IMAGE_COUNT = 8
+MAX_AIIMAGE_PER_EXPANSION = 4          # {#aiimage} calls in one phrase, approved or not (R114)
 
 
 def _ai_images(rt, spec: str) -> list[bytes]:
     """-image clipboard | region | file:<path> (several separated by '|')."""
     out = []
-    for part in [p.strip() for p in spec.split("|") if p.strip()]:
+    parts = [p.strip() for p in spec.split("|") if p.strip()]
+    if len(parts) > MAX_AI_IMAGE_COUNT:
+        raise MacroError(f"at most {MAX_AI_IMAGE_COUNT} images can be sent at once")
+    total = 0
+    for part in parts:
         low = part.lower()
         if low == "clipboard":
             fn = getattr(rt.host, "clipboard_image", None)
@@ -1078,11 +1084,14 @@ def _ai_images(rt, spec: str) -> list[bytes]:
             path = Path(os.path.expandvars(part[5:].strip().strip('"')))
             if not path.is_file():
                 raise MacroError(f"image not found: {path}")
-            if path.stat().st_size > MAX_AI_IMAGE:
-                raise MacroError(f"image is larger than 20 MB: {path}")
+            if total + path.stat().st_size > MAX_AI_IMAGE:
+                raise MacroError("the images are larger than 20 MB together")
             data = path.read_bytes()
         else:
             raise MacroError(f"-image must be clipboard, region or file:<path>, not '{part}'")
+        total += len(data)
+        if total > MAX_AI_IMAGE:
+            raise MacroError("the images are larger than 20 MB together")
         out.append(data)
     if not out:
         raise MacroError("-image needs clipboard, region or file:<path>")
@@ -1097,6 +1106,10 @@ def _aiimage(rt, args, opts):
     fn = getattr(rt.host, "ai_image", None)
     if fn is None:
         raise MacroError("images cannot be made here")
+    made = rt.__dict__.get("_aiimage_count", 0)
+    if made >= MAX_AIIMAGE_PER_EXPANSION:
+        raise MacroError(f"at most {MAX_AIIMAGE_PER_EXPANSION} images per phrase")
+    rt.__dict__["_aiimage_count"] = made + 1
     return ImageAction(fn(prompt, provider=opts.get("provider", ""), model=opts.get("model", ""),
                           size=opts.get("size", "") or "1024x1024"))
 
@@ -1127,7 +1140,8 @@ def _translate_with(rt, args, opts, provider, keys):
     from phraseforge.ai import deepl_translate, translation_system
     if provider == "deepl":
         settings = {k: rt.setting(k, "") for k in keys + ("ai.deepl_key",)}
-        return deepl_translate(settings, " ".join(args), opts.get("to", "English"), opts.get("from", "")).strip()
+        return deepl_translate(settings, " ".join(args), opts.get("to", "English"), opts.get("from", ""),
+                               glossary=opts.get("glossary", "")).strip()
     system = translation_system({k: rt.setting(k, "") for k in keys}, opts.get("to", "English"),
                                 opts.get("from", ""), opts.get("glossary", ""))
     return rt.host.ai_complete(" ".join(args), provider=provider, model=opts.get("model", ""),

@@ -23,6 +23,9 @@ from phraseforge.plugins.manifest import Manifest
 GRACE_S = 2.0
 MEMORY_MB = 512
 MAX_LINE = 16 * 1024 * 1024        # one JSON-RPC message (R108)
+MAX_STREAM = 4 * 1024 * 1024       # bytes a call may stream through $/progress
+PIECE_COST = 64                    # counted per piece on top of its bytes, so 4 MB is also ~65k pieces
+MAX_CALL_FACTOR = 10               # a streaming call ends after timeout * this, however lively
 ENV_KEEP = ("SYSTEMROOT", "WINDIR", "TEMP", "TMP", "PATH", "LANG", "PATHEXT", "COMSPEC")
 
 
@@ -40,7 +43,19 @@ def command(m: Manifest, folder: Path) -> list[str]:
         return [entry]
     if getattr(sys, "frozen", False):            # the PhraseForge EXE runs Python plugins itself
         return [sys.executable, "--run-plugin", entry]
-    return [sys.executable, "-I", "-X", "utf8", entry]
+    # bytecode only from a private cache: a .pyc planted in the plugin's __pycache__ is never run (R118)
+    return [sys.executable, "-I", "-X", "utf8", "-X", f"pycache_prefix={_pycache_dir()}", entry]
+
+
+_PYCACHE: list[str] = []
+
+
+def _pycache_dir() -> str:
+    """A private folder (mkdtemp: new, this user only) made once per PhraseForge process."""
+    if not _PYCACHE:
+        import tempfile
+        _PYCACHE.append(tempfile.mkdtemp(prefix="pf-pycache-"))
+    return _PYCACHE[0]
 
 
 def _env() -> dict:
@@ -111,6 +126,7 @@ class PluginProcess:
         self._lock = threading.Lock()                      # one call at a time
         self._replies: queue.Queue = queue.Queue()
         self._next_id = 0
+        self._proxy = None                                 # netproxy.FilterProxy (FR-PLG-05)
 
     # ------------------------------------------------------------ process
     @property
@@ -119,7 +135,12 @@ class PluginProcess:
 
     def _start(self) -> None:
         flags = 0x08000000 if sys.platform == "win32" else 0       # CREATE_NO_WINDOW
-        self._proc = subprocess.Popen(command(self.manifest, self.folder), cwd=str(self.folder), env=_env(),
+        from phraseforge.plugins.netproxy import FilterProxy
+        if self._proxy is None:                             # only the manifest's hosts are reachable
+            self._proxy = FilterProxy(self.manifest.id, self.manifest.permissions.network, self._error)
+            self._proxy.start()
+        env = dict(_env(), **self._proxy.env())
+        self._proc = subprocess.Popen(command(self.manifest, self.folder), cwd=str(self.folder), env=env,
                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                       creationflags=flags)
         _close_job(self._job)
@@ -148,7 +169,7 @@ class PluginProcess:
                 except Exception:                          # noqa: BLE001 - ValueError, RecursionError, ...
                     self._error(f"not JSON: {raw[:200]!r}")
                     continue
-                if isinstance(msg, dict) and "id" in msg:
+                if isinstance(msg, dict) and ("id" in msg or msg.get("method") == "$/progress"):
                     replies.put(msg)
         except Exception as e:                             # noqa: BLE001 - the reader must not die silently
             self._error(f"reading the plugin failed: {e}")
@@ -167,7 +188,15 @@ class PluginProcess:
     def _error(self, text: str) -> None:
         self.errors.append(time.strftime("%Y-%m-%d %H:%M:%S ") + text)
 
+    @property
+    def blocked_hosts(self) -> list[str]:
+        """Connections the network filter refused (newest last)."""
+        return list(self._proxy.denied) if self._proxy else []
+
     def stop(self) -> None:
+        proxy, self._proxy = self._proxy, None
+        if proxy is not None:
+            proxy.stop()
         p, self._proc = self._proc, None
         job, self._job = self._job, None
         if p is not None and p.poll() is None:
@@ -192,15 +221,18 @@ class PluginProcess:
             raise OSError(str(e)) from None
 
     # ------------------------------------------------------------ calls
-    def call(self, method: str, params: dict | None = None, timeout: float = 5.0):
+    def call(self, method: str, params: dict | None = None, timeout: float = 5.0, on_progress=None):
+        """on_progress(text): called for each {"method": "$/progress", "params": {"id": <this
+        call's id>, "text": "..."}} the plugin sends before its answer (streamed AI replies).
+        Each piece restarts the timeout, up to timeout * MAX_CALL_FACTOR in all."""
         if not self._lock.acquire(timeout=timeout):        # another call still waits on it
             raise PluginTimeout("busy")
         try:
-            return self._call(method, params, timeout)
+            return self._call(method, params, timeout, on_progress)
         finally:
             self._lock.release()
 
-    def _call(self, method: str, params: dict | None, timeout: float):
+    def _call(self, method: str, params: dict | None, timeout: float, on_progress=None):
         if not self.running:
             self._start()
         self._next_id += 1
@@ -211,6 +243,8 @@ class PluginProcess:
             self.stop()
             raise PluginError(f"the plugin stopped: {e}") from None
         deadline = time.monotonic() + timeout
+        hard_end = time.monotonic() + timeout * MAX_CALL_FACTOR
+        streamed = 0
         while True:
             left = deadline - time.monotonic()
             if left <= 0:
@@ -225,6 +259,23 @@ class PluginProcess:
                 self.stop()
                 self._error(f"{method}: the plugin ended")
                 raise PluginError("the plugin ended")
+            if msg.get("method") == "$/progress":
+                pp = msg.get("params") if isinstance(msg.get("params"), dict) else {}
+                text = pp.get("text")
+                if pp.get("id") != rid or not isinstance(text, str) or on_progress is None:
+                    continue           # an earlier call, not text, or a call that did not ask to stream (R123)
+                streamed += len(text.encode("utf-8", "replace")) + PIECE_COST   # many tiny pieces count too (R125)
+                if streamed > MAX_STREAM:
+                    self._cancel(rid)
+                    self._error(f"{method}: streamed more than {MAX_STREAM // (1024 * 1024)} MB, stopped")
+                    raise PluginError("the plugin sent too much text")
+                try:
+                    on_progress(text)
+                except Exception:                      # noqa: BLE001 - a display error must not end the call
+                    pass
+                if text:                               # an empty piece is no progress (R123)
+                    deadline = min(time.monotonic() + timeout, hard_end)
+                continue
             if msg.get("id") != rid:
                 continue                               # a late answer to a cancelled call
             if "error" in msg:

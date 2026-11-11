@@ -19,7 +19,17 @@ def _plain(text: str, limit: int = 80) -> str:
     return t[:limit]
 
 
-def consent_text(manifest, asked: list[str], update: bool, old=None) -> str:
+def signature_text(sig) -> str:
+    if sig is None or sig.state == "unsigned":
+        return tr("Not signed: PhraseForge cannot tell who made it.")
+    if sig.state == "trusted":
+        return tr("Signed by a publisher you trust ({fp}).").replace("{fp}", sig.fingerprint)
+    if sig.state == "untrusted":
+        return tr("Signed, but by a publisher you have not marked as trusted ({fp}).").replace("{fp}", sig.fingerprint)
+    return tr("The signature is not valid: the files were changed after signing.")
+
+
+def consent_text(manifest, asked: list[str], update: bool, old=None, sig=None) -> str:
     if update and old is not None:
         head = tr('Replace "{old}" {oldv} with "{name}" {version}?').replace("{old}", _plain(old.name)) \
             .replace("{oldv}", _plain(old.version, 20))
@@ -32,7 +42,7 @@ def consent_text(manifest, asked: list[str], update: bool, old=None) -> str:
     head = head.replace("{name}", _plain(manifest.name)).replace("{version}", _plain(manifest.version, 20))
     body = ("\n\n• " + "\n• ".join(asked)) if asked else ""
     # the list is what the plugin declares: nothing enforces it yet (security R97)
-    return head + body + "\n\n" + tr(
+    return head + body + "\n\n" + signature_text(sig) + "\n" + tr(
         "A plugin is a program that runs with your Windows rights: it can read your files and reach the "
         "internet whatever it declares. Install only plugins you trust.")
 
@@ -133,9 +143,13 @@ class PluginsDialog(QDialog):
                 QMessageBox.warning(self, self.windowTitle(), tr("This is not a plugin PhraseForge can install:")
                                     + "\n" + str(e))
                 return False
+            sig = self.mgr.signature(staged)
+            if sig.state == "invalid":
+                QMessageBox.warning(self, self.windowTitle(), signature_text(sig))
+                return False
             old = self.mgr.installed().get(m.id)
             # an update always asks: anyone can make a package with the same id (R101)
-            if not self.ask(consent_text(m, asked, old is not None, old)):
+            if not self.ask(consent_text(m, asked, old is not None, old, sig)):
                 return False
             try:
                 self.mgr.install(staged, accept=True, expected=m)

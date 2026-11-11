@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import threading
 import time
 
@@ -44,6 +45,8 @@ PROVIDER_NAMES = {"openai": "OpenAI", "anthropic": "Anthropic", "openrouter": "O
                   "opencode": "OpenCode Zen", "kilocode": "Kilo Code", "deepl": "DeepL",
                   "ollama": "Ollama", "gpt4all": "GPT4All"}
 
+
+log = logging.getLogger(__name__)
 
 class AIError(RuntimeError):
     pass
@@ -157,6 +160,64 @@ def _post(url: str, headers: dict, payload: dict, timeout: float) -> dict:
     return r.json()
 
 
+MAX_STREAM_CHARS = 4 * 1024 * 1024      # a streamed reply longer than this is cut off
+
+
+def _stream_lines(url: str, headers: dict, payload: dict, timeout: float):
+    """POST and yield the response's lines as they arrive (SSE or NDJSON)."""
+    from phraseforge.net import client_kwargs
+    try:
+        with httpx.Client(timeout=httpx.Timeout(timeout, connect=min(timeout, 15)), **client_kwargs()) as c, \
+                c.stream("POST", url, headers=headers, json=payload) as r:
+            if r.status_code >= 400:
+                r.read()
+                raise AIError(f"HTTP {r.status_code}: {r.text[:300]}")
+            yield from r.iter_lines()
+    except httpx.HTTPError as e:
+        raise AIError(str(e)) from e
+
+
+def _sse_events(lines):
+    """JSON objects from Server-Sent Events "data: {...}" lines; stops at "data: [DONE]"."""
+    for line in lines:
+        if not line.startswith("data:"):
+            continue
+        body = line[5:].strip()
+        if body == "[DONE]":
+            return
+        try:
+            obj = json.loads(body)
+        except ValueError:
+            continue
+        if isinstance(obj, dict):
+            yield obj
+
+
+class _Collector:
+    """Keeps the streamed text, passes each piece on, never lets the display break the call."""
+
+    def __init__(self, on_delta):
+        self.on_delta = on_delta
+        self.parts: list[str] = []
+        self.size = 0
+
+    def add(self, piece) -> None:
+        if not isinstance(piece, str) or not piece:
+            return
+        self.size += len(piece)
+        if self.size > MAX_STREAM_CHARS:
+            raise AIError("the reply is too long")
+        self.parts.append(piece)
+        try:
+            self.on_delta(piece)
+        except Exception:      # noqa: BLE001 - a closed window must not end the answer
+            pass
+
+    @property
+    def text(self) -> str:
+        return "".join(self.parts)
+
+
 def _with_system(history: list[dict], system: str) -> list[dict]:
     return ([{"role": "system", "content": system}] if system else []) + history
 
@@ -258,9 +319,12 @@ def complete(settings: dict[str, str], prompt: str, provider: str = "", model: s
 
 def chat(settings: dict[str, str], history: list[dict], provider: str = "", model: str = "", system: str = "",
          timeout_s: float = 120, max_tokens: int = 1024, raw_system: bool = False,
-         images: list[bytes] | None = None) -> str:
+         images: list[bytes] | None = None, on_delta=None) -> str:
     """A conversation: history is [{"role": "user"|"assistant", "content": "..."}, ...]
-    (oldest first, ending with the user's turn). Returns the assistant's reply."""
+    (oldest first, ending with the user's turn). Returns the assistant's reply.
+    on_delta(text): called with each piece of the reply as it is written: plugin engines ($/progress),
+    OpenAI-compatible services, Anthropic and Ollama stream; GPT4All answers in one piece and does
+    not call it."""
     history = [{"role": m["role"], "content": m["content"]} for m in history
                if m.get("role") in ("user", "assistant")]
     if not history or history[-1]["role"] != "user":
@@ -276,6 +340,7 @@ def chat(settings: dict[str, str], history: list[dict], provider: str = "", mode
         if images:
             history = _with_images(history, images, "openai")
         return eng.generate(settings, history, {"model": model, "max_tokens": max_tokens, "timeout": timeout_s,
+                                                "on_delta": on_delta,
                                                 "system": system if raw_system else full_system(settings, system)})
     if provider not in DEFAULT_MODELS:
         raise AIError(f"unknown AI provider '{provider}'")
@@ -292,9 +357,23 @@ def chat(settings: dict[str, str], history: list[dict], provider: str = "", mode
         payload = {"model": model, "max_tokens": max_tokens, "messages": history}
         if system:
             payload["system"] = system
-        data = _post("https://api.anthropic.com/v1/messages",
-                     {"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-                     payload, timeout_s)
+        headers = {"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
+        if on_delta is not None:          # https://docs.anthropic.com/en/api/messages-streaming
+            out, usage = _Collector(on_delta), {}
+            for ev in _sse_events(_stream_lines("https://api.anthropic.com/v1/messages", headers,
+                                                dict(payload, stream=True), timeout_s)):
+                kind = ev.get("type")
+                if kind == "content_block_delta" and (ev.get("delta") or {}).get("type") == "text_delta":
+                    out.add(ev["delta"].get("text"))
+                elif kind == "message_start":
+                    usage.update(((ev.get("message") or {}).get("usage")) or {})
+                elif kind == "message_delta":
+                    usage.update(ev.get("usage") or {})
+                elif kind == "error":
+                    raise AIError(str((ev.get("error") or {}).get("message", ev))[:300])
+            _record(provider, model, {"usage": usage}, len(images or []))
+            return out.text
+        data = _post("https://api.anthropic.com/v1/messages", headers, payload, timeout_s)
         _record(provider, model, data, len(images or []))
         return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
 
@@ -310,6 +389,24 @@ def chat(settings: dict[str, str], history: list[dict], provider: str = "", mode
 
     if provider == "ollama":
         base = (settings.get("ai.ollama_url") or "http://localhost:11434").rstrip("/")
+        if on_delta is not None:          # NDJSON: one {"message": {"content": ...}} per line, then done
+            out, last = _Collector(on_delta), {}
+            for line in _stream_lines(f"{base}/api/chat", {}, {"model": model, "stream": True,
+                                                              "messages": _with_system(history, system)}, timeout_s):
+                try:
+                    msg = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                if msg.get("error"):
+                    raise AIError(str(msg["error"])[:300])
+                out.add((msg.get("message") or {}).get("content"))
+                if msg.get("done"):
+                    last = msg
+                    break
+            _record(provider, model, last, len(images or []))
+            return out.text
         data = _post(f"{base}/api/chat", {}, {"model": model, "stream": False,
                                                "messages": _with_system(history, system)}, timeout_s)
         _record(provider, model, data, len(images or []))
@@ -323,6 +420,22 @@ def chat(settings: dict[str, str], history: list[dict], provider: str = "", mode
         raise AIError(f"{name} API key is not set (Settings > AI)")
     if not model:
         raise AIError(f"Enter the model to use with {name} in Settings > AI > Model.")
+    if on_delta is not None:              # OpenAI-style SSE: choices[0].delta.content per event
+        out, usage = _Collector(on_delta), {}
+        payload = {"model": model, "messages": _with_system(history, system), "stream": True}
+        if provider == "openai":
+            payload["stream_options"] = {"include_usage": True}
+        for ev in _sse_events(_stream_lines(url, {"Authorization": f"Bearer {key}"}, payload, timeout_s)):
+            if ev.get("error"):
+                err = ev["error"]
+                raise AIError(str(err.get("message", err) if isinstance(err, dict) else err)[:300])
+            for ch in ev.get("choices") or []:
+                if isinstance(ch, dict):
+                    out.add((ch.get("delta") or {}).get("content"))
+            if isinstance(ev.get("usage"), dict):
+                usage = ev["usage"]
+        _record(provider, model, {"usage": usage}, len(images or []))
+        return out.text
     data = _post(url, {"Authorization": f"Bearer {key}"},
                  {"model": model, "messages": _with_system(history, system)}, timeout_s)
     _record(provider, model, data, len(images or []))
@@ -386,7 +499,19 @@ def ollama_models(settings: dict[str, str], timeout_s: float = 10) -> list[str]:
         raise AIError(str(e)) from e
     if r.status_code >= 400:
         raise AIError(f"HTTP {r.status_code}: {r.text[:300]}")
-    return sorted(m.get("name", "") for m in r.json().get("models", []) if m.get("name"))
+    try:
+        models = r.json().get("models", [])
+        return sorted(str(m["name"]) for m in models if isinstance(m, dict) and m.get("name"))
+    except (ValueError, AttributeError, TypeError) as e:     # not Ollama's JSON (R117)
+        raise AIError("the server did not answer like Ollama") from e
+
+
+def _count(v) -> int:
+    """A byte count from Ollama's progress line; anything else is 0 (R116)."""
+    try:
+        return max(0, int(v or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 def ollama_pull(settings: dict[str, str], model: str, progress=None, cancelled=lambda: False,
@@ -412,10 +537,12 @@ def ollama_pull(settings: dict[str, str], model: str, progress=None, cancelled=l
                     msg = json.loads(line)
                 except ValueError:
                     continue
+                if not isinstance(msg, dict):
+                    continue
                 if msg.get("error"):
                     raise AIError(str(msg["error"]))
                 if progress:
-                    progress(str(msg.get("status", "")), int(msg.get("completed") or 0), int(msg.get("total") or 0))
+                    progress(str(msg.get("status", "")), _count(msg.get("completed")), _count(msg.get("total")))
                 if msg.get("status") == "success":
                     return
     except httpx.HTTPError as e:
@@ -440,9 +567,150 @@ def deepl_code(lang: str) -> str:
     return DEEPL_LANGS.get(lang.lower(), lang.upper())
 
 
-def deepl_translate(settings: dict[str, str], text: str, to: str, src: str = "", timeout_s: float = 60) -> str:
+GLOSSARY_PREFIX = "PhraseForge: "
+
+
+def _deepl_call(method: str, url: str, key: str, payload: dict | None = None, timeout: float = 30) -> dict:
+    from phraseforge.net import client_kwargs
+    try:
+        with httpx.Client(timeout=timeout, **client_kwargs()) as c:
+            r = c.request(method, url, headers={"Authorization": f"DeepL-Auth-Key {key}"}, json=payload)
+    except httpx.HTTPError as e:
+        raise AIError(str(e)) from e
+    if r.status_code >= 400:
+        raise AIError(f"DeepL HTTP {r.status_code}: {r.text[:300]}")
+    if not r.content:
+        return {}
+    try:
+        data = r.json()
+    except ValueError as e:                  # a proxy or portal page, not DeepL (R128)
+        raise AIError("DeepL did not answer with JSON (a proxy or sign-in page?)") from e
+    if not isinstance(data, dict):
+        raise AIError(f"unexpected response: {str(data)[:200]}")
+    return data
+
+
+# Glossaries already on DeepL, and uploads DeepL refused, in this run of PhraseForge:
+# (key hash, server name) -> (glossary_id, time) / time. A {#loop} of translations then makes
+# no glossary requests at all, and a glossary DeepL rejects is not sent again (R126, R129).
+_GLOSSARY_IDS: dict = {}
+_GLOSSARY_REFUSED: dict = {}
+GLOSSARY_CACHE_S = 600
+
+
+def glossary_entries(text: str) -> list[tuple[str, str]]:
+    """Word=Translation lines of a glossary (DeepL takes each source term once; no tabs)."""
+    seen, out = set(), []
+    for line in (text or "").splitlines():
+        a, sep, b = line.partition("=")
+        a, b = a.strip(), b.strip()
+        if sep and a and b and "\t" not in a + b and a not in seen:
+            seen.add(a)
+            out.append((a, b))
+    return out
+
+
+def _deepl_glossary_for(settings: dict[str, str], to: str, src: str, name: str) -> tuple[str, str] | None:
+    """(glossary name, source language) to use for this translation, or None. A glossary is sent
+    to DeepL only when its languages are set (Settings > Glossaries) and match, or when named."""
+    try:
+        gl = json.loads(settings.get("translation.glossaries") or "{}")
+    except ValueError:
+        return None
+    if not isinstance(gl, dict):
+        return None
+    langs = glossary_langs(settings)
+    target = deepl_code(to).split("-")[0].lower()
+    for n in ([name] if name else list(gl)):
+        if n not in gl or n not in langs or not glossary_entries(str(gl[n])):
+            continue
+        g_src, g_to = (deepl_code(x).split("-")[0].lower() for x in langs[n])
+        if g_to == target and (not src or deepl_code(src).split("-")[0].lower() == g_src):
+            return n, g_src
+    return None
+
+
+def _forget_glossary(gid: str) -> bool:
+    """Drop a cached glossary id (the translation using it failed); True if one was cached."""
+    gone = [k for k, v in _GLOSSARY_IDS.items() if v[0] == gid]
+    for k in gone:
+        del _GLOSSARY_IDS[k]
+    return bool(gone)
+
+
+def sync_deepl_glossary(settings: dict[str, str], name: str, timeout_s: float = 30) -> str:
+    """Make sure DeepL has this glossary as written in Settings; returns its glossary_id.
+    DeepL glossaries cannot be edited, so a changed glossary is uploaded again and the old
+    copy deleted. The server copy is named "PhraseForge: <name> #<hash>" so no local state is kept."""
+    import hashlib
+    key = (settings.get("ai.deepl_key") or "").strip()
+    if not key:
+        raise AIError("DeepL API key is not set (Settings > Language Translation)")
+    base = f"https://{'api-free.deepl.com' if key.endswith(':fx') else 'api.deepl.com'}/v2/glossaries"
+    gl = json.loads(settings.get("translation.glossaries") or "{}")
+    langs = glossary_langs(settings)
+    if name not in gl or name not in langs:
+        raise AIError(f"glossary '{name}' needs its source and target languages set (Settings > Glossaries)")
+    src, to = (deepl_code(x).split("-")[0].lower() for x in langs[name])
+    entries = glossary_entries(str(gl[name]))
+    if not entries:
+        raise AIError(f"glossary '{name}' has no Word=Translation lines")
+    tsv = "\n".join(f"{a}\t{b}" for a, b in entries)
+    digest = hashlib.sha256(f"{src}|{to}|{tsv}".encode()).hexdigest()[:10]
+    wanted = f"{GLOSSARY_PREFIX}{name} #{digest}"
+    import re
+    import time as _time
+    slot = (hashlib.sha256(key.encode()).hexdigest()[:16], wanted)
+    now = _time.monotonic()
+    hit = _GLOSSARY_IDS.get(slot)
+    if hit and now - hit[1] < GLOSSARY_CACHE_S:
+        return hit[0]
+    if now - _GLOSSARY_REFUSED.get(slot, -1e9) < GLOSSARY_CACHE_S:
+        raise AIError(f"DeepL refused glossary '{name}' (fix its lines in Settings > Glossaries)")
+    own = re.compile(re.escape(f"{GLOSSARY_PREFIX}{name} #") + r"[0-9a-f]{10}")   # exactly this glossary (R126)
+    listed = _deepl_call("GET", base, key, timeout=timeout_s).get("glossaries")
+    if not isinstance(listed, list):
+        raise AIError("unexpected response from DeepL's glossary list")
+    found, preparing = "", False
+    for g in listed:
+        if not isinstance(g, dict):
+            continue
+        gname = str(g.get("name", ""))
+        if gname == wanted:                               # never delete the copy we want (R127)
+            if g.get("ready", True):
+                found = found or str(g.get("glossary_id", ""))
+            else:
+                preparing = True
+        elif own.fullmatch(gname):
+            try:                                          # an older copy of this glossary
+                _deepl_call("DELETE", f"{base}/{g.get('glossary_id', '')}", key, timeout=timeout_s)
+            except AIError:
+                pass
+    if found:
+        _GLOSSARY_IDS[slot] = (found, now)
+        return found
+    if preparing:
+        raise AIError(f"DeepL is still preparing glossary '{name}'; try again in a moment")
+    try:
+        made = _deepl_call("POST", base, key, {"name": wanted, "source_lang": src, "target_lang": to,
+                                              "entries": tsv, "entries_format": "tsv"}, timeout_s)
+    except AIError as e:
+        if any(f"HTTP {c}" in str(e) for c in (400, 413, 422)):   # the glossary itself was refused (R129)
+            _GLOSSARY_REFUSED[slot] = now
+            log.warning("DeepL refused glossary %r", name)
+        raise
+    gid = str(made.get("glossary_id", ""))
+    if not gid:
+        raise AIError(f"unexpected response: {str(made)[:200]}")
+    _GLOSSARY_IDS[slot] = (gid, now)
+    return gid
+
+
+def deepl_translate(settings: dict[str, str], text: str, to: str, src: str = "", timeout_s: float = 60,
+                    glossary: str = "") -> str:
     """Translate with the DeepL API (Free keys end in ':fx'). Ignored words are wrapped in
-    <keep> tags that DeepL leaves untranslated."""
+    <keep> tags that DeepL leaves untranslated. A matching glossary from Settings > Glossaries
+    is uploaded to DeepL (sync_deepl_glossary) and used; DeepL takes one glossary per request."""
     key = (settings.get("ai.deepl_key") or "").strip()
     if not key:
         raise AIError("DeepL API key is not set (Settings > Language Translation)")
@@ -459,7 +727,25 @@ def deepl_translate(settings: dict[str, str], text: str, to: str, src: str = "",
     payload["text"] = [body]
     if src:
         payload["source_lang"] = deepl_code(src).split("-")[0]
-    data = _post(f"https://{host}/v2/translate", {"Authorization": f"DeepL-Auth-Key {key}"}, payload, timeout_s)
+    use = _deepl_glossary_for(settings, to, src, glossary)
+    if use is not None:
+        try:
+            payload["glossary_id"] = sync_deepl_glossary(settings, use[0], timeout_s)
+            payload["source_lang"] = use[1].upper()       # DeepL needs the source with a glossary
+        except AIError:
+            if glossary:                                  # asked for by name: say why it failed
+                raise
+    elif glossary:
+        raise AIError(f"glossary '{glossary}' does not fit this translation: set its languages in "
+                      "Settings > Glossaries")
+    try:
+        data = _post(f"https://{host}/v2/translate", {"Authorization": f"DeepL-Auth-Key {key}"}, payload, timeout_s)
+    except AIError:
+        gid = payload.get("glossary_id")
+        if not gid or not _forget_glossary(gid):
+            raise
+        payload["glossary_id"] = sync_deepl_glossary(settings, use[0], timeout_s)   # deleted on DeepL's site?
+        data = _post(f"https://{host}/v2/translate", {"Authorization": f"DeepL-Auth-Key {key}"}, payload, timeout_s)
     try:
         out = data["translations"][0]["text"]
     except (KeyError, IndexError) as e:

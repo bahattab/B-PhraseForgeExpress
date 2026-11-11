@@ -2122,3 +2122,396 @@ def test_only_images_are_sent_to_any_ai_engine():
     from phraseforge import ai
     with pytest.raises(ai.AIError):
         ai._with_images([{"role": "user", "content": "x"}], [b"-----BEGIN PRIVATE KEY-----"], "ollama")
+
+
+# ---------------------------------------------------------------- 0.6.14: review of #55 (R114–R117)
+def _AIHost():
+    from tests.fakehost import FakeHost
+
+    class H(FakeHost):
+        made = 0
+
+        def __init__(self):
+            super().__init__()
+            self.sent = []
+
+        def ai_image(self, prompt, **_k):
+            self.made += 1
+            return __file__
+
+        def ai_vision(self, prompt, images, **_k):
+            self.sent.append(len(images))
+            return "ok"
+    return H()
+
+
+def _expand(host, content, allow=True):
+    from phraseforge.macros.engine import ExpansionContext, MacroEngine
+    return MacroEngine(host).expand_to_text(content, ExpansionContext(allow_privileged=allow))
+
+
+def test_unapproved_phrase_cannot_make_paid_images():
+    """R114: {#loop 1000}{#aiimage}{#endloop} in an imported phrase made 1000 billed images."""
+    host = _AIHost()
+    out = _expand(host, "{#loop 1000}{#aiimage -prompt cat}{#endloop}", allow=False)
+    assert host.made == 0 and "blocked" in out
+    assert security.scan_privileged("{#aiimage -prompt cat}")
+
+
+def test_approved_phrase_makes_few_images():
+    """R114: even an approved phrase stops after a few images."""
+    from phraseforge.macros.commands import MAX_AIIMAGE_PER_EXPANSION
+    host = _AIHost()
+    _expand(host, "{#loop 50}{#aiimage -prompt cat}{#endloop}")
+    assert host.made == MAX_AIIMAGE_PER_EXPANSION
+
+
+def test_ai_images_are_limited_in_number_and_size(tmp_path):
+    """R115: 40 parts of 5 MB each loaded 200 MB for one {#ai}."""
+    f = tmp_path / "a.png"
+    f.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * (5 * 1024 * 1024))
+    host = _AIHost()
+    out = _expand(host, '{#ai x -provider openai -image "%s"}' % "|".join([f"file:{f}"] * 40))
+    assert host.sent == [] and "at most" in out
+    out = _expand(host, '{#ai x -provider openai -image "%s"}' % "|".join([f"file:{f}"] * 5))
+    assert host.sent == [] and "20 MB" in out
+
+
+def test_ollama_pull_survives_bad_numbers(monkeypatch):
+    """R116: a progress line with "completed": "x" ended the download thread with ValueError."""
+    import json
+    import httpx
+    from phraseforge import ai
+
+    class R:
+        status_code = 200
+        def iter_lines(self):
+            yield "5"
+            yield json.dumps({"status": "pulling", "completed": "x", "total": None})
+            yield json.dumps({"status": "success"})
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+
+    class C:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def stream(self, *a, **k): return R()
+    monkeypatch.setattr(httpx, "Client", C)
+    seen = []
+    ai.ollama_pull({}, "m", lambda st, d, t: seen.append((st, d, t)))
+    assert seen[0] == ("pulling", 0, 0)
+
+
+def test_ollama_models_rejects_non_json(monkeypatch):
+    """R117: a server that is not Ollama raised ValueError out of the Settings button."""
+    import httpx
+    from unittest import mock
+    from phraseforge import ai
+
+    class C:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def get(self, *a, **k):
+            r = mock.Mock(status_code=200)
+            r.json.side_effect = ValueError("not json")
+            return r
+    monkeypatch.setattr(httpx, "Client", C)
+    with pytest.raises(ai.AIError):
+        ai.ollama_models({})
+
+
+def test_capitalised_image_option_is_scanned():
+    """{#ai -Image file:\\\\host\\x.png}: the run-time check blocked it, but nobody was asked."""
+    assert security.scan_privileged(r"{#ai x -Image file:\\host\s\a.png}")
+
+
+# ---------------------------------------------------------------- 0.6.14: review of #59, #61, #62 (R118–R129)
+from pathlib import Path  # noqa: E402
+_HELLO = Path(__file__).resolve().parents[1] / "examples" / "plugins" / "hello"
+
+
+def _hello_copy(tmp_path, name="hello"):
+    import shutil
+    d = tmp_path / name
+    shutil.copytree(_HELLO, d, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    return d
+
+
+def _require_signatures(monkeypatch, keys=frozenset()):
+    import dataclasses
+    from phraseforge import policy
+    pol = dataclasses.replace(policy.NO_POLICY, source="policy.toml", plugins_allowed=frozenset({"*"}),
+                              plugins_require_signature=True, plugins_trusted_keys=frozenset(keys))
+    monkeypatch.setattr(policy, "current", lambda: pol)
+
+
+def test_required_signature_also_stops_installed_and_changed_plugins(tmp_path, monkeypatch):
+    """R118: an unsigned plugin installed before plugins_require_signature kept running; so did
+    a signed one whose files were changed after it was installed."""
+    from phraseforge.plugins import manager as pm, signing
+    st = Store(":memory:")
+    mgr = pm.PluginManager(st, root=tmp_path / "plugins")
+    mgr.install(_hello_copy(tmp_path), accept=True)                    # unsigned, no policy yet
+    assert mgr.is_enabled("hello")
+    priv, pub = signing.new_key()
+    _require_signatures(monkeypatch, {pub})
+    assert not mgr.is_enabled("hello")
+    signed = _hello_copy(tmp_path, "signed")
+    signing.sign_folder(signed, priv)
+    mgr.install(signed, accept=True)
+    assert mgr.is_enabled("hello")
+    entry = next(p for p in (tmp_path / "plugins" / "hello").glob("*.py"))
+    entry.write_text(entry.read_text() + "\n# changed after install\n")
+    assert not mgr.is_enabled("hello")
+
+
+def test_planted_bytecode_does_not_replace_signed_source(tmp_path):
+    """R118: .pyc files are not signed, and Python ran a __pycache__ copy instead of the signed .py."""
+    import importlib.util
+    import py_compile
+    import struct
+    import subprocess
+    from phraseforge.plugins import host, manifest as mf
+    d = tmp_path / "p"
+    d.mkdir()
+    (d / "mod.py").write_text("print('SIGNED')\n")
+    (d / "main.py").write_text("import os, sys\nsys.path.insert(0, os.path.dirname(__file__))\nimport mod\n")
+    evil = tmp_path / "evil.py"
+    evil.write_text("print('PLANTED')\n")
+    target = importlib.util.cache_from_source(str(d / "mod.py"))
+    py_compile.compile(str(evil), cfile=target)
+    b = bytearray(open(target, "rb").read())
+    st = os.stat(d / "mod.py")
+    b[8:12], b[12:16] = struct.pack("<I", int(st.st_mtime) & 0xFFFFFFFF), struct.pack("<I", st.st_size)
+    open(target, "wb").write(bytes(b))
+    m = mf.parse('id = "p"\nname = "P"\nversion = "1.0.0"\napi_version = "1.0"\nentry = "main.py"\n'
+                 'runtime = "python-subprocess"\nkinds = ["macro"]\nmacros = ["x"]\n')
+    out = subprocess.run(host.command(m, d), capture_output=True, text=True, timeout=30).stdout
+    assert out.strip() == "SIGNED"
+
+
+def test_deeply_nested_signature_is_just_invalid(tmp_path):
+    """R119: plugin.sig of 200000 '[' raised RecursionError out of the install dialog."""
+    from phraseforge.plugins import install as inst
+    d = _hello_copy(tmp_path)
+    (d / "plugin.sig").write_text("[" * 200000)
+    assert inst.signature(d).state == "invalid"
+
+
+def _connect(proxy, line: bytes) -> bytes:
+    import socket
+    s = socket.create_connection(("127.0.0.1", proxy.port), timeout=5)
+    s.sendall(line)
+    out = b""
+    while b"\r\n\r\n" not in out:
+        chunk = s.recv(1024)
+        if not chunk:
+            break
+        out += chunk
+    s.close()
+    return out
+
+
+def test_other_programs_cannot_use_the_plugin_proxy():
+    """R120: any local process could tunnel through it, fill the plugin's error list and its slots."""
+    from phraseforge.plugins.netproxy import FilterProxy
+    errors = []
+    p = FilterProxy("demo", ["api.example.com"], errors.append)
+    p.start()
+    try:
+        assert _connect(p, b"CONNECT api.example.com:443 HTTP/1.1\r\n\r\n").startswith(b"HTTP/1.1 407")
+        assert _connect(p, b"CONNECT anything.invalid:443 HTTP/1.1\r\n\r\n").startswith(b"HTTP/1.1 407")
+        assert errors == [] and list(p.denied) == []
+        assert p.token in p.env()["HTTPS_PROXY"]
+    finally:
+        p.stop()
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "169.254.169.254", "localhost", "10.0.0.5", "2130706433",
+                                  "printer.local"])
+def test_local_addresses_are_not_network_permissions(host):
+    """R121: network = ["127.0.0.1"] / metadata / localhost were accepted."""
+    from phraseforge.plugins import manifest as mf
+    with pytest.raises(mf.ManifestError):
+        mf.parse('id = "n"\nname = "N"\nversion = "1.0.0"\napi_version = "1.0"\nentry = "p.py"\n'
+                 'runtime = "python-subprocess"\nkinds = ["macro"]\nmacros = ["x"]\n'
+                 f'[permissions]\nnetwork = ["{host}"]\n')
+
+
+def test_allowed_name_that_points_inside_is_refused():
+    """R121: an allowed DNS name resolving to this PC was tunnelled."""
+    import base64
+    from phraseforge.plugins.netproxy import FilterProxy
+    p = FilterProxy("demo", ["localhost"])           # as if a public name resolved to 127.0.0.1
+    p.start()
+    try:
+        auth = base64.b64encode(f"pf:{p.token}".encode())
+        reply = _connect(p, b"CONNECT localhost:443 HTTP/1.1\r\nProxy-Authorization: Basic " + auth + b"\r\n\r\n")
+        assert reply.startswith(b"HTTP/1.1 403")
+    finally:
+        p.stop()
+
+
+def test_no_older_signed_version_under_required_signatures(tmp_path, monkeypatch):
+    """R122: an older signed build installed over a newer one."""
+    import re
+    from phraseforge.plugins import manager as pm, signing
+    priv, pub = signing.new_key()
+    old = _hello_copy(tmp_path, "old")
+    signing.sign_folder(old, priv)
+    new = _hello_copy(tmp_path, "new")
+    t = (new / "plugin.toml").read_text()
+    (new / "plugin.toml").write_text(re.sub(r'(?m)^version\s*=\s*"[^"]*"', 'version = "9.9.9"', t))
+    signing.sign_folder(new, priv)
+    _require_signatures(monkeypatch, {pub})
+    mgr = pm.PluginManager(Store(":memory:"), root=tmp_path / "plugins")
+    mgr.install(new, accept=True)
+    with pytest.raises(PermissionError, match="older"):
+        mgr.install(old, accept=True)
+
+
+def _streamer(tmp_path, body: str):
+    from phraseforge.plugins import manifest as mf
+    from phraseforge.plugins.host import PluginProcess
+    (tmp_path / "plugin.py").write_text(
+        "import json, sys, time\n"
+        "def send(o):\n    sys.stdout.write(json.dumps(o) + '\\n'); sys.stdout.flush()\n"
+        "for line in sys.stdin:\n    m = json.loads(line)\n    if 'id' not in m: continue\n" + body)
+    m = mf.parse('id = "streamer"\nname = "S"\nversion = "1.0.0"\napi_version = "1.0"\nentry = "plugin.py"\n'
+                 'runtime = "python-subprocess"\nkinds = ["macro"]\nmacros = ["x"]\n')
+    return PluginProcess(m, tmp_path)
+
+
+def test_progress_does_not_keep_a_plain_call_alive(tmp_path):
+    """R123: empty $/progress pieces kept a 1 s macro call alive for 9 s."""
+    import time
+    from phraseforge.plugins.host import PluginTimeout
+    p = _streamer(tmp_path, "    for _ in range(18):\n        time.sleep(0.5)\n"
+                            "        send({'jsonrpc': '2.0', 'method': '$/progress', 'params': {'id': m['id'], 'text': ''}})\n"
+                            "    send({'jsonrpc': '2.0', 'id': m['id'], 'result': {'text': 'late'}})\n")
+    try:
+        t = time.monotonic()
+        with pytest.raises(PluginTimeout):
+            p.call("macro", {"name": "x"}, timeout=1.0)
+        assert time.monotonic() - t < 6                   # 1 s + the 2 s cancel grace; it was 9 s
+        t = time.monotonic()
+        with pytest.raises(PluginTimeout):                # empty pieces are no progress either
+            p.call("macro", {"name": "x"}, timeout=1.0, on_progress=lambda _t: None)
+        assert time.monotonic() - t < 6
+    finally:
+        p.stop()
+
+
+def test_streamed_preview_is_plain_text():
+    """R124: the Prompt Optimizer's live line showed streamed HTML (local images, links)."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from phraseforge.ui.prompt_optimizer import PromptOptimizerWindow, _plain_line
+    w = PromptOptimizerWindow(Store(":memory:"))
+    assert w.status.textFormat() == Qt.PlainText
+    assert _plain_line("a\u202eb\x07c") == "a b c"
+
+
+def test_many_tiny_pieces_hit_the_stream_limit(tmp_path):
+    """R125: 4 million one-character pieces stayed under the 4 MB character limit (290 MB here)."""
+    from phraseforge.plugins.host import PluginError
+    p = _streamer(tmp_path, "    msg = json.dumps({'jsonrpc': '2.0', 'method': '$/progress', 'params': {'id': m['id'], 'text': 'x'}})\n"
+                            "    for _ in range(200000): sys.stdout.write(msg + '\\n')\n"
+                            "    send({'jsonrpc': '2.0', 'id': m['id'], 'result': {'text': 'ok'}})\n")
+    got = []
+    try:
+        with pytest.raises(PluginError, match="too much"):
+            p.call("generate", {}, timeout=30, on_progress=got.append)
+        assert len(got) < 100000
+    finally:
+        p.stop()
+
+
+class _Glossaries:
+    """A DeepL account's glossary API (mock)."""
+    def __init__(self, ready=True, get_body=None, post_status=201):
+        self.g, self.calls, self.n = {}, [], 0
+        self.ready, self.get_body, self.post_status = ready, get_body, post_status
+
+    def handler(self, r):
+        import json
+        import httpx
+        self.calls.append(r.method)
+        if r.method == "GET":
+            if self.get_body is not None:
+                return httpx.Response(200, content=self.get_body)
+            return httpx.Response(200, json={"glossaries": [dict(v, ready=self.ready) for v in self.g.values()]})
+        if r.method == "POST":
+            if self.post_status >= 400:
+                return httpx.Response(self.post_status, json={"message": "bad entries"})
+            self.n += 1
+            gid = f"g{self.n}"
+            self.g[gid] = {"glossary_id": gid, **json.loads(r.content)}
+            return httpx.Response(201, json={"glossary_id": gid})
+        self.g.pop(r.url.path.rsplit("/", 1)[1], None)
+        return httpx.Response(204)
+
+
+@pytest.fixture
+def deepl_account(monkeypatch):
+    import httpx
+    from phraseforge import ai
+    real = httpx.Client
+    monkeypatch.setattr(ai, "_GLOSSARY_IDS", {}, raising=False)        # the session cache (R126)
+    monkeypatch.setattr(ai, "_GLOSSARY_REFUSED", {}, raising=False)
+    monkeypatch.setattr(ai, "_post", lambda url, h, p, t: {"translations": [{"text": "ok"}]})
+
+    def use(fake):
+        monkeypatch.setattr(ai.httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(fake.handler),
+                                                                  timeout=kw.get("timeout")))
+        return fake
+    return use
+
+
+def _deepl_settings(gl, langs):
+    import json
+    return {"ai.deepl_key": "k:fx", "translation.glossaries": json.dumps(gl),
+            "translation.glossary_langs": json.dumps(langs), "translation.provider": "deepl"}
+
+
+def test_one_glossary_never_deletes_another(deepl_account):
+    """R126: syncing "A" deleted "A #b"'s copy; an unapproved {#loop 200} made 800 glossary requests."""
+    from phraseforge.macros.engine import ExpansionContext, MacroEngine
+    from tests.fakehost import FakeHost
+    fake = deepl_account(_Glossaries())
+    st = _deepl_settings({"A": "x=y", "A #b": "p=q"}, {"A": ["English", "German"], "A #b": ["English", "German"]})
+    MacroEngine(FakeHost(st)).expand_to_text(
+        '{#loop 200}{#translate hi -to German -glossary A}{#translate hi -to German -glossary "A #b"}{#endloop}',
+        ExpansionContext(allow_privileged=False))
+    assert fake.calls.count("DELETE") == 0 and fake.calls.count("POST") == 2 and len(fake.calls) <= 4
+
+
+def test_glossary_being_prepared_is_not_deleted(deepl_account):
+    """R127: a copy DeepL had not finished was deleted and uploaded again on every translation."""
+    from phraseforge import ai
+    fake = deepl_account(_Glossaries(ready=False))
+    st = _deepl_settings({"A": "x=y"}, {"A": ["English", "German"]})
+    for _ in range(3):
+        assert ai.deepl_translate(st, "hi", "German") == "ok"
+    assert "DELETE" not in fake.calls and fake.calls.count("POST") == 1
+
+
+@pytest.mark.parametrize("body", [b"<html>proxy login</html>", b'{"glossaries": null}', b"[]"])
+def test_odd_glossary_answers_do_not_lose_the_translation(deepl_account, body):
+    """R128: a non-JSON or odd answer raised JSONDecodeError/TypeError past the non-fatal handler."""
+    from phraseforge import ai
+    deepl_account(_Glossaries(get_body=body))
+    assert ai.deepl_translate(_deepl_settings({"A": "x=y"}, {"A": ["English", "German"]}), "hi", "German") == "ok"
+
+
+def test_refused_glossary_is_not_sent_again(deepl_account):
+    """R129: a glossary DeepL refused was uploaded again before every translation."""
+    from phraseforge import ai
+    fake = deepl_account(_Glossaries(post_status=400))
+    st = _deepl_settings({"A": "x\x07=y"}, {"A": ["English", "German"]})
+    for _ in range(5):
+        assert ai.deepl_translate(st, "hi", "German") == "ok"
+    assert fake.calls.count("POST") == 1
