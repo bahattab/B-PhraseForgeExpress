@@ -868,6 +868,13 @@ Noted while recording #32 in v6, fixed in 0.6.6 (#30 and #32 have not been revie
 - **R127 (Low, #59):** a copy DeepL had not finished preparing was deleted and uploaded again on each translation. Fixed: never deleted; the translation goes ahead without it meanwhile.
 - **R128 (Low, #59):** a non-JSON or odd DeepL answer (a proxy page, `"glossaries": null`) raised a non-AIError that failed the whole translation. Fixed: reported as AIError, so an automatic glossary is skipped.
 - **R129 (Low, #59):** a glossary DeepL refused (HTTP 400/413/422) was uploaded again before every translation. Fixed: not sent again for 10 minutes, and logged.
+- **Review of #65 (0.6.15).** One reviewer read the sandbox before it was merged; the two job-object regressions were reproduced by simulating Windows (the integrity-level and job behaviour itself is code reading only on this test machine).
+- **R135 (Medium, #65):** with `plugins.sandbox = 0` the R110 check was gone: a plugin whose job object failed ran with no memory cap, child limit or kill-on-close. Fixed: refused again, as before.
+- **R136 (Low, #65):** each restart of a plugin that had ended leaked its job handle (R110 again), and `bufsize=0` came back (R108). Fixed.
+- **R137 (Low, #65, code reading):** `ResumeThread` had no return type, so a failure (0xFFFFFFFF) read as -1 and was never seen; the plugin hung until its timeout. Fixed.
+- **R138 (Low, #65):** in the EXE, a sandboxed plugin's bytecode cache was made inside the shared Low-writable temp folder, so one plugin could plant a `.pyc` that runs as another (R118 between plugins). Fixed: PhraseForge makes the folder at its own integrity level and passes it on.
+- **R139 (Low, #65):** the consent text said a plugin "cannot change your files" also where there are no integrity labels (FAT/exFAT portable sticks), and the sandbox created `AppData\LocalLow\PhraseForge` in portable mode. Fixed: the text says NTFS; portable mode uses `PhraseForgeData\PluginTemp`.
+- **R140 (Info, #65):** the docs did not say that a sandboxed plugin can read the database and decrypt API keys and other plugins' secrets (DPAPI has no integrity check). Documented in the consent text and `docs/plugins.md`; FR-PLG-04 stays open.
 
 Still open: Linux single-instance socket squatting by the same user; with a proxy, `{#http}` relies on the name check only.
 

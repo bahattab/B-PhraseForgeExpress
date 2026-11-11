@@ -27,7 +27,11 @@ class SandboxError(OSError):
 
 def low_temp_dir() -> Path:
     """A temp folder a low-integrity process may write: %USERPROFILE%\\AppData\\LocalLow\\PhraseForge\\Temp."""
-    base = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "AppData" / "LocalLow" / "PhraseForge" / "Temp"
+    from phraseforge import paths
+    if paths.is_portable():                              # leave no trace on the PC (portable mode)
+        base = paths.data_dir() / "PluginTemp"
+    else:
+        base = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "AppData" / "LocalLow" / "PhraseForge" / "Temp"
     base.mkdir(parents=True, exist_ok=True)
     return base
 
@@ -102,6 +106,7 @@ def launch(args: list[str], cwd: str, env: dict[str, str], job_factory) -> tuple
 
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
     adv = ctypes.WinDLL("advapi32", use_last_error=True)
+    k32.ResumeThread.restype = wintypes.DWORD            # its failure value is 0xFFFFFFFF, not -1
 
     def fail(what):
         raise SandboxError(f"{what} failed (error {ctypes.get_last_error()})")

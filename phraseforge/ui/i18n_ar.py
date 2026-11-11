@@ -1668,6 +1668,6 @@ AR_EXTRA = {
     "The name is different: make sure it comes from the same author.": "الاسم مختلف: تأكّد أنها من المؤلف نفسه.",
     "It asks for more than before:": "تطلب أكثر من قبل:",
     "Install \"{name}\" {version}? It says it needs:": "هل تثبّت «{name}» {version}؟ تقول إنها تحتاج إلى:",
-    "A plugin is a program. PhraseForge runs it with limited Windows rights: it cannot change your files or settings, but it can still read your files and may reach the internet on its own. Install only plugins you trust.": "الإضافة برنامج يشغّله PhraseForge بصلاحيات محدودة في Windows: لا تستطيع تغيير ملفاتك أو إعداداتك، لكنها تستطيع قراءة ملفاتك وقد تصل إلى الإنترنت بنفسها. لا تثبّت إلا إضافات تثق بها.",
+    "A plugin is a program. PhraseForge runs it with limited Windows rights: on NTFS drives it cannot change your files or settings, but it can still read your files (including the API keys PhraseForge keeps) and may reach the internet on its own. Install only plugins you trust.": "الإضافة برنامج يشغّله PhraseForge بصلاحيات محدودة في Windows: على أقراص NTFS لا تستطيع تغيير ملفاتك أو إعداداتك، لكنها تستطيع قراءة ملفاتك (ومنها مفاتيح API التي يحفظها PhraseForge) وقد تتصل بالإنترنت بنفسها. لا تثبّت إلا إضافات تثق بها.",
     "A plugin is a program that runs with your Windows rights: it can read your files and reach the internet whatever it declares. Install only plugins you trust.": "الإضافة برنامج يعمل بصلاحياتك في Windows: تستطيع قراءة ملفاتك والوصول إلى الإنترنت مهما صرّحت. لا تثبّت إلا إضافات تثق بها.",
 }
