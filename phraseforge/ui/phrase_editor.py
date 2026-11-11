@@ -185,28 +185,6 @@ def first_strong_rtl(text: str) -> bool:
     return False
 
 
-def local_resource(name) -> bool:
-    """True for a data: URL or a file on this PC; False for UNC, web and other remote names."""
-    from urllib.parse import unquote
-    from PySide6.QtCore import QUrl
-    raw = name.toString() if isinstance(name, QUrl) else str(name or "")
-    norm = unquote(raw).strip().replace("\\", "/")
-    if norm.lower().startswith("data:"):
-        return True
-    if norm.lower().startswith("file:"):
-        norm = norm[5:]
-        if norm.startswith("///"):          # file:///C:/x.png
-            norm = norm[3:]
-            if norm.startswith("/"):        # file:////host/share
-                return False
-        elif norm.startswith("//"):         # file://host/share
-            return False
-    if norm.startswith("/") and norm[1:2] == "/":
-        return False                        # //host/share or \\host\share
-    scheme = QUrl(norm).scheme().lower()
-    return scheme == "" or len(scheme) == 1  # a relative path, or C:/pictures/x.png
-
-
 class ChipTextEdit(QTextEdit):
     focus_changed = Signal(bool)
     chip_activated = Signal(int)          # document position of a double-clicked chip
@@ -229,14 +207,6 @@ class ChipTextEdit(QTextEdit):
         self.document().setDefaultTextOption(opt)
 
     # -------------------------------------------------- right-to-left writing
-
-    def loadResource(self, kind, name):
-        """Images and backgrounds only from this PC or data: URLs. A network or web address in
-        a phrase (synced, imported or inserted from a file) would make Windows connect to that
-        server and send the user's login (R145, as R83 for tooltips)."""
-        if not local_resource(name):
-            return None
-        return super().loadResource(kind, name)
 
     def set_paragraph_direction(self, rtl: bool) -> None:
         """Make the selected paragraphs right-to-left (Arabic) or left-to-right, like
@@ -297,7 +267,8 @@ class ChipTextEdit(QTextEdit):
         doc.blockSignals(True)
         try:
             if html:
-                doc.setHtml(text or "")
+                from phraseforge.ui.editor_files import remote_free_html
+                doc.setHtml(remote_free_html(text or ""))   # no network images (R145)
                 self._chipify_document()
             else:
                 doc.setPlainText("")
@@ -457,6 +428,9 @@ class ChipTextEdit(QTextEdit):
     def insertFromMimeData(self, source):
         if source.hasText() and not (self.rich and source.hasHtml()):
             self.insert_content(source.text())
+        elif self.rich and source.hasHtml():
+            from phraseforge.ui.editor_files import remote_free_html
+            self.textCursor().insertHtml(remote_free_html(source.html()))   # no network images (R145)
         else:
             super().insertFromMimeData(source)
 

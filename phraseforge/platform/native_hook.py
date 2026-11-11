@@ -324,7 +324,10 @@ class NativeMouseHook:
                     self._lib.pf_mouse_stop()
                 except Exception:              # noqa: BLE001
                     pass
-            dropped = self._lib.pf_mouse_dropped()
+            try:                               # the cleanup must never raise in the reader thread
+                dropped = int(getattr(self._lib, "pf_mouse_dropped", lambda: 0)() or 0)
+            except Exception:                  # noqa: BLE001
+                dropped = 0
             if dropped:
                 log.warning("native mouse hook dropped %s clicks (the reader was too slow)", dropped)
 

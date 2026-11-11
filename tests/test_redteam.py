@@ -2671,8 +2671,6 @@ def test_macro_split_by_markdown_requarantines(qapp, tmp_path):
 def test_inserted_file_loads_no_remote_resources(qapp, tmp_path):
     """R145: an image whose title says "src='data:image/'" and a table-cell background kept
     a UNC path, which Windows opens with the user's login."""
-    from PySide6.QtCore import QUrl
-    from PySide6.QtGui import QTextDocument
     from phraseforge.ui import editor_files as ef
     from phraseforge.ui.phrase_editor import ChipTextEdit
     for md in ('![x](//evilhost/share/a.png "src=\'data:image/png\'")\n',
@@ -2682,10 +2680,15 @@ def test_inserted_file_loads_no_remote_resources(qapp, tmp_path):
         html, _ = ef.read_for_editor(p)
         assert "evilhost" not in html, md
     assert ef.clean_html('<img src="data:image/png;base64,AA" alt="ok" />').startswith("<img")
-    ed = ChipTextEdit()
+    ed = ChipTextEdit()                   # a phrase synced or imported earlier, or pasted HTML
     for bad in ("//evilhost/a.png", "\\\\evilhost\\s\\a.png", "file://evilhost/s/a.png",
                 "file:////evilhost/s/a.png", "https://evilhost/a.png"):
-        assert ed.loadResource(QTextDocument.ImageResource, QUrl(bad)) is None, bad
+        html = f'<p>x<img src="{bad}" /></p><table><tr><td background="{bad}">y</td></tr></table>'
+        assert "evilhost" not in ef.remote_free_html(html), bad
+        ed.set_content(html, html=True)
+        assert "evilhost" not in ed.document().toHtml(), bad
+    assert 'src="C:/pics/a.png"' in ef.remote_free_html('<img src="C:/pics/a.png" />')
+    assert "evilhost" not in ef.remote_free_html('<img src="//evilhost/a" src="C:/a.png" />')
 
 
 def test_ahk_braces_stay_text(tmp_path):

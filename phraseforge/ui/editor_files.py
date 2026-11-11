@@ -72,6 +72,45 @@ def _img_src(tag: str) -> str:
     return srcs[0].strip() if len(srcs) == 1 else ""
 
 
+def local_resource(name) -> bool:
+    """True for a data: URL or a file on this PC; False for UNC, web and other remote names."""
+    from urllib.parse import unquote
+    from PySide6.QtCore import QUrl
+    raw = name.toString() if isinstance(name, QUrl) else str(name or "")
+    norm = unquote(raw).strip().replace("\\", "/")
+    if norm.lower().startswith("data:"):
+        return True
+    if norm.lower().startswith("file:"):
+        norm = norm[5:]
+        if norm.startswith("///"):          # file:///C:/x.png
+            norm = norm[3:]
+            if norm.startswith("/"):        # file:////host/share
+                return False
+        elif norm.startswith("//"):         # file://host/share
+            return False
+    if norm.startswith("/") and norm[1:2] == "/":
+        return False                        # //host/share or \\host\share
+    scheme = QUrl(norm).scheme().lower()
+    return scheme == "" or len(scheme) == 1  # a relative path, or C:/pictures/x.png
+
+
+def remote_free_html(html: str) -> str:
+    """The HTML without images or backgrounds from a network or web address. Qt opens them when
+    it shows the text, and a UNC path makes Windows send the user's login to that server (R145).
+    Images from this PC and data: images stay."""
+    def img(m):
+        src = _img_src(m.group(0))         # "" for none or two: dropped too
+        return m.group(0) if src and local_resource(src) else ""
+
+    def bg(m):
+        return m.group(0) if local_resource(m.group(1).strip("\"'")) else ""
+    html = _IMG.sub(img, html)
+    html = _BACKGROUND.sub(bg, html)
+    if _URL.search(html):
+        html = _URL.sub("blocked(", html)
+    return html
+
+
 def markdown_to_plain(text: str) -> str:
     from PySide6.QtGui import QTextDocument
     doc = QTextDocument()
