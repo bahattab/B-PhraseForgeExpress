@@ -305,6 +305,43 @@ def resolve_attachment(path: str) -> Path | None:
     return target
 
 
+_ATT_REF = re.compile(r'attached/([0-9a-f]{16})/([^"{}\\/\r\n]{1,200})"')
+EMBED_TOTAL_MAX = 200 * 1024 * 1024      # attached files written into one export file at most
+
+
+def attachment_refs(texts, refs: dict[str, str] | None = None) -> dict[str, str]:
+    """{hash16: file name} of every {#pastefile "attached/<hash16>/<name>"} in the texts."""
+    refs = {} if refs is None else refs
+    for t in texts:
+        if t and "attached/" in t:
+            for h, name in _ATT_REF.findall(t):
+                refs.setdefault(h, name)
+    return refs
+
+
+def attachment_path(h: str, name: str) -> Path | None:
+    """Where the attached file <h>/<name> is kept on this PC (None for a bad name)."""
+    name = Path(name).name
+    if not re.fullmatch(r"[0-9a-f]{16}", h or "") or name in ("", ".", ".."):
+        return None
+    return assets_dir() / ATTACHED / h / name
+
+
+def store_attachment(h: str, name: str, data: bytes) -> bool:
+    """Keep bytes received from elsewhere (sync, an export file) as the attached file <h>/<name>,
+    only when their SHA-256 starts with h. True when the file is now there."""
+    dest = attachment_path(h, name)
+    if dest is None or len(data) > MAX_ATTACHMENT or hashlib.sha256(data).hexdigest()[:16] != h:
+        return False
+    if dest.is_file():
+        return True
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.with_name(dest.name + ".part")
+    part.write_bytes(data)
+    os.replace(part, dest)
+    return True
+
+
 def _q(path: Path) -> str:
     return '"' + str(path).replace('"', '\\"') + '"'
 

@@ -360,18 +360,14 @@ class CloudSync:
 
     @staticmethod
     def _attachment_refs(con, refs: dict[str, str]) -> None:
-        """Add {hash16: file name} for every {#pastefile "attached/<hash16>/<name>"} in the
-        phrases (and their language versions) read through `con`."""
-        import re
-        rx = re.compile(r'attached/([0-9a-f]{16})/([^"{}\\/\r\n]{1,200})"')
+        """Add the attached files used by the phrases (and language versions) read through `con`."""
+        from phraseforge.importers.files import attachment_refs
         for table in ("phrases", "phrase_versions"):
             try:
                 rows = con.execute(f"SELECT content FROM {table} WHERE content LIKE '%attached/%'").fetchall()
             except sqlite3.Error:
                 continue
-            for (content,) in rows:
-                for h, name in rx.findall(content or ""):
-                    refs.setdefault(h, name)
+            attachment_refs((c for (c,) in rows), refs)
 
     def sync_attachments(self, pulled: Path | None = None) -> tuple[int, int]:
         """Carry the files attached to phrases: upload those the cloud lacks, download those
@@ -389,13 +385,11 @@ class CloudSync:
         if not refs:
             return 0, 0
         there = {f.name for f in self.remote.list() if f.name.startswith(self.ATT_PREFIX)}
-        root = fl.assets_dir() / fl.ATTACHED
         up = down = 0
         for h, name in refs.items():
-            name = Path(name).name
-            if not name or name in (".", ".."):
+            local, remote_name = fl.attachment_path(h, name), f"{self.ATT_PREFIX}{h}.db"
+            if local is None:
                 continue
-            local, remote_name = root / h / name, f"{self.ATT_PREFIX}{h}.db"
             try:
                 if local.is_file() and remote_name not in there:
                     if local.stat().st_size <= fl.MAX_ATTACHMENT:
@@ -432,13 +426,9 @@ class CloudSync:
                     return 0
             elif self.passphrase:
                 return 0                           # plain file in an encrypted sync: not ours
-            if hashlib.sha256(data).hexdigest()[:16] != h:
+            if not fl.store_attachment(h, dest.name, data):
                 log.warning("attached file %s in the cloud does not match its hash: not used", remote_name)
                 return 0
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            part = dest.with_name(dest.name + ".part")
-            part.write_bytes(data)
-            os.replace(part, dest)
             return 1
         finally:
             path.unlink(missing_ok=True)
