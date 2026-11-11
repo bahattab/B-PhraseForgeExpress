@@ -903,6 +903,9 @@ class PhraseForgeApp(QObject):
             self.triggers.start()
         if not self.options.has("no-clipboard"):
             self.clip_history.start()
+        if self.store.setting("caret.accessibility", "1") == "1":
+            from phraseforge.platform import caret     # first use builds COM wrappers (~1 s): not on a hotkey
+            threading.Thread(target=caret.warm_up, name="pf-caret-warmup", daemon=True).start()
         log.info("triggers ready")   # tools/e2e_notepad.py waits for this line
 
     # ---------------------------------------------------------- cloud backup & sync
@@ -1654,15 +1657,23 @@ class PhraseForgeApp(QObject):
             self.poster.posted.emit(lambda: self.tray.notify(title, preview))
 
     # ---------------------------------------------------------- main-thread UI
-    def _caret_or_cursor(self):
-        from PySide6.QtGui import QCursor
+    def _caret_point(self):
+        """The caret in Qt coordinates, or None."""
         try:
             from phraseforge.platform import windows
-            pos = windows.caret_position()
+            from phraseforge.ui.region_select import physical_to_logical
+            pos = windows.caret_position(self.store.setting("caret.accessibility", "1") == "1")
             if pos:
-                return pos
+                return physical_to_logical(*pos)      # the caret is in physical pixels, Qt is not
         except Exception:
             pass
+        return None
+
+    def _caret_or_cursor(self):
+        from PySide6.QtGui import QCursor
+        pos = self._caret_point()
+        if pos:
+            return pos
         c = QCursor.pos()
         return c.x(), c.y()
 
@@ -1686,14 +1697,16 @@ class PhraseForgeApp(QObject):
         except Exception:
             self._popup_app = ""
         self._popup_hwnd = hwnd
-        x, y = self._caret_or_cursor()
-        kw = {"search": True} if search else {}
+        from PySide6.QtGui import QCursor
+        caret = self._caret_point()                 # looked up once, handed to the popup
+        x, y = caret or (QCursor.pos().x(), QCursor.pos().y())
+        kw = {"search": True, "caret": caret} if search else {"caret": caret}
         if folder is not None:
             kw["folder"] = folder
         try:
             self.popup.show_at(x, y, self._popup_app, **kw)   # the popup plays its own sound
         except TypeError:          # popup without folder support: open the normal menu
-            self.popup.show_at(x, y, self._popup_app, search=search)
+            self.popup.show_at(x, y, self._popup_app, search=search, caret=caret)
 
     def _new_phrase_from_popup(self):
         """Popup footer "New phrase...": create it in the popup's folder and open the editor."""
