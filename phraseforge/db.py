@@ -121,6 +121,9 @@ DEFAULT_SETTINGS = {
     "ocr.hotkey": "ctrl+alt+o",
     "clipboard_history.hotkey": "ctrl+alt+v",
     "filesearch.hotkey": "ctrl+alt+f",
+    "translate.instant_hotkey": "ctrl+alt+t",   # Instant translation of the selected text
+    "translate.instant_to": "Arabic",
+    "translate.instant_back": "English",
     "promptboost.hotkey": "ctrl+alt+b",    # Boost prompt: improve the selected prompt in any program     # Search files (Listary-style launcher)
     "filesearch.enabled": "1",
     "filesearch.roots": "",               # one folder per line; empty = Start menu, Desktop, Documents, Downloads

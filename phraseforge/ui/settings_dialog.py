@@ -1474,6 +1474,16 @@ class SettingsDialog(QDialog):
     def _page_translation_ignored(self) -> QWidget:
         w, lay = self._page()
         lay.setSpacing(4)
+        g, gl = _group("Instant translation")
+        gl.addWidget(_wrap_label("Select text in any program and press the hotkey: a small window shows "
+                                 "its translation, with Copy, Replace selection, Swap and Listen."))
+        gl.addWidget(_row("Hotkey:", self.bind("translate.instant_hotkey", Hotkey())))
+        from phraseforge import instant_translate as _it
+        to = self.bind("translate.instant_to", DataCombo([(x, x) for x in _it.LANGUAGES]))
+        back = self.bind("translate.instant_back", DataCombo([(x, x) for x in _it.LANGUAGES]))
+        gl.addWidget(_row("Translate into:", to))
+        gl.addWidget(_row("Text already in that language goes into:", back))
+        lay.addWidget(g)
         lay.addWidget(QLabel("Words excluded from translation (one word per line):"))
         lay.addWidget(self.bind("translation.ignored_words", QPlainTextEdit()), 1)
         return w
@@ -1949,6 +1959,12 @@ class SettingsDialog(QDialog):
         help_btn = QPushButton("How to set up")
         help_btn.clicked.connect(self._gdrive_help)
         gb.addWidget(_row(self.gdrive_client_btn, self.gdrive_signin_btn, help_btn))
+        self.gdrive_hint = self.bind("gdrive.login_hint", QLineEdit())
+        self.gdrive_hint.setPlaceholderText("you@gmail.com (optional)")
+        self.gdrive_hint.setToolTip("Google opens this account directly, and its passkey prompt if it has one")
+        gb.addWidget(_row("Google account:", self.gdrive_hint))
+        gb.addWidget(_wrap_label("Sign-in happens on Google's page in your browser, so passkeys (Windows Hello, "
+                                 "your phone or a security key) work there like on any Google sign-in."))
         self.gdrive_folder = self.bind("sync.gdrive_folder", QLineEdit())
         gb.addWidget(_row("Drive folder:", self.gdrive_folder))
         lay.addWidget(self.gdrive_box)
@@ -2067,7 +2083,9 @@ class SettingsDialog(QDialog):
             return True
         if not d.has_client() and (quiet or not self._choose_gdrive_client()):
             return False
-        ok, err = _run_with_wait(self, "Waiting for Google sign-in in your browser...", d.sign_in)
+        hint = self.gdrive_hint.text().strip()
+        ok, err = _run_with_wait(self, "Waiting for Google sign-in in your browser...",
+                                 (lambda: d.sign_in(login_hint=hint)) if hint else d.sign_in)
         if not ok:
             if not quiet:
                 QMessageBox.warning(self, "Google Drive", f"Sign-in did not complete.\n\n{err}\n\n"

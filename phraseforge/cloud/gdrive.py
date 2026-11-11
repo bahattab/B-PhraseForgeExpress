@@ -36,6 +36,12 @@ class GDriveError(RuntimeError):
     pass
 
 
+def valid_hint(email: str) -> bool:
+    """A plain e-mail address (it goes into the sign-in URL)."""
+    import re
+    return bool(email) and len(email) <= 254 and re.fullmatch(r"[^@\s<>\"']+@[^@\s<>\"']+\.[^@\s<>\"']+", email) is not None
+
+
 def client_file() -> Path:
     """The user's own OAuth client, encrypted with their Windows account (DPAPI)."""
     return paths.data_dir() / "google_oauth_client.bin"
@@ -159,8 +165,13 @@ class GoogleDrive:
         creds = self._creds or self._stored_creds()
         return creds is not None and bool(creds.valid or creds.refresh_token)
 
-    def sign_in(self, timeout_s: int = 300):
-        """Open the browser for Google login. Blocks until done (run off the UI thread)."""
+    def sign_in(self, timeout_s: int = 300, login_hint: str = ""):
+        """Open the browser for Google login. Blocks until done (run off the UI thread).
+
+        Google's own sign-in page in the user's browser does the login, so every method the
+        account has works there, passkeys included (Windows Hello, a phone, a security key).
+        login_hint (an e-mail address) makes Google go straight to that account, and so to its
+        passkey prompt when the account has one."""
         cfg = client_config()
         if cfg is None:
             raise GDriveError("Set up the Google OAuth client first (Settings > Backup & Sync).")
@@ -169,6 +180,7 @@ class GoogleDrive:
         creds = flow.run_local_server(
             host="localhost", port=0, open_browser=True, timeout_seconds=timeout_s,
             authorization_prompt_message="", prompt="consent", access_type="offline",
+            **({"login_hint": login_hint} if valid_hint(login_hint) else {}),
             success_message="PhraseForge is now connected to Google Drive. You can close this tab.")
         if creds is None:
             raise GDriveError("Google sign-in was not completed.")
