@@ -170,6 +170,7 @@ SCHEMA: dict[str, str] = {
     "menu.hide_restricted": "1",
     "smartcomplete.min_chars": "3",
     "menu.position": "caret",
+    "caret.accessibility": "1",          # also ask MSAA / UI Automation where the caret is (FR-INP-05)
     "menu.position_fallback": "mouse",
     "menu.appearance": "{}",           # element -> color, plus "font"
     "menu.dim_dark": "1",
