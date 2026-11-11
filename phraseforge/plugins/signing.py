@@ -60,6 +60,30 @@ def digest(files: dict[str, bytes]) -> bytes:
     return hashlib.sha256("".join(lines).encode("utf-8")).digest()
 
 
+def folder_stamp(folder: str | Path) -> tuple:
+    """(path, size, mtime) of every file, cheap enough to check on each call."""
+    folder = Path(folder)
+    out = []
+    for root, dirs, files in os.walk(folder):
+        for name in files:
+            p = Path(root) / name
+            st = p.stat()
+            out.append((p.relative_to(folder).as_posix(), st.st_size, st.st_mtime_ns))
+    return tuple(sorted(out))
+
+
+def stray_bytecode(folder: str | Path) -> bool:
+    """A .pyc/.pyo outside __pycache__ is importable without its source and is not signed."""
+    for root, dirs, files in os.walk(Path(folder)):
+        dirs[:] = [d for d in dirs if d.lower() not in _SKIP_DIRS]
+        if any(n.lower().endswith((".pyc", ".pyo")) for n in files):
+            return True
+    return False
+
+
+MAX_SIG = 4096
+
+
 def folder_files(folder: str | Path) -> dict[str, bytes]:
     folder = Path(folder)
     out = {}
@@ -105,11 +129,13 @@ def verify(files: dict[str, bytes], trusted: frozenset[str] | set[str] = frozens
     raw = files.get(SIG_FILE)
     if raw is None:
         return Signature("unsigned")
+    if len(raw) > MAX_SIG:                                   # a real one is ~150 bytes (R119)
+        return Signature("invalid", reason="plugin.sig cannot be read")
     try:
         data = json.loads(raw.decode("utf-8"))
         key_b64, sig_b64 = str(data["key"]), str(data["sig"])
         key, sig = base64.b64decode(key_b64, validate=True), base64.b64decode(sig_b64, validate=True)
-    except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+    except (ValueError, KeyError, TypeError, UnicodeDecodeError, RecursionError):
         return Signature("invalid", reason="plugin.sig cannot be read")
     from cryptography.exceptions import InvalidSignature
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey

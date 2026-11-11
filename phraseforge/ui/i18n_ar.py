@@ -300,6 +300,7 @@ AR_EXTRA = {
     "create or change phrases": "تنشئ عبارات أو تغيّرها",
     "press Windows-key shortcuts": "تضغط اختصارات مفتاح Windows",
     "read files from a network share": "تقرأ ملفات من مجلد مشترك على الشبكة",
+    "make AI images (billed to your API key)": "تنشئ صورًا بالذكاء الاصطناعي (تُحسب كلفتها على مفتاح API الخاص بك)",
     "Phrase not run": "لم يتم تشغيل العبارة",
     '"{name}" was skipped: it is not approved on this PC and was started automatically.':
         'تم تخطي "{name}": لم تتم الموافقة عليها على هذا الجهاز وبدأت تلقائيًا.',
