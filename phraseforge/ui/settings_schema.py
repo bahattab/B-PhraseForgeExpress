@@ -111,6 +111,7 @@ SCHEMA: dict[str, str] = {
     "translate.instant_hotkey": "ctrl+alt+t",   # Instant translation of the selected text
     "translate.instant_to": "Arabic",
     "translate.instant_back": "English",        # used when the selection is already in the target
+    "translate.instant_free_ok": "0",           # may Instant translation use MyMemory (R153)
     "translation.ignored_words": "",
     "translation.glossaries": "{}",
     "translation.glossary_langs": "{}",

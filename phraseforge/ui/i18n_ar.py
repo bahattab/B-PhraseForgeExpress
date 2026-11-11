@@ -1819,6 +1819,7 @@ AR_EXTRA = {
     "Google opens this account directly, and its passkey prompt if it has one": "يفتح Google هذا الحساب مباشرة، وطلب مفتاح المرور إن كان له مفتاح",
     "Translate into:": "الترجمة إلى:",
     "Text already in that language goes into:": "النص المكتوب بتلك اللغة يُترجم إلى:",
+    "Allow the free MyMemory service for instant translation": "السماح بخدمة MyMemory المجانية للترجمة الفورية",
     "Google account:": "حساب Google:",
     "Translation": "الترجمة",
     "Replace selection": "استبدال التحديد",
@@ -1830,4 +1831,5 @@ AR_EXTRA = {
     "Sign-in happens on Google's page in your browser, so passkeys (Windows Hello, your phone or a security key) work there like on any Google sign-in.": "يتم تسجيل الدخول في صفحة Google داخل متصفحك، لذا تعمل مفاتيح المرور (Windows Hello أو هاتفك أو مفتاح أمان) هناك كأي تسجيل دخول إلى Google.",
     "Close (Esc)": "إغلاق (Esc)",
     "Translating…": "جارٍ الترجمة…",
+    "The original window is gone or could not be brought back; nothing was typed. Use Copy instead.": "النافذة الأصلية لم تعد موجودة أو تعذّرت إعادتها؛ لم تُكتب أي نصوص. استخدم النسخ بدلًا من ذلك.",
 }

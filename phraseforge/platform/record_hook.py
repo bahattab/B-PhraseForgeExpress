@@ -58,12 +58,16 @@ class MouseHook:
         self._proc = HOOKPROC(self._callback)
         self._thread = None
         self._tid = 0
+        self._failed = False
         self._ready = threading.Event()
 
     def start(self) -> None:
+        self._failed = False
         self._thread = threading.Thread(target=self._run, name="pf-record-mouse", daemon=True)
         self._thread.start()
         self._ready.wait(5)
+        if self._failed or not self._ready.is_set():
+            raise OSError("the mouse hook could not be installed")   # no silent recording without clicks (R157)
 
     def stop(self) -> None:
         if self._thread and self._tid:
@@ -79,6 +83,7 @@ class MouseHook:
         self._ready.set()
         if not hook:
             log.error("mouse hook failed: %s", ctypes.get_last_error())
+            self._failed = True
             return
         try:
             while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
@@ -119,6 +124,7 @@ class RecordSession:
                                  pass_foreign_injected=False)
         from phraseforge.platform.native_hook import make_mouse_hook
         self.mouse = make_mouse_hook(recorder)       # pfhook.dll when it loads (G-05)
+        self.mouse_failed = False
 
     def start(self) -> None:
         self.recorder.start()
@@ -128,7 +134,11 @@ class RecordSession:
         except OSError as e:                         # the native hook failed: use the Python one
             log.warning("native mouse hook failed (%s); using the Python hook", e)
             self.mouse = MouseHook(self.recorder)
-            self.mouse.start()
+            try:
+                self.mouse.start()
+            except OSError as e2:                    # neither hook: the keys are still recorded
+                log.error("no mouse hook could be installed (%s); clicks will not be recorded", e2)
+                self.mouse_failed = True
 
     def stop(self) -> None:
         self.keys.stop()

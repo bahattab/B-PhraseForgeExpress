@@ -49,6 +49,8 @@ def latest_release(timeout: float = 6.0, opener=urllib.request.urlopen) -> dict 
             return None
         raise OSError(f"GitHub answered {e.code}") from e
     tag = str(data.get("tag_name", ""))
+    if not re.fullmatch(r"[vV]?\d{1,5}(?:\.\d{1,5}){0,3}", tag):   # shown in dialogs: digits only (R150)
+        raise OSError("the latest release has an unexpected tag")
     setup = next((a.get("browser_download_url") for a in data.get("assets") or []
                   if str(a.get("name", "")).lower().endswith(".exe") and "setup" in str(a.get("name", "")).lower()),
                  "")

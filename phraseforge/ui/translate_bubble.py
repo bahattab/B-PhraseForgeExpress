@@ -42,6 +42,7 @@ class TranslateBubble(QFrame):
         lay.addLayout(top)
         self.source = QLabel()
         self.source.setTextFormat(Qt.PlainText)        # text from another program: never rich text
+        self.source.setProperty("pf_user", True)       # and never "translated" by the Arabic UI
         self.source.setWordWrap(True)
         self.source.setStyleSheet("color: palette(mid);")
         lay.addWidget(self.source)

@@ -51,6 +51,7 @@ class PluginManager:
         self.store = store
         self.root = Path(root) if root is not None else default_root()
         self._procs: dict[str, PluginProcess] = {}
+        self._side: dict[str, PluginProcess] = {}   # one long call (model download) per plugin
         self._lock = threading.Lock()
         self.load_errors: dict[str, str] = {}
 
@@ -204,20 +205,34 @@ class PluginManager:
             return p
 
     def side_process(self, pid: str) -> PluginProcess:
-        """A second, uncached process of the plugin for one long call (a model download), so it
-        does not hold the lock of the process every other call uses. The caller stops it."""
+        """A second process of the plugin for one long call (a model download), so it does not
+        hold the lock of the process every other call uses. One per plugin; stop(pid) and
+        switching the plugin off or removing it end it too, with the secrets it was given
+        (R152). The caller gives it back with end_side()."""
         m = self.installed()[pid]
-        return PluginProcess(m, self.root / pid, sandbox=self.store.setting("plugins.sandbox", "1") != "0")
+        with self._lock:
+            if pid in self._side:
+                raise PluginError(f"{pid} is already downloading; wait for it to finish")
+            p = self._side[pid] = PluginProcess(m, self.root / pid, sandbox=self.store.setting("plugins.sandbox", "1") != "0")
+        return p
+
+    def end_side(self, pid: str, proc: PluginProcess) -> None:
+        with self._lock:
+            if self._side.get(pid) is proc:
+                del self._side[pid]
+        proc.stop()
 
     def stop(self, pid: str) -> None:
         with self._lock:
             p = self._procs.pop(pid, None)
-        if p is not None:
-            p.stop()
+            side = self._side.pop(pid, None)
+        for x in (p, side):
+            if x is not None:
+                x.stop()
 
     def stop_all(self) -> None:
         with self._lock:
-            ids = list(self._procs)
+            ids = list(set(self._procs) | set(self._side))
         for pid in ids:
             self.stop(pid)
 

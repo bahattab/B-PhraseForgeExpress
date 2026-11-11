@@ -1483,6 +1483,11 @@ class SettingsDialog(QDialog):
         back = self.bind("translate.instant_back", DataCombo([(x, x) for x in _it.LANGUAGES]))
         gl.addWidget(_row("Translate into:", to))
         gl.addWidget(_row("Text already in that language goes into:", back))
+        gl.addWidget(_wrap_label("The text goes to the engine chosen under Language Translation. With "
+                                 "\"free\" (or no API key) that is MyMemory, an online service; it is only "
+                                 "used if you allow it here."))
+        gl.addWidget(self.bind("translate.instant_free_ok",
+                               QCheckBox("Allow the free MyMemory service for instant translation")))
         lay.addWidget(g)
         lay.addWidget(QLabel("Words excluded from translation (one word per line):"))
         lay.addWidget(self.bind("translation.ignored_words", QPlainTextEdit()), 1)

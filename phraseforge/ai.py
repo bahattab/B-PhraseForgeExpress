@@ -897,6 +897,17 @@ def free_translate(text: str, to: str, src: str = "", timeout_s: float = 20, get
     return " ".join(p.strip() for p in out) if "\n" not in text else "\n".join(p.strip() for p in out)
 
 
+def translation_service(settings: dict[str, str]) -> str:
+    """The engine translate_text uses: the chosen provider, or "free" (MyMemory, online) when
+    that is chosen or the chosen engine has no API key."""
+    provider = (settings.get("translation.provider") or "free").lower()
+    if provider.startswith("plugin:") or provider in ("ollama", "gpt4all"):
+        return provider
+    if provider != "free" and (settings.get(f"ai.{provider}_key", "") or "").strip():
+        return provider
+    return "free"
+
+
 def translate_text(settings: dict[str, str], text: str, to: str, src: str = "", complete_fn=None,
                    free_fn=None) -> str:
     """Translate with the engine chosen in Settings > Language Translation; without a key for

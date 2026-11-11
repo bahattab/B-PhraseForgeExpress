@@ -42,6 +42,10 @@ PRIVILEGED: dict[str, str] = {
     "settemp": "change variables other phrases use",
     # every picture is billed to this user's API key; a loop made 1000 of them (R114)
     "aiimage": "make AI images (billed to your API key)",
+    # the open mail's text, recipients and attachment names could be typed into any program
+    # or into a {#mail} draft to someone else (R143)
+    "olmail": "read your Outlook e-mail",
+    "outlook": "read your Outlook e-mail",
 }
 
 # Macros that read the file named by their first argument. Reading a local file is

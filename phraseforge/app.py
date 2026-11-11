@@ -1836,15 +1836,23 @@ class PhraseForgeApp(QObject):
     def _replace_with_translation(self, text: str) -> None:
         hwnd = getattr(self, "_translate_hwnd", 0)
         try:
-            from phraseforge.platform._win32 import user32
-            if hwnd and not user32.IsWindow(hwnd):      # the program was closed meanwhile
+            if hwnd and user32 and not user32.IsWindow(hwnd):   # the program was closed meanwhile
                 self.tray.notify("Instant translation", "That window is gone: use Copy instead.")
                 return
-        except (ImportError, AttributeError, OSError):  # not Windows
+        except (AttributeError, OSError):                       # not Windows
             pass
 
         def run():
+            if self._target_elevated(hwnd):
+                return
             target = self._prepare_target(hwnd)
+            if user32 and (not hwnd or not user32.IsWindow(hwnd) or user32.GetForegroundWindow() != hwnd):
+                # the window was closed or did not come back: typing now would go into whatever
+                # program is in front (R155)
+                self.poster.posted.emit(lambda: self.tray.notify(
+                    "Instant translation", "The original window is gone or could not be brought back; "
+                    "nothing was typed. Use Copy instead."))
+                return
             self._with_triggers_paused(lambda: self.output.execute([TextAction(text)], app_exe=self._exe_of(target)))
         self._jobs.put(("call", run, hwnd))
 

@@ -82,7 +82,15 @@ class RecordingController:
         self.bar.stop_clicked.connect(self.finish)
         self.bar.place()
         self.bar.show()
-        self.session.start()
+        try:
+            self.session.start()
+        except Exception:                            # noqa: BLE001 - no stuck bar left on screen (R158)
+            self.session = None
+            if self.triggers is not None:
+                self.triggers.paused = self._was_paused
+            self.bar.close()
+            self.bar = None
+            raise
 
     def finish(self) -> str | None:
         if not self.active:

@@ -207,6 +207,7 @@ class ChipTextEdit(QTextEdit):
         self.document().setDefaultTextOption(opt)
 
     # -------------------------------------------------- right-to-left writing
+
     def set_paragraph_direction(self, rtl: bool) -> None:
         """Make the selected paragraphs right-to-left (Arabic) or left-to-right, like
         Windows' Ctrl+Right Shift / Ctrl+Left Shift. Kept in rich (HTML) phrases."""
@@ -266,7 +267,8 @@ class ChipTextEdit(QTextEdit):
         doc.blockSignals(True)
         try:
             if html:
-                doc.setHtml(text or "")
+                from phraseforge.ui.editor_files import remote_free_html
+                doc.setHtml(remote_free_html(text or ""))   # no network images (R145)
                 self._chipify_document()
             else:
                 doc.setPlainText("")
@@ -426,6 +428,9 @@ class ChipTextEdit(QTextEdit):
     def insertFromMimeData(self, source):
         if source.hasText() and not (self.rich and source.hasHtml()):
             self.insert_content(source.text())
+        elif self.rich and source.hasHtml():
+            from phraseforge.ui.editor_files import remote_free_html
+            self.textCursor().insertHtml(remote_free_html(source.html()))   # no network images (R145)
         else:
             super().insertFromMimeData(source)
 
@@ -859,9 +864,14 @@ class PhraseEditor(QWidget):
         as imported when it is saved (the file is not the user's own writing)."""
         ed = self.content_edit
         c = ed.textCursor()
+        inserted = content
         if is_html and ed.rich:
             start = c.selectionStart()
             c.insertHtml(content)
+            r = QTextCursor(ed.document())
+            r.setPosition(start)
+            r.setPosition(c.position(), QTextCursor.KeepAnchor)
+            inserted = r.selectedText()            # what chipify reads: {*#run*} is "{#run" here (R144)
             ed.chipify_range(start, c.position())   # only what was inserted, by real positions
         else:
             if is_html:                        # a plain-text phrase keeps the words, not the formatting
@@ -869,7 +879,7 @@ class PhraseEditor(QWidget):
                 content = QTextDocumentFragment.fromHtml(content).toPlainText()
             ed.insert_content(content, c)
         ed.setTextCursor(c)
-        if "{#" in content:
+        if "{#" in content or "{#" in inserted:
             self._from_file = True
         self._mark_dirty()
 
