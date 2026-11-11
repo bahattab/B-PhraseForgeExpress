@@ -869,6 +869,12 @@ Noted while recording #32 in v6, fixed in 0.6.6 (#30 and #32 have not been revie
 - **R127 (Low, #59):** a copy DeepL had not finished preparing was deleted and uploaded again on each translation. Fixed: never deleted; the translation goes ahead without it meanwhile.
 - **R128 (Low, #59):** a non-JSON or odd DeepL answer (a proxy page, `"glossaries": null`) raised a non-AIError that failed the whole translation. Fixed: reported as AIError, so an automatic glossary is skipped.
 - **R129 (Low, #59):** a glossary DeepL refused (HTTP 400/413/422) was uploaded again before every translation. Fixed: not sent again for 10 minutes, and logged.
+- **Review of #60 (0.6.15).** One reviewer read the caret lookup before it was merged; the timing findings were reproduced with a fake COM object (the Windows COM paths themselves are code reading only).
+- **R130 (Medium, #60):** MSAA and UI Automation waited 250 ms each, and opening the menu looked the caret up twice, so a slow program froze PhraseForge's window for about 1 s per menu (0.5 s per SmartComplete tip). Fixed: one 250 ms wait for the whole chain; the menu gets the point found once.
+- **R131 (Low, #60):** a program that never answers COM pinned the one lookup thread, and every later lookup in every program fell back to the mouse until restart, silently. Fixed: after 5 s the thread is left behind, a new one starts and this is logged.
+- **R132 (Low, #60, code reading):** the comment said the lookup thread is multithreaded; comtypes makes it single-threaded on import. Kept (the objects stay on that thread), comment corrected; `sys.coinit_flags` is not changed because the Qt thread needs a single-threaded apartment.
+- **R133 (Low, #60):** the "window" popup position still used physical pixels. Fixed: mapped like the caret.
+- **R134 (Info, #60):** the branch reused 0.6.14, already released. Renumbered 0.6.15.
 
 Still open: Linux single-instance socket squatting by the same user; with a proxy, `{#http}` relies on the name check only.
 

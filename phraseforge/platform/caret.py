@@ -18,11 +18,13 @@ import logging
 import os
 import queue
 import threading
+import time
 from typing import Callable
 
 log = logging.getLogger(__name__)
 
 TIMEOUT_S = 0.25
+STUCK_S = 5                 # a lookup hung this long: start a fresh worker thread
 OBJID_CARET = 0xFFFFFFF8
 CHILDID_SELF = 0
 UIA_TextPatternId, UIA_TextPattern2Id = 10014, 10024
@@ -130,7 +132,10 @@ class _Com:
         import comtypes.client as cc
         try:
             comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
-        except OSError:            # importing comtypes already initialised COM on this thread
+        except OSError:
+            # importing comtypes already initialised COM on this thread, as a single-threaded
+            # apartment (its default; the Qt thread needs that too, so sys.coinit_flags is not
+            # changed). The objects are only ever used on this thread, which is all STA needs.
             pass
         cc.GetModule("oleacc.dll")
         cc.GetModule("UIAutomationCore.dll")
@@ -199,6 +204,7 @@ class _Worker:
     def __init__(self):
         self._jobs: queue.Queue = queue.Queue()
         self._busy = threading.Lock()
+        self.since = 0.0                    # when the running lookup started (0: none)
         self._com = None
         self._com_failed = False
         threading.Thread(target=self._run, name="pf-caret", daemon=True).start()
@@ -219,11 +225,18 @@ class _Worker:
                 box.append(None)
             finally:
                 done.set()
+                self.since = 0.0
                 self._busy.release()
 
+    def stuck(self) -> bool:
+        """A lookup has hung for longer than STUCK_S (a program that never answers COM)."""
+        since = self.since
+        return bool(since) and time.monotonic() - since > STUCK_S
+
     def call(self, fn, timeout: float):
-        if not self._busy.acquire(blocking=False):
-            return None                     # the previous lookup still hangs on a busy program
+        if timeout <= 0 or not self._busy.acquire(blocking=False):
+            return None                     # no time left, or the previous lookup still hangs
+        self.since = time.monotonic()
         box: list = []
         done = threading.Event()
         self._jobs.put((fn, box, done))
@@ -238,6 +251,10 @@ _worker_lock = threading.Lock()
 def _get_worker() -> _Worker:
     global _worker
     with _worker_lock:
+        if _worker is not None and _worker.stuck():
+            # leave the hung thread behind (a daemon) so other programs get the caret again
+            log.info("caret lookup: a program did not answer for %d s; starting a new lookup thread", STUCK_S)
+            _worker = None
         if _worker is None:
             _worker = _Worker()
         return _worker
@@ -258,6 +275,15 @@ def _own_window(hwnd) -> bool:
     return pid.value == os.getpid()
 
 
+def com_sources(w: "_Worker", msaa=None, uia=None) -> list:
+    """The MSAA and UIA lookups, sharing ONE wait of TIMEOUT_S (each used to get its own)."""
+    end = time.monotonic() + TIMEOUT_S
+    msaa = msaa or (lambda com: com.msaa())
+    uia = uia or (lambda com: com.uia_caret())
+    return [("msaa", lambda: w.call(msaa, end - time.monotonic())),
+            ("uia", lambda: w.call(uia, end - time.monotonic()))]
+
+
 def caret_rect(use_accessibility: bool = True) -> tuple[Rect | None, str]:
     """(rect, source) of the caret in the foreground window, or (None, "")."""
     if os.name != "nt":
@@ -270,9 +296,7 @@ def caret_rect(use_accessibility: bool = True) -> tuple[Rect | None, str]:
     sources = [("win32", win32_caret)]
     # never ask our own windows over COM (this thread would have to answer itself) or a hung one
     if use_accessibility and not _own_window(hwnd) and not user32.IsHungAppWindow(hwnd):
-        w = _get_worker()
-        sources += [("msaa", lambda: w.call(lambda com: com.msaa(), TIMEOUT_S)),
-                    ("uia", lambda: w.call(lambda com: com.uia_caret(), TIMEOUT_S))]
+        sources += com_sources(_get_worker())
     return first_caret(sources, window)
 
 

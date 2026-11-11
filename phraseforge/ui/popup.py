@@ -1314,7 +1314,9 @@ class PhrasePopup(_Panel):
             except Exception:
                 rect = None
             if rect:
-                l, t, r, b = rect
+                from phraseforge.ui.region_select import physical_to_logical
+                l, t = physical_to_logical(rect[0], rect[1])      # physical pixels, like the caret
+                r, b = physical_to_logical(rect[2], rect[3])
                 return (l + r) // 2 - w // 2, (t + b) // 2 - h // 2
             mode = "monitor"
         if mode in ("monitor", "center"):

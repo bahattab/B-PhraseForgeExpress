@@ -144,3 +144,35 @@ def test_caret_in_a_wpf_text_box(wpf_window):
     assert found, "neither MSAA nor UI Automation answered"
     for x in found:
         assert _near(x, rect), (x, rect, source)
+
+
+def test_one_wait_for_the_whole_chain(monkeypatch):
+    """Review of #60: MSAA and UIA waited 250 ms each (and the menu looked twice): ~1 s per open."""
+    import time
+    from phraseforge.platform import caret as C
+    monkeypatch.setattr(C, "_Com", lambda: object())
+    w = C._Worker()
+    w.call(lambda com: None, 1)                  # let the worker start
+    slow = lambda com: (time.sleep(0.24), None)[1]
+    srcs = C.com_sources(w, msaa=slow, uia=slow)
+    t = time.monotonic()
+    C.first_caret(srcs, (0, 0, 1000, 800))
+    assert time.monotonic() - t < C.TIMEOUT_S + 0.1
+
+
+def test_a_stuck_worker_is_replaced(monkeypatch):
+    """Review of #60: one program that never answers COM turned the lookup off until restart."""
+    import threading
+    from phraseforge.platform import caret as C
+    monkeypatch.setattr(C, "STUCK_S", 0.3)
+    monkeypatch.setattr(C, "_worker", None)
+    monkeypatch.setattr(C, "_Com", lambda: object())       # no real COM on this test machine
+    ev = threading.Event()
+    w1 = C._get_worker()
+    assert w1.call(lambda com: ev.wait(), 0.05) is None          # hangs
+    assert C._get_worker() is w1                                 # not yet given up
+    import time
+    time.sleep(0.4)
+    w2 = C._get_worker()
+    assert w2 is not w1 and w2.call(lambda com: (1, 1, 2, 9), 1) == (1, 1, 2, 9)
+    ev.set()
