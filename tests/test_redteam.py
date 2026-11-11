@@ -2590,3 +2590,48 @@ def test_portable_mode_keeps_plugin_temp_in_the_data_folder(tmp_path, monkeypatc
     monkeypatch.setattr(paths, "is_portable", lambda: True)
     monkeypatch.setattr(paths, "data_dir", lambda: tmp_path / "PhraseForgeData")
     assert sandbox.low_temp_dir() == tmp_path / "PhraseForgeData" / "PluginTemp"
+
+
+# ---------------------------------------------------------------- 0.6.16: review of #63 (built-in streaming)
+def _sse_server(monkeypatch, body_iter):
+    import httpx
+    from phraseforge import ai
+    real = httpx.Client
+    handler = lambda req: httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body_iter())
+    monkeypatch.setattr(ai.httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(handler),
+                                                              timeout=kw.get("timeout")))
+
+
+_OPENAI = {"ai.provider": "openai", "ai.openai_key": "k", "ai.model": "m"}
+
+
+def test_streamed_line_is_bounded(monkeypatch):
+    """R141: a 300 MB SSE line without a newline was held in memory (+892 MB here)."""
+    from phraseforge import ai
+    monkeypatch.setattr(ai, "MAX_STREAM_LINE", 64 * 1024)
+    _sse_server(monkeypatch, lambda: (b"data: " + b"A" * 8192 for _ in range(100)))
+    with pytest.raises(ai.AIError, match="longer than"):
+        ai.chat(_OPENAI, [{"role": "user", "content": "hi"}], on_delta=lambda p: None)
+
+
+@pytest.mark.parametrize("provider,events", [
+    ("openai", ['{"choices": [{"delta": {"content": "The answer is "}}]}']),
+    ("anthropic", ['{"type": "content_block_delta", "delta": {"type": "text_delta", "text": "The answer is "}}']),
+])
+def test_cut_off_stream_is_not_a_reply(monkeypatch, provider, events):
+    """R142: a stream that stopped half-way was returned as the whole answer."""
+    from phraseforge import ai
+    _sse_server(monkeypatch, lambda: (f"data: {e}\n\n".encode() for e in events))
+    s = dict(_OPENAI, **{"ai.provider": provider, "ai.anthropic_key": "k"})
+    with pytest.raises(ai.AIError, match="stopped before"):
+        ai.chat(s, [{"role": "user", "content": "hi"}], provider=provider, on_delta=lambda p: None)
+
+
+def test_cut_off_ollama_stream_is_not_a_reply(monkeypatch):
+    """R142 for Ollama's NDJSON (no "done": true)."""
+    import json
+    from phraseforge import ai
+    _sse_server(monkeypatch, lambda: iter([json.dumps({"message": {"content": "The answer is "}}).encode() + b"\n"]))
+    with pytest.raises(ai.AIError, match="stopped before"):
+        ai.chat({"ai.provider": "ollama", "ai.model": "m"}, [{"role": "user", "content": "hi"}],
+                provider="ollama", on_delta=lambda p: None)
