@@ -138,8 +138,17 @@ def _gui_info() -> GUITHREADINFO | None:
 
 
 def caret_position() -> tuple[int, int] | None:
-    """Screen position just below the text caret, or None when the app does
-    not expose a Win32 caret (many browsers / Electron apps)."""
+    """Screen position just below the text caret: the Win32 caret, else MSAA's caret object,
+    else UI Automation (browsers, Electron, modern Office; platform/caret.py, G-07). None
+    when no layer knows it."""
+    pos = _win32_caret()
+    if pos is not None:
+        return pos
+    from phraseforge.platform import caret
+    return caret.msaa_caret(user32.GetForegroundWindow()) or caret.uia_caret()
+
+
+def _win32_caret() -> tuple[int, int] | None:
     info = _gui_info()
     if not info or not info.hwndCaret:
         return None
