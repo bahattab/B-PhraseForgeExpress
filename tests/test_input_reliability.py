@@ -379,6 +379,71 @@ def test_block_time_limit_is_clamped():
     assert _block_ms("x") == 10000
 
 
+# ---------------------------------------------------------------- recorder mouse hook (G-05)
+class RecorderSpy:
+    def __init__(self):
+        self.calls = []
+
+    def click(self, button, x, y, rel=None):
+        self.calls.append(("click", button, x, y, rel))
+
+    def wheel(self, delta):
+        self.calls.append(("wheel", delta))
+
+
+class FakeMouseLib:
+    def __init__(self):
+        self.started = self.stopped = 0
+
+    def pf_mouse_start(self, magic):
+        self.started += 1
+        return 0
+
+    def pf_mouse_stop(self):
+        self.stopped += 1
+
+    def pf_mouse_next(self, ref, timeout):
+        time.sleep(0.01)
+        return -1 if self.stopped else 0
+
+
+def test_native_mouse_events_reach_the_recorder():
+    from phraseforge.platform.native_hook import MK_LEFT, MK_RIGHT, MK_WHEEL, NativeMouseHook, PFMouse
+    rec = RecorderSpy()
+    hook = NativeMouseHook(rec, lib=FakeMouseLib())
+
+    def m(kind, x=0, y=0, rel=None, data=0):
+        e = PFMouse()
+        e.kind, e.x, e.y, e.mouse_data = kind, x, y, data
+        if rel:
+            e.rx, e.ry, e.has_rel = rel[0], rel[1], 1
+        return e
+
+    hook.handle(m(MK_LEFT, 100, 200, (10, 20)))
+    hook.handle(m(MK_RIGHT, -5, 7))
+    hook.handle(m(MK_WHEEL, data=(0x10000 - 120) << 16))            # one notch towards the user
+    hook.handle(m(9))                                               # unknown kind: ignored
+    assert rec.calls == [("click", "left", 100, 200, (10, 20)), ("click", "right", -5, 7, None),
+                         ("wheel", -120)]
+
+
+def test_native_mouse_hook_starts_and_stops():
+    from phraseforge.platform.native_hook import NativeMouseHook
+    lib = FakeMouseLib()
+    hook = NativeMouseHook(RecorderSpy(), lib=lib)
+    hook.start()
+    assert hook.running and lib.started == 1
+    hook.stop()
+    assert not hook.running and lib.stopped == 1
+
+
+def test_make_mouse_hook_falls_back_to_python(monkeypatch):
+    monkeypatch.setenv("PHRASEFORGE_HOOK", "python")
+    from phraseforge.platform.native_hook import make_mouse_hook
+    from phraseforge.platform.record_hook import MouseHook
+    assert isinstance(make_mouse_hook(RecorderSpy()), MouseHook)
+
+
 # ---------------------------------------------------------------- the real DLL (built in CI)
 needs_dll = pytest.mark.skipif(nh.load_library() is None, reason=f"pfhook.dll: {nh.library_error()}")
 
@@ -484,3 +549,35 @@ def test_real_hook_survives_python_holding_the_gil():
         assert not st["degraded"]                       # Python caught up
     finally:
         hook.stop()
+
+
+@needs_dll
+def test_real_mouse_hook_runs_and_ignores_injected_input():
+    """The recorder's native mouse hook installs, and a click another program injects
+    (SendInput, LLMHF_INJECTED) is not recorded, like the Python hook (R58)."""
+    from phraseforge.platform.native_hook import NativeMouseHook
+    rec = RecorderSpy()
+    hook = NativeMouseHook(rec)
+    hook.start()
+    try:
+        assert hook.running
+        wheel = textwrap.dedent("""
+            import ctypes
+            from ctypes import wintypes as wt
+            class MI(ctypes.Structure):
+                _fields_ = [("dx", wt.LONG), ("dy", wt.LONG), ("mouseData", wt.DWORD), ("dwFlags", wt.DWORD),
+                            ("time", wt.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+            class U(ctypes.Union):
+                _fields_ = [("mi", MI), ("pad", ctypes.c_byte * 32)]
+            class INPUT(ctypes.Structure):
+                _fields_ = [("type", wt.DWORD), ("u", U)]
+            inp = INPUT(type=0)
+            inp.u.mi = MI(0, 0, 120, 0x0800, 0, 0)          # MOUSEEVENTF_WHEEL
+            ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+        """)
+        subprocess.run([sys.executable, "-I", "-c", wheel], timeout=10)
+        time.sleep(0.5)
+        assert rec.calls == []
+    finally:
+        hook.stop()
+    assert not hook.running

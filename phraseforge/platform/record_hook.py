@@ -117,12 +117,18 @@ class RecordSession:
         self.recorder = recorder
         self.keys = KeyboardHook(lambda ev: ev.down and recorder.key(ev.vk, ev.char, ev.modifiers),
                                  pass_foreign_injected=False)
-        self.mouse = MouseHook(recorder)
+        from phraseforge.platform.native_hook import make_mouse_hook
+        self.mouse = make_mouse_hook(recorder)       # pfhook.dll when it loads (G-05)
 
     def start(self) -> None:
         self.recorder.start()
         self.keys.start()
-        self.mouse.start()
+        try:
+            self.mouse.start()
+        except OSError as e:                         # the native hook failed: use the Python one
+            log.warning("native mouse hook failed (%s); using the Python hook", e)
+            self.mouse = MouseHook(self.recorder)
+            self.mouse.start()
 
     def stop(self) -> None:
         self.keys.stop()

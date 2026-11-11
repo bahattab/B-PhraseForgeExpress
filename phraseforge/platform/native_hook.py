@@ -7,7 +7,8 @@ within a short budget. Keys Python did not answer in time reach the program and 
 reported with KeyEvent.late; the trigger manager adjusts for them.
 
 make_keyboard_hook() picks this hook when the DLL loads and falls back to the Python
-hook (keyboard_hook.KeyboardHook) otherwise.
+hook (keyboard_hook.KeyboardHook) otherwise. make_mouse_hook() does the same for the
+macro recorder's mouse hook (NativeMouseHook, DLL v3).
 """
 from __future__ import annotations
 
@@ -23,7 +24,8 @@ from typing import Callable
 log = logging.getLogger(__name__)
 
 DLL_NAME = "pfhook.dll"
-EXPECTED_VERSION = 2
+EXPECTED_VERSION = 3
+MK_LEFT, MK_RIGHT, MK_WHEEL = 1, 2, 3            # PFMouse.kind (v3: recorder mouse hook)
 REPLAY_MAGIC = 0x50465252          # "PFRR": keys sent again after output (FR-TRG-06)
 
 ST_DOWN, ST_INJECTED, ST_EXTENDED, ST_WAITED, ST_NATIVE = 0x01, 0x02, 0x04, 0x08, 0x10
@@ -50,6 +52,12 @@ class PFStats(ctypes.Structure):
                 ("late_replies", ctypes.c_uint64), ("max_us", ctypes.c_uint32), ("p99_us", ctypes.c_uint32),
                 ("degraded", ctypes.c_uint32), ("running", ctypes.c_uint32), ("hist", ctypes.c_uint32 * 32),
                 ("blocked", ctypes.c_uint64), ("replayed", ctypes.c_uint64)]
+
+
+class PFMouse(ctypes.Structure):
+    _fields_ = [("kind", ctypes.c_uint32), ("x", ctypes.c_int32), ("y", ctypes.c_int32),
+                ("rx", ctypes.c_int32), ("ry", ctypes.c_int32), ("has_rel", ctypes.c_uint32),
+                ("mouse_data", ctypes.c_uint32), ("time", ctypes.c_uint32)]
 
 
 def mods_to_bits(mods) -> int:
@@ -112,6 +120,14 @@ def load_library():
         lib.pf_block_begin.restype = None
         lib.pf_block_end.argtypes = [ctypes.c_int]
         lib.pf_block_end.restype = ctypes.c_uint32
+        lib.pf_mouse_start.argtypes = [ctypes.c_size_t]
+        lib.pf_mouse_start.restype = wt.DWORD
+        lib.pf_mouse_stop.argtypes = []
+        lib.pf_mouse_stop.restype = None
+        lib.pf_mouse_next.argtypes = [ctypes.POINTER(PFMouse), wt.DWORD]
+        lib.pf_mouse_next.restype = ctypes.c_int
+        lib.pf_mouse_dropped.argtypes = []
+        lib.pf_mouse_dropped.restype = ctypes.c_uint32
     except (OSError, AttributeError) as e:
         _lib_error = f"{DLL_NAME}: {e}"
         return None
@@ -234,6 +250,80 @@ class NativeKeyboardHook:
             if r == 0:
                 continue
             self.handle(raw)
+
+
+class NativeMouseHook:
+    """The macro recorder's mouse hook in pfhook.dll: same interface as record_hook.MouseHook
+    (start/stop, calls recorder.click / recorder.wheel), but the WH_MOUSE_LL callback never
+    runs Python, so recording cannot make the mouse lag. The DLL already leaves out our own
+    and other programs' injected input and clicks on PhraseForge's windows."""
+
+    native = True
+
+    def __init__(self, recorder, lib=None):
+        self.recorder = recorder
+        self._lib = lib if lib is not None else load_library()
+        if self._lib is None:
+            raise OSError(library_error() or f"{DLL_NAME} not available")
+        self._running = False
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if self._running:
+            return
+        from phraseforge.platform._win32 import INJECT_MAGIC
+        err = self._lib.pf_mouse_start(INJECT_MAGIC)
+        if err:
+            raise OSError(f"pfhook: mouse hook failed (error {err})")
+        self._running = True
+        self._thread = threading.Thread(target=self._read_loop, name="pf-native-mouse-reader", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        if not self._running:
+            return
+        self._running = False
+        self._lib.pf_mouse_stop()
+        if self._thread:
+            self._thread.join(3)
+        self._thread = None
+
+    @property
+    def running(self) -> bool:
+        return self._running
+
+    def handle(self, m: PFMouse) -> None:
+        from phraseforge.recorder import wheel_delta
+        try:
+            if m.kind == MK_WHEEL:
+                self.recorder.wheel(wheel_delta(m.mouse_data))
+            elif m.kind in (MK_LEFT, MK_RIGHT):
+                rel = (m.rx, m.ry) if m.has_rel else None
+                self.recorder.click("left" if m.kind == MK_LEFT else "right", m.x, m.y, rel)
+        except Exception:
+            log.exception("recorder mouse event failed")
+
+    def _read_loop(self) -> None:
+        m = PFMouse()
+        while True:
+            r = self._lib.pf_mouse_next(ctypes.byref(m), 250)
+            if r < 0:
+                break
+            if r > 0:
+                self.handle(m)
+            elif not self._running:
+                break
+
+
+def make_mouse_hook(recorder):
+    """The recorder's mouse hook: native when pfhook.dll loads, else the Python one."""
+    if os.environ.get("PHRASEFORGE_HOOK", "").lower() != "python":
+        try:
+            return NativeMouseHook(recorder)
+        except OSError as e:
+            log.info("native mouse hook not used: %s", e)
+    from phraseforge.platform.record_hook import MouseHook
+    return MouseHook(recorder)
 
 
 def make_keyboard_hook(on_key: Callable, pass_foreign_injected: bool = True, prefer_native: bool = True,
