@@ -22,12 +22,15 @@ the setup is signed with a key built into PhraseForge (PRD FR-APP-05).
 ## What happens on a release
 
 - The Windows build signs `B-PhraseForgeExpress-Setup-<version>.exe` and publishes
-  `...Setup-<version>.exe.sig` next to it. Without the secret the step signs nothing and the
-  build still passes.
+  `...Setup-<version>.exe.sig` next to it. The signature covers the file's SHA-256, its name
+  and its version, so an older signed setup cannot be offered as a newer version. Without the
+  secret the step signs nothing, the build still passes, and a release run shows a warning.
 - PhraseForge downloads the `.sig` (at most 64 KB) and the setup (at most 400 MB), only from
   this project's releases on github.com. It checks the key is one of `UPDATE_KEYS` (never a key
-  from the download) and the Ed25519 signature over the setup's SHA-256. A file that fails is
-  deleted.
+  from the download), the Ed25519 signature, that the signed version is the offered one and
+  newer than the running PhraseForge, and checks once more right before the setup starts.
+  Redirects are followed only over https to GitHub's download hosts. A file that fails is
+  deleted, and so is the download folder when nothing is installed.
 - Only after the check, PhraseForge asks "Close PhraseForge and run the setup now?". Nothing
   installs without that click.
 

@@ -65,42 +65,61 @@ def can_install(rel: dict | None, keys=None) -> bool:
     return bool(rel and keys and rel.get("setup_url") and rel.get("sig_url"))
 
 
-def verify_file(path, sig_json: bytes, keys) -> None:
-    """Raise UpdateError unless sig_json is a valid signature of the file by one of keys."""
-    import base64
+def _statement(version: str, name: str, digest_hex: str) -> bytes:
+    """What a release signature covers: the version and file name too, so an old signed setup
+    cannot be offered as a new version, or under another name."""
+    return json.dumps({"app": "PhraseForge", "version": version, "name": name, "sha256": digest_hex},
+                      sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _sha256(path) -> str:
     import hashlib
-    from cryptography.exceptions import InvalidSignature
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-    try:
-        data = json.loads(sig_json.decode("utf-8"))
-        key_b64, sig_b64 = str(data["key"]), str(data["sig"])
-        key, sig = base64.b64decode(key_b64, validate=True), base64.b64decode(sig_b64, validate=True)
-    except (ValueError, KeyError, TypeError, UnicodeDecodeError):
-        raise UpdateError("the signature file cannot be read") from None
-    if key_b64 not in keys:
-        raise UpdateError("the update is signed by a key this PhraseForge does not trust")
     h = hashlib.sha256()
     with open(path, "rb") as fh:
         for chunk in iter(lambda: fh.read(1 << 20), b""):
             h.update(chunk)
+    return h.hexdigest()
+
+
+def verify_file(path, sig_json: bytes, keys, version: str = "", current: str = "") -> str:
+    """Raise UpdateError unless sig_json is a valid signature by one of keys over this file,
+    its name and a version. Returns the signed version. With `version`, the signed one must be
+    that version; with `current`, it must be newer than the running one."""
+    import base64
+    from pathlib import Path
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
     try:
-        Ed25519PublicKey.from_public_bytes(key).verify(sig, h.digest())
+        data = json.loads(sig_json.decode("utf-8"))
+        key_b64, sig_b64, signed_version = str(data["key"]), str(data["sig"]), str(data["version"])
+        key, sig = base64.b64decode(key_b64, validate=True), base64.b64decode(sig_b64, validate=True)
+    except (ValueError, KeyError, TypeError, UnicodeDecodeError, AttributeError):
+        raise UpdateError("the signature file cannot be read") from None
+    if key_b64 not in keys:
+        raise UpdateError("the update is signed by a key this PhraseForge does not trust")
+    try:
+        Ed25519PublicKey.from_public_bytes(key).verify(
+            sig, _statement(signed_version, Path(path).name, _sha256(path)))
     except (InvalidSignature, ValueError):
         raise UpdateError("the downloaded setup does not match its signature") from None
+    if version and version_tuple(signed_version) != version_tuple(version):
+        raise UpdateError(f"the setup is signed as v{signed_version}, not v{version}")
+    if current and not is_newer(signed_version, current):
+        raise UpdateError(f"the setup is v{signed_version}, not newer than this PhraseForge")
+    return signed_version
 
 
-def sign_file(path, private_b64: str) -> bytes:
-    """The .sig content for a file (tools/sign_release.py)."""
+def sign_file(path, private_b64: str, version: str) -> bytes:
+    """The .sig content for a release file (tools/sign_release.py)."""
     import base64
-    import hashlib
+    from pathlib import Path
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     k = Ed25519PrivateKey.from_private_bytes(base64.b64decode(private_b64))
     pub = base64.b64encode(k.public_key().public_bytes(serialization.Encoding.Raw,
                                                        serialization.PublicFormat.Raw)).decode()
-    with open(path, "rb") as fh:
-        digest = hashlib.sha256(fh.read()).digest()
-    return json.dumps({"key": pub, "sig": base64.b64encode(k.sign(digest)).decode()}).encode()
+    sig = k.sign(_statement(version, Path(path).name, _sha256(path)))
+    return json.dumps({"key": pub, "version": version, "sig": base64.b64encode(sig).decode()}).encode()
 
 
 def _fetch(url: str, dest, limit: int, opener, timeout: float, progress=None, cancelled=lambda: False) -> None:
@@ -126,13 +145,14 @@ def _fetch(url: str, dest, limit: int, opener, timeout: float, progress=None, ca
                 progress(got, total)
 
 
-def download_verified(rel: dict, folder, opener=urllib.request.urlopen, keys=None, progress=None,
-                      cancelled=lambda: False, timeout: float = 30):
+def download_verified(rel: dict, folder, opener=None, keys=None, progress=None,
+                      cancelled=lambda: False, timeout: float = 15, current: str = ""):
     """Download the release's setup and signature into folder and verify them. Returns the
     setup's path; a file that fails the check is deleted. Raises UpdateError."""
     from pathlib import Path
     from urllib.parse import urlsplit
     keys = UPDATE_KEYS if keys is None else keys
+    opener = opener or _release_opener().open
     if not can_install(rel, keys):
         raise UpdateError("this release cannot be installed from PhraseForge; use the download page")
     folder = Path(folder)
@@ -144,7 +164,7 @@ def download_verified(rel: dict, folder, opener=urllib.request.urlopen, keys=Non
     try:
         _fetch(rel["sig_url"], sig, 64 * 1024, opener, timeout)
         _fetch(rel["setup_url"], setup, MAX_SETUP, opener, timeout, progress, cancelled)
-        verify_file(setup, sig.read_bytes(), keys)
+        verify_file(setup, sig.read_bytes(), keys, version=rel.get("version", ""), current=current)
     except BaseException:
         for f in (setup, sig):
             try:
@@ -153,6 +173,22 @@ def download_verified(rel: dict, folder, opener=urllib.request.urlopen, keys=Non
                 pass
         raise
     return setup
+
+
+DOWNLOAD_HOSTS = ("github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com")
+
+
+def _release_opener():
+    """urllib opener that follows a redirect only over https to GitHub's download hosts."""
+    from urllib.parse import urlsplit
+
+    class Redirects(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            u = urlsplit(newurl)
+            if u.scheme != "https" or (u.hostname or "").lower() not in DOWNLOAD_HOSTS:
+                raise UpdateError("the download was sent to another site")
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+    return urllib.request.build_opener(Redirects)
 
 
 def safe_release_url(url) -> str:

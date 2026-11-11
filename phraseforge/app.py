@@ -1797,20 +1797,29 @@ class PhraseForgeApp(QObject):
         if get_selection is None:
             from phraseforge.platform import windows
             get_selection = windows.get_selected_text
-        text = (get_selection() or "").strip() if not target else get_selection()
+        text = (get_selection() or "").strip()
         post = lambda fn: self.poster.posted.emit(fn)   # noqa: E731
         if not text:
             post(lambda: self.tray.notify("Instant translation", "Select some text first, then press the hotkey."))
             return
-        self._translate_hwnd = hwnd
-        post(lambda: self._bubble().show_busy(text, *self._caret_or_cursor()))
+        if not target:                    # a new selection (not a retranslation): its window is the target
+            self._translate_hwnd = hwnd
+        self._translate_req = rid = getattr(self, "_translate_req", 0) + 1
+        cut = it.was_cut(text)
+        settings = self.store.settings()
+
+        def busy():
+            b = self._bubble()
+            b.back_language = settings.get("translate.instant_back") or "English"
+            b.show_busy(text, *self._caret_or_cursor(), request=rid)
+        post(busy)
         try:
-            out, lang = it.translate(self.store.settings(), text, target, translate_fn)
+            out, lang = it.translate(settings, text, target, translate_fn)
         except Exception as e:     # noqa: BLE001 - shown in the window
             msg = f"Could not translate: {e}"
-            post(lambda: self._bubble().show_error(msg))
+            post(lambda: self._bubble().show_error(msg, request=rid))
             return
-        post(lambda: self._bubble().show_result(text, out, lang))
+        post(lambda: self._bubble().show_result(text, out, lang, request=rid, cut=cut))
 
     def _bubble(self):
         b = getattr(self, "_translate_bubble", None)
@@ -1826,6 +1835,13 @@ class PhraseForgeApp(QObject):
 
     def _replace_with_translation(self, text: str) -> None:
         hwnd = getattr(self, "_translate_hwnd", 0)
+        try:
+            from phraseforge.platform._win32 import user32
+            if hwnd and not user32.IsWindow(hwnd):      # the program was closed meanwhile
+                self.tray.notify("Instant translation", "That window is gone: use Copy instead.")
+                return
+        except (ImportError, AttributeError, OSError):  # not Windows
+            pass
 
         def run():
             target = self._prepare_target(hwnd)
@@ -1837,10 +1853,20 @@ class PhraseForgeApp(QObject):
         from phraseforge.macros import commands_pe
 
         def run():
+            com = None
             try:
-                commands_pe.SPEAKER(text)
+                import pythoncom  # type: ignore
+                pythoncom.CoInitialize()          # a new thread needs COM before SAPI
+                com = pythoncom
+            except Exception:      # noqa: BLE001 - not Windows
+                pass
+            try:
+                commands_pe.SPEAKER(text, wait=True)   # this thread lives until the voice is done
             except Exception:      # noqa: BLE001 - no SAPI voice on this PC
                 self.poster.posted.emit(lambda: self.tray.notify("Instant translation", "No Windows voice is available."))
+            finally:
+                if com is not None:
+                    com.CoUninitialize()
         threading.Thread(target=run, daemon=True, name="translate-speak").start()
 
     def ocr_file(self, path: str = "", post=None, open_result: bool = True):

@@ -166,7 +166,10 @@ jobs:
           PHRASEFORGE_RELEASE_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
         run: |
           $setup = (Get-ChildItem dist\B-PhraseForgeExpress-Setup-*.exe).FullName
-          python tools/sign_release.py $setup
+          # without the key a release has no .sig: it still publishes, with a warning
+          $req = if ("${{ github.ref }}".StartsWith("refs/tags/v") -or "${{ inputs.release_tag }}".StartsWith("v")) { "--required" } else { "" }
+          python tools/sign_release.py --version "${{ steps.ver.outputs.version }}" $req $setup
+          if ($LASTEXITCODE -ne 0) { throw "signing failed" }
 
       - uses: actions/upload-artifact@v4
         with:

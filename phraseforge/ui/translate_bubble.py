@@ -20,6 +20,7 @@ class TranslateBubble(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setObjectName("TranslateBubble")
+        self.setAttribute(Qt.WA_ShowWithoutActivating)   # the selection keeps its focus (Replace needs it)
         self.setFrameShape(QFrame.StyledPanel)
         self.setMinimumWidth(340)
         self.setMaximumWidth(520)
@@ -62,16 +63,22 @@ class TranslateBubble(QFrame):
             row.addWidget(b)
         lay.addLayout(row)
         self.original = self.translation = ""
-        self.source_lang = ""
+        self.back_language = "English"
+        self.request = 0                 # newest request; older answers are dropped
+        self.cut = False
 
-    def show_busy(self, text: str, x: int, y: int) -> None:
+    def show_busy(self, text: str, x: int, y: int, request: int = 0) -> None:
+        self.request = request
         self.original, self.translation = text, ""
         self.source.setText(_short(text))
         self.result.setPlainText("Translating…")
         self._buttons(False)
         self._place(x, y)
 
-    def show_result(self, text: str, translation: str, target: str) -> None:
+    def show_result(self, text: str, translation: str, target: str, request: int = 0, cut: bool = False) -> None:
+        if request != self.request:
+            return                       # an answer to an earlier request
+        self.cut = cut
         self.original, self.translation = text, translation
         self.source.setText(_short(text))
         self.result.setPlainText(translation)
@@ -82,8 +89,13 @@ class TranslateBubble(QFrame):
         if i >= 0:
             self.lang.setCurrentIndex(i)
         self._buttons(True)
+        if cut:                          # only the start was translated: replacing would lose the rest
+            self.replace_btn.setEnabled(False)
+            self.replace_btn.setToolTip(f"Only the first {it.MAX_CHARS} characters were translated")
 
-    def show_error(self, message: str) -> None:
+    def show_error(self, message: str, request: int = 0) -> None:
+        if request != self.request:
+            return
         self.result.setPlainText(message)
         self._buttons(False)
 
@@ -96,8 +108,9 @@ class TranslateBubble(QFrame):
         self.copy_btn.setText("Copied")
 
     def _swap(self) -> None:
+        """Translate the translation back into the language the text came from."""
         if self.translation:
-            back = "English" if self.lang.currentText() != "English" else "Arabic"
+            back = self.back_language if self.lang.currentText() != self.back_language else "Arabic"
             self.retranslate.emit(self.translation, back)
 
     def keyPressEvent(self, e) -> None:
@@ -119,7 +132,6 @@ class TranslateBubble(QFrame):
         self.move(px, py)
         self.show()
         self.raise_()
-        self.activateWindow()
 
 
 def _short(text: str, limit: int = 240) -> str:

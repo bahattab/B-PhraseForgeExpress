@@ -36,10 +36,10 @@ def opener_for(files):
     return opener
 
 
-def make_release(tmp_path, priv, body=b"MZ setup bytes"):
-    exe = tmp_path / "src.exe"
+def make_release(tmp_path, priv, body=b"MZ setup bytes", version="9.9.9"):
+    exe = tmp_path / "B-PhraseForgeExpress-Setup-9.9.9.exe"     # the name is signed too
     exe.write_bytes(body)
-    sig = updates.sign_file(exe, priv)
+    sig = updates.sign_file(exe, priv, version)
     rel = {"version": "9.9.9", "setup_url": SETUP, "sig_url": SETUP + ".sig"}
     return rel, {SETUP: body, SETUP + ".sig": sig}
 
@@ -115,7 +115,46 @@ def test_sign_tool(tmp_path, keys, monkeypatch, capsys):
     exe = tmp_path / "Setup.exe"
     exe.write_bytes(b"MZ")
     monkeypatch.setenv("PHRASEFORGE_RELEASE_KEY", keys[0])
-    assert tool.main([str(exe)]) == 0
-    updates.verify_file(exe, (tmp_path / "Setup.exe.sig").read_bytes(), keys[1])
+    assert tool.main(["--version", "1.2.3", "", str(exe)]) == 0      # an empty argument is ignored
+    assert updates.verify_file(exe, (tmp_path / "Setup.exe.sig").read_bytes(), keys[1]) == "1.2.3"
+    assert tool.main([str(exe)]) == 2                                 # no version
     monkeypatch.delenv("PHRASEFORGE_RELEASE_KEY")
-    assert tool.main([str(exe)]) == 0                 # no key: signs nothing, does not fail the build
+    assert tool.main(["--version", "1", str(exe)]) == 0               # no key: nothing signed, build passes
+    assert tool.main(["--required", "--version", "1", str(exe)]) == 0
+    assert "::warning::" in capsys.readouterr().out
+
+
+def test_old_release_cannot_pose_as_new(tmp_path, keys):
+    """A forged API answer pointing "v9.9.9" at an older signed setup is refused."""
+    priv, trusted = keys
+    rel, files = make_release(tmp_path, priv, version="0.1.0")
+    with pytest.raises(updates.UpdateError, match="signed as v0.1.0"):
+        updates.download_verified(rel, tmp_path / "dl", opener=opener_for(files), keys=trusted)
+    rel2, files2 = make_release(tmp_path, priv, version="0.6.0")
+    rel2["version"] = "0.6.0"
+    with pytest.raises(updates.UpdateError, match="not newer"):
+        updates.download_verified(rel2, tmp_path / "dl2", opener=opener_for(files2), keys=trusted,
+                                  current="0.7.0")
+
+
+def test_renamed_file_breaks_signature(tmp_path, keys):
+    priv, trusted = keys
+    exe = tmp_path / "a.exe"
+    exe.write_bytes(b"MZ")
+    sig = updates.sign_file(exe, priv, "1.0")
+    other = tmp_path / "b.exe"
+    other.write_bytes(b"MZ")
+    with pytest.raises(updates.UpdateError, match="does not match"):
+        updates.verify_file(other, sig, trusted)
+
+
+def test_redirect_only_to_github():
+    import urllib.request
+    opener = updates._release_opener()
+    handler = next(h for h in opener.handlers if isinstance(h, urllib.request.HTTPRedirectHandler))
+    req = urllib.request.Request("https://github.com/x")
+    assert handler.redirect_request(req, None, 302, "", {}, "https://objects.githubusercontent.com/f") is not None
+    with pytest.raises(updates.UpdateError, match="another site"):
+        handler.redirect_request(req, None, 302, "", {}, "https://evil.example/f")
+    with pytest.raises(updates.UpdateError):
+        handler.redirect_request(req, None, 302, "", {}, "http://objects.githubusercontent.com/f")

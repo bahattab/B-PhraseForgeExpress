@@ -12,6 +12,12 @@ language, so one hotkey covers both ways (Arabic <-> English by default).
 from __future__ import annotations
 
 MAX_CHARS = 5000
+
+
+def was_cut(text: str) -> bool:
+    return len((text or "").strip()) > MAX_CHARS
+
+
 LANGUAGES = ("Arabic", "English", "French", "German", "Spanish", "Italian", "Portuguese", "Turkish",
              "Persian", "Urdu", "Russian", "Chinese", "Japanese", "Korean", "Hindi", "Indonesian", "Dutch")
 
@@ -26,12 +32,12 @@ def target_for(text: str, to: str, back: str) -> str:
 
 
 def translate(settings: dict, text: str, to: str = "", translate_fn=None) -> tuple[str, str]:
-    """(translation, target language) for the selected text. Raises ValueError for no text."""
+    """(translation, target language) for the selected text. Raises ValueError for no text.
+    Only the first MAX_CHARS characters are translated (was_cut tells)."""
     text = (text or "").strip()
     if not text:
         raise ValueError("Select some text first, then press the hotkey.")
-    if len(text) > MAX_CHARS:
-        text = text[:MAX_CHARS]
+    text = text[:MAX_CHARS]
     target = to or target_for(text, settings.get("translate.instant_to") or "Arabic",
                               settings.get("translate.instant_back") or "English")
     from phraseforge import ai

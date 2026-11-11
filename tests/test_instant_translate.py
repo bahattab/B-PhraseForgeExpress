@@ -51,6 +51,29 @@ def test_bubble(app):
     assert not b.replace_btn.isEnabled()
 
 
+def test_bubble_drops_stale_answers_and_guards_cut_text(app):
+    from phraseforge.ui.translate_bubble import TranslateBubble
+    b = TranslateBubble()
+    b.show_busy("new", 10, 10, request=2)
+    b.show_result("old", "قديم", "Arabic", request=1)        # an earlier request answers late
+    assert b.result.toPlainText() != "قديم"
+    b.show_result("new", "جديد", "Arabic", request=2, cut=True)
+    assert b.result.toPlainText() == "جديد" and not b.replace_btn.isEnabled() and b.copy_btn.isEnabled()
+    assert b.testAttribute(__import__("PySide6.QtCore", fromlist=["Qt"]).Qt.WA_ShowWithoutActivating)
+
+
+def test_swap_uses_the_back_language(app):
+    from phraseforge.ui.translate_bubble import TranslateBubble
+    b = TranslateBubble()
+    b.back_language = "French"
+    b.show_busy("x", 1, 1, request=1)
+    b.show_result("x", "y", "Arabic", request=1)
+    got = []
+    b.retranslate.connect(lambda t, lang: got.append(lang))
+    b._swap()
+    assert got == ["French"]
+
+
 def test_app_hotkey_flow(app):
     from phraseforge.app import PhraseForgeApp
     shown = []
@@ -64,9 +87,9 @@ def test_app_hotkey_flow(app):
             return (10, 10)
 
         def _bubble(self):
-            return type("B", (), {"show_busy": lambda s, t, x, y: shown.append(("busy", t)),
-                                  "show_result": lambda s, t, o, l: shown.append(("result", o, l)),
-                                  "show_error": lambda s, m: shown.append(("error", m))})()
+            return type("B", (), {"show_busy": lambda s, t, x, y, request=0: shown.append(("busy", t)),
+                                  "show_result": lambda s, t, o, l, request=0, cut=False: shown.append(("result", o, l)),
+                                  "show_error": lambda s, m, request=0: shown.append(("error", m))})()
     f = Fake()
     PhraseForgeApp._instant_translate(f, 1, lambda: "Hello", lambda t, lang: "مرحبا")
     assert shown == [("busy", "Hello"), ("result", "مرحبا", "Arabic")]
