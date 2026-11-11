@@ -154,8 +154,13 @@ def map_header(row: list[str]) -> dict[int, str] | None:
 
 
 def read_rows(path: str | Path) -> list[dict[str, str]]:
-    text = _read_text(path)
-    rows = [r for r in csv.reader(io.StringIO(text), _dialect(text)) if any(c.strip() for c in r)]
+    if Path(path).suffix.lower() in (".xlsx", ".xlsm"):       # first sheet with rows
+        from phraseforge.importers.files import xlsx_rows
+        rows = next((r for _name, r in xlsx_rows(path) if r), [])
+        rows = [r for r in rows if any(c.strip() for c in r)]
+    else:
+        text = _read_text(path)
+        rows = [r for r in csv.reader(io.StringIO(text), _dialect(text)) if any(c.strip() for c in r)]
     if not rows:
         return []
     cols = map_header(rows[0])
@@ -252,7 +257,9 @@ def import_xml(store: Store, path: str | Path, folder_name: str | None = None) -
         hk = _field_from(el, "hotkey").strip()
         if hk:
             triggers.append(Trigger(TriggerKind.HOTKEY, hk))
-        fmt = "html" if re.search(r"(?i)</?(p|b|i|br|div|span)\b", content) else "text"
+        fmt = _field_from(el, "format").strip().lower()
+        if fmt not in ("text", "html", "rtf"):
+            fmt = "html" if re.search(r"(?i)</?(p|b|i|br|div|span)\b", content) else "text"
         store.add_phrase(Phrase(desc, _pe_macros(content, rep), folder_id=fid, triggers=triggers,
                                 content_format=fmt))
         rep.imported += 1
@@ -408,10 +415,106 @@ def export_macos_plist(store: Store, path: str | Path, folder_id: int | None = N
     return rep
 
 
+_XML_BAD = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]")     # not allowed in XML 1.0
+XLSX_CELL_MAX = 32767                                                    # Excel's limit per cell
+
+
+def _autotexts(p: Phrase) -> str:
+    return "|".join(t.value for t in p.triggers if t.kind == TriggerKind.AUTOTEXT and t.value)
+
+
+def _fmt_of(store: Store, p: Phrase, language: str) -> str:
+    return (store.phrase_text(p, language)[1] if language else p.content_format) or "text"
+
+
+def export_xml(store: Store, path: str | Path, folder_id: int | None = None,
+               language: str = "") -> ExchangeReport:
+    """Folders and phrases as nested XML (<phrases><folder name><phrase>...). import_xml reads
+    it back with the folder tree, autotexts, hotkey and format. Macros stay in PhraseForge syntax."""
+    import xml.etree.ElementTree as ET
+    rep = ExchangeReport()
+    clean = lambda t: _XML_BAD.sub("", t or "")
+    root = ET.Element("phrases", {"generator": "PhraseForge", "version": "1"})
+    folders = store.folders()
+    children: dict = {}
+    for f in folders:
+        children.setdefault(f.parent_id, []).append(f)
+    by_folder: dict = {}
+    for p in _phrases(store, folder_id):
+        by_folder.setdefault(p.folder_id, []).append(p)
+
+    def add(el, fid) -> int:
+        n = 0
+        for p in by_folder.get(fid, []):
+            pe_ = ET.SubElement(el, "phrase")
+            ET.SubElement(pe_, "description").text = clean(p.description)
+            ET.SubElement(pe_, "content").text = clean(_text_of(store, p, language))
+            ET.SubElement(pe_, "format").text = _fmt_of(store, p, language)
+            if _autotexts(p):
+                ET.SubElement(pe_, "autotext").text = clean(_autotexts(p))
+            if _trigger(p, TriggerKind.HOTKEY):
+                ET.SubElement(pe_, "hotkey").text = clean(_trigger(p, TriggerKind.HOTKEY))
+            n += 1
+        for f in children.get(fid, []):
+            sub = ET.Element("folder", {"name": clean(f.name)})
+            got = add(sub, f.id)
+            if got:                                   # folders without phrases are left out
+                el.append(sub)
+                n += got
+        return n
+
+    if folder_id is None:
+        rep.exported = add(root, None)
+    else:
+        top = next((f for f in folders if f.id == folder_id), None)
+        sub = ET.SubElement(root, "folder", {"name": clean(top.name if top else "Folder")})
+        rep.exported = add(sub, folder_id)
+    ET.indent(root)
+    ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
+    return rep
+
+
+def export_xlsx(store: Store, path: str | Path, folder_id: int | None = None,
+                language: str = "") -> ExchangeReport:
+    """Excel workbook, one row per phrase: Description, Content, Autotext, Hotkey, Folder, Format.
+    Every cell is written as text, so a phrase that starts with = is never run as a formula."""
+    from openpyxl import Workbook
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+    from phraseforge.io_formats import folder_path
+    rep = ExchangeReport()
+    wb = Workbook(write_only=False)
+    ws = wb.active
+    ws.title = "Phrases"
+    cut = 0
+
+    def put(row: int, values) -> None:
+        nonlocal cut
+        for col, v in enumerate(values, 1):
+            v = ILLEGAL_CHARACTERS_RE.sub("", v or "")
+            if len(v) > XLSX_CELL_MAX:
+                v, cut = v[:XLSX_CELL_MAX], cut + 1
+            c = ws.cell(row=row, column=col)
+            c.value = v
+            c.data_type = "s"                          # text, also for "=1+1"
+
+    put(1, PE_HEADER + ["Format"])
+    for i, p in enumerate(_phrases(store, folder_id), 2):
+        put(i, [p.description, _text_of(store, p, language), _autotexts(p), _trigger(p, TriggerKind.HOTKEY),
+                folder_path(store, p.folder_id), _fmt_of(store, p, language)])
+        rep.exported += 1
+    for col, width in zip("ABCDEF", (30, 70, 16, 16, 30, 10)):
+        ws.column_dimensions[col].width = width
+    ws.freeze_panes = "A2"
+    wb.save(path)
+    if cut:
+        rep.notes.append(f"{cut} text(s) longer than {XLSX_CELL_MAX} characters were cut (Excel's limit per cell).")
+    return rep
+
+
 def export_any(store: Store, path: str | Path, kind: str, folder_id: int | None = None,
                language: str = "") -> ExchangeReport:
     fn = {"phraseexpress": export_phraseexpress_csv, "textexpander": export_textexpander_csv,
-          "macos": export_macos_plist}[kind]
+          "macos": export_macos_plist, "xml": export_xml, "xlsx": export_xlsx}[kind]
     return fn(store, path, folder_id, language)
 
 
@@ -465,6 +568,8 @@ def import_any(store: Store, path: str | Path) -> ExchangeReport:
         return import_text_files(store, [p])
     if p.suffix.lower() in (".csv", ".txt", ".tsv"):
         return import_csv(store, p)
+    if p.suffix.lower() in (".xlsx", ".xlsm"):
+        return import_csv(store, p)                 # same columns, read from the first sheet
     if p.suffix.lower() == ".xml":
         return import_xml(store, p)
     if looks_encrypted(p):
