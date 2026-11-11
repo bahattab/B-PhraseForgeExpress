@@ -29,7 +29,12 @@ def signature_text(sig) -> str:
     return tr("The signature is not valid: the files were changed after signing.")
 
 
-def consent_text(manifest, asked: list[str], update: bool, old=None, sig=None) -> str:
+SANDBOXED_NOTE = ("A plugin is a program. PhraseForge runs it with limited Windows rights: on NTFS drives it "
+                  "cannot change your files or settings, but it can still read your files (including the API "
+                  "keys PhraseForge keeps) and may reach the internet on its own. Install only plugins you trust.")
+
+
+def consent_text(manifest, asked: list[str], update: bool, old=None, sig=None, sandboxed: bool = False) -> str:
     if update and old is not None:
         head = tr('Replace "{old}" {oldv} with "{name}" {version}?').replace("{old}", _plain(old.name)) \
             .replace("{oldv}", _plain(old.version, 20))
@@ -42,6 +47,8 @@ def consent_text(manifest, asked: list[str], update: bool, old=None, sig=None) -
     head = head.replace("{name}", _plain(manifest.name)).replace("{version}", _plain(manifest.version, 20))
     body = ("\n\n• " + "\n• ".join(asked)) if asked else ""
     # the list is what the plugin declares: nothing enforces it yet (security R97)
+    if sandboxed:                     # low integrity (plugins/sandbox.py): writes refused, reads and network not
+        return head + body + "\n\n" + signature_text(sig) + "\n" + tr(SANDBOXED_NOTE)
     return head + body + "\n\n" + signature_text(sig) + "\n" + tr(
         "A plugin is a program that runs with your Windows rights: it can read your files and reach the "
         "internet whatever it declares. Install only plugins you trust.")
@@ -149,7 +156,9 @@ class PluginsDialog(QDialog):
                 return False
             old = self.mgr.installed().get(m.id)
             # an update always asks: anyone can make a package with the same id (R101)
-            if not self.ask(consent_text(m, asked, old is not None, old, sig)):
+            import sys
+            boxed = sys.platform == "win32" and self.mgr.store.setting("plugins.sandbox", "1") != "0"
+            if not self.ask(consent_text(m, asked, old is not None, old, sig, boxed)):
                 return False
             try:
                 self.mgr.install(staged, accept=True, expected=m)

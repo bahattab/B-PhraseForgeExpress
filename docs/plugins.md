@@ -122,3 +122,19 @@ Each non-empty piece restarts the call's timeout, but a call ends after ten time
 any case, and after 4 MB of streamed text (each piece also counts 64 bytes, so at most about
 65,000 pieces). A call that did not ask to stream ignores `$/progress`: its timeout is never
 extended. The live text is shown as plain text. `examples/plugins/echo-ai` streams word by word.
+
+## Sandbox (Windows)
+
+Plugins run at **Low integrity**: PhraseForge starts them with a copy of your Windows token whose
+integrity level is lowered. Windows then refuses the plugin any change to your files, folders,
+settings (HKCU), the PhraseForge database and other programs. Its temp folder is
+`%USERPROFILE%\AppData\LocalLow\PhraseForge\Temp`, the one place it can write. A plugin that cannot
+be started this way does not run.
+
+Not covered: a sandboxed plugin can still **read** what you can read, including the PhraseForge
+database, and Windows lets it decrypt the API keys and plugin secrets stored there (DPAPI has no
+integrity check); it could also open network connections itself instead of through its proxy.
+Integrity labels exist only on NTFS: with a portable data folder on a FAT/exFAT stick (or some
+network shares) a plugin can write there too. In portable mode the plugin temp folder is
+`PhraseForgeData\PluginTemp`, so nothing is left on the PC. Install only plugins you trust. The sandbox can be
+switched off for one PC with the setting `plugins.sandbox = 0` (not synced).

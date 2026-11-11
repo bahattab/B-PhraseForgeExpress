@@ -2085,7 +2085,8 @@ def _run_plugin(path: str) -> int:
         return 2
     import tempfile
     sys.dont_write_bytecode = True
-    sys.pycache_prefix = tempfile.mkdtemp(prefix="pf-pycache-")   # a planted __pycache__ is never read (R118)
+    given = os.environ.get("PHRASEFORGE_PYCACHE", "")       # made by PhraseForge itself (Medium integrity)
+    sys.pycache_prefix = given if given and os.path.isdir(given) else tempfile.mkdtemp(prefix="pf-pycache-")
     sys.argv = [path]
     sys.path[:] = [str(Path(path).parent)] + [p for p in sys.path if p]
     runpy.run_path(path, run_name="__main__")
