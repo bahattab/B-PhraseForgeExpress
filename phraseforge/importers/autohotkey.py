@@ -32,10 +32,24 @@ from phraseforge.models import AutotextMode, Folder, Phrase, Trigger, TriggerKin
 
 HOTSTRING = re.compile(r"^\s*:([0-9A-Za-z*?]*):(.+?)::(.*)$")
 ESCAPES = {"n": "\n", "t": "\t", "r": "", "`": "`", ";": ";", ":": ":", "{": "{", "}": "}", "s": " ",
-           "b": "\b", '"': '"', "'": "'"}
+           "b": "", '"': '"', "'": "'"}
 KEYS = {"enter": "\n", "tab": "\t", "space": " ", "{": "{", "}": "}"}
 KEY_RE = re.compile(r"\{([^{}]+|\{|\})\}")
 MAX_FILE = 8 * 1024 * 1024
+OPTION = re.compile(r"[*?]0?|[A-Z]\d*", re.I)
+
+
+def options(opts: str) -> dict[str, str]:
+    """':*?C1O:' options as {letter: value}; "0" turns an option off, so it is left out.
+    Unknown letters (B0, SI, Kn, Pn, Z, ...) are kept and ignored."""
+    out: dict[str, str] = {}
+    for tok in OPTION.findall(opts or ""):
+        letter, value = tok[0].upper(), tok[1:]
+        if value == "0":
+            out.pop(letter, None)
+        else:
+            out[letter] = value
+    return out
 
 
 @dataclass
@@ -95,8 +109,9 @@ def parse(text: str) -> tuple[list[Hotstring], int]:
         if not m:
             continue
         opts, abbr, rest = m.group(1), m.group(2), m.group(3)
-        raw = bool(set(opts.upper()) & {"R", "T"})
-        if "X" in opts.upper():
+        o = options(opts)
+        raw = "R" in o or "T" in o
+        if "X" in o:
             skipped += 1                   # runs code, not text
             continue
         body = strip_comment(rest).rstrip(" \t")   # trailing blanks are ignored unless escaped (`s)
@@ -105,21 +120,32 @@ def parse(text: str) -> tuple[list[Hotstring], int]:
             continue
         if not body.strip():
             if i < len(lines) and lines[i].strip().startswith("("):      # continuation section
-                sec_opts = lines[i].strip()[1:]
+                sec = lines[i].strip()[1:].split()
                 i += 1
                 part = []
                 while i < len(lines) and not lines[i].lstrip().startswith(")"):
                     part.append(lines[i])
                     i += 1
+                if i >= len(lines):        # no ")": not a section, do not swallow the script
+                    skipped += 1
+                    continue
                 i += 1                     # the ")" line
-                keep_ws = "LTrim" not in sec_opts and "ltrim" not in sec_opts.lower()
-                rows = part if keep_ws else [p.lstrip() for p in part]
-                found.append(Hotstring(unescape(abbr), "\n".join(rows) if raw else unescape("\n".join(rows)),
-                                       opts, raw))
+                low = [x.lower() for x in sec]
+                join = "\n"
+                for x in sec:
+                    if x.lower().startswith("join"):
+                        join = unescape(x[4:])
+                if "ltrim" in low:
+                    part = [p.lstrip(" \t") for p in part]
+                if "rtrim0" not in low:    # AutoHotkey trims each line's end by default
+                    part = [p.rstrip(" \t") for p in part]
+                if "c" in low or "comments" in low:
+                    part = [strip_comment(p).rstrip(" \t") for p in part if not p.lstrip().startswith(";")]
+                found.append(Hotstring(unescape(abbr), unescape(join.join(part)), opts, raw))
             else:
                 skipped += 1               # "::abbr::" then code lines (Send, Run, ... return)
             continue
-        found.append(Hotstring(unescape(abbr), body if raw else unescape(body), opts, raw))
+        found.append(Hotstring(unescape(abbr), unescape(body), opts, raw))   # `n etc. also in R/T mode
     return found, skipped
 
 
@@ -142,14 +168,14 @@ def convert(h: Hotstring, unknown: dict[str, int]) -> str:
 
 
 def trigger_for(h: Hotstring) -> Trigger:
-    o = h.options
+    o = options(h.options)
     t = Trigger(TriggerKind.AUTOTEXT, h.abbr,
                 mode=AutotextMode.IMMEDIATE if "*" in o else AutotextMode.DELIMITER,
-                case_sensitive="C" in o.upper() and "C1" not in o.upper(),
+                case_sensitive="C" in o and o["C"] != "1",       # C = case-sensitive, C1 = not
                 word_start_only="?" not in o)
     if "?" in o:
         t.word_pos = "middle"
-    if "O" in o.upper() and "*" not in o:
+    if "O" in o and "*" not in o:
         t.remove_trailing = True
     return t
 

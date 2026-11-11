@@ -82,3 +82,46 @@ def test_editor_spell_follows_version(app, store):
     assert ed.spell_checker.language == "German"
     ed.lang_bar.setCurrentIndex(0)
     assert ed.spell_checker.language == ""
+
+
+def test_untrusted_markdown_is_cleaned(app, tmp_path):
+    p = tmp_path / "evil.md"
+    p.write_text("![x](file://attacker/share/a.png) ![y](C:/secret.png) "
+                 "[ok](https://example.com) [bad](file:///C:/x) [js](javascript:alert(1))\n", encoding="utf-8")
+    html, _ = editor_files.read_for_editor(p)
+    assert "<img" not in html and "attacker" not in html and "secret.png" not in html
+    assert 'href="https://example.com"' in html and "javascript" not in html and "file:" not in html
+
+
+def test_inserted_macros_quarantine_the_phrase(app, store):
+    from phraseforge.ui.phrase_editor import PhraseEditor
+    p = store.add_phrase(Phrase("P", "<p>keep {#date}</p>", content_format="html"))
+    ed = PhraseEditor(store)
+    ed.load(p.id)
+    store.release_quarantine(p.id)
+    from PySide6.QtGui import QTextCursor
+    ed.content_edit.moveCursor(QTextCursor.End)
+    ed.insert_document("<table><tr><td>a</td></tr></table><p>{#run calc}</p>", True)
+    ed.save()
+    assert store.quarantine_origin(p.id) == "imported"
+    assert "{#run calc}" in ed.content_edit.content() and "{#date}" in ed.content_edit.content()
+    ed.content_edit.insert_content("typed")
+    ed._mark_dirty()
+    ed.save()                                            # the next save by the user approves it again
+    assert store.quarantine_origin(p.id) is None
+
+
+def test_chipify_range_only_touches_the_insert(app, store):
+    from phraseforge.ui.phrase_editor import PhraseEditor
+    p = store.add_phrase(Phrase("P", "<p>x</p>", content_format="html"))
+    ed = PhraseEditor(store)
+    ed.load(p.id)
+    ce = ed.content_edit
+    c = ce.textCursor()
+    from PySide6.QtGui import QTextCursor
+    c.movePosition(QTextCursor.End)
+    c.insertText("{#literal}")                           # plain text, not a chip yet
+    start = c.position()
+    c.insertHtml("<table><tr><td>t</td></tr></table><p>{#date}</p>")
+    ce.chipify_range(start, c.position())
+    assert len(ce._chip_positions(ce.document())) == 1

@@ -277,6 +277,25 @@ class ChipTextEdit(QTextEdit):
         self.moveCursor(QTextCursor.Start)
         self.viewport().update()
 
+    MACRO_FIND = r"\{#(?:[^{}]|\{[^{}]*\})*\}"     # a macro, one level of nested braces
+
+    def chipify_range(self, start: int, end: int) -> None:
+        """Turn the {#macros} between two document positions into chips (end to start). Uses the
+        document's own positions, which stay right across tables and lists."""
+        from PySide6.QtCore import QRegularExpression
+        doc = self.document()
+        rx = QRegularExpression(self.MACRO_FIND)
+        hits, c = [], doc.find(rx, start)
+        while not c.isNull() and c.selectionEnd() <= end:
+            hits.append((c.selectionStart(), c.selectionEnd(), c.selectedText()))
+            c = doc.find(rx, c.selectionEnd())
+        for a, b, token in reversed(hits):
+            cur = QTextCursor(doc)
+            cur.setPosition(a)
+            cur.setPosition(b, QTextCursor.KeepAnchor)
+            base = cur.charFormat()
+            cur.insertText(OBJ, self.chip_format(token, base))
+
     def _chipify_document(self) -> None:
         """Replace macro text inside a rich document with chips (end to start)."""
         doc = self.document()
@@ -712,6 +731,7 @@ class PhraseEditor(QWidget):
             self._deleted_versions = set()
             self._lang = ""
             self._spell_language()
+            self._from_file = False
             self._default = (p.content, p.content_format)
             self._fill_lang_bar()
         finally:
@@ -739,8 +759,11 @@ class PhraseEditor(QWidget):
                 if old.get(lang) != (text, fmt):
                     self.store.set_phrase_version(p.id, lang, text, fmt)
             self._deleted_versions = set()
-        if hasattr(self.store, "release_quarantine"):
+        if getattr(self, "_from_file", False) and hasattr(self.store, "quarantine"):
+            self.store.quarantine(p.id, "imported")   # macros came from a file: they ask first
+        elif hasattr(self.store, "release_quarantine"):
             self.store.release_quarantine(p.id)   # edited and saved here: the user has seen it
+        self._from_file = False
         self.dirty = False
         self.saved.emit(p.id)
         return True
@@ -817,17 +840,23 @@ class PhraseEditor(QWidget):
         self.insert_document(content, is_html)
 
     def insert_document(self, content: str, is_html: bool) -> None:
+        """Insert a file's content at the cursor. Its macros become chips, and the phrase counts
+        as imported when it is saved (the file is not the user's own writing)."""
         ed = self.content_edit
         c = ed.textCursor()
         if is_html and ed.rich:
+            start = c.selectionStart()
             c.insertHtml(content)
-            ed._chipify_document()             # {#macros} in the file become chips like typed ones
+            ed.chipify_range(start, c.position())   # only what was inserted, by real positions
         else:
             if is_html:                        # a plain-text phrase keeps the words, not the formatting
                 from PySide6.QtGui import QTextDocumentFragment
                 content = QTextDocumentFragment.fromHtml(content).toPlainText()
             ed.insert_content(content, c)
         ed.setTextCursor(c)
+        if "{#" in content:
+            self._from_file = True
+        self._mark_dirty()
 
     def _spell_language(self) -> None:
         if self.spell_checker is not None and self.spell_checker.language != self._lang:

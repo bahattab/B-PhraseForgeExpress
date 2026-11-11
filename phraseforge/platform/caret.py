@@ -9,12 +9,17 @@ Electron programs, modern Office and UWP apps draw their own, so for them Phrase
    else the selection; its bounding rectangle.
 
 Every step is best effort: any error means "no answer" and the caller falls back to the
-mouse position. Nothing here runs off Windows.
+mouse position. The questions are cross-process COM calls that a hung program never answers,
+so they run on one worker thread of their own (its own COM apartment) and lookup() waits at
+most TIMEOUT_S; while an earlier question is still stuck, lookup() answers None at once.
+Nothing here runs off Windows.
 """
 from __future__ import annotations
 
 import logging
+import queue
 import sys
+import threading
 
 log = logging.getLogger(__name__)
 
@@ -23,6 +28,7 @@ CHILDID_SELF = 0
 UIA_TEXT_PATTERN = 10014
 UIA_TEXT_PATTERN2 = 10024
 TEXT_UNIT_CHARACTER = 0
+TIMEOUT_S = 0.25
 MAX_SIDE = 2000          # a "caret" larger than this is the whole control, not a caret
 
 
@@ -114,3 +120,42 @@ def uia_caret() -> tuple[int, int] | None:
     except Exception:            # noqa: BLE001 - no UI Automation, element gone, hung program
         log.debug("UI Automation caret not available", exc_info=True)
         return None
+
+
+_jobs: "queue.Queue" = queue.Queue()
+_worker: threading.Thread | None = None
+_busy = threading.Event()
+
+
+def _serve() -> None:
+    try:
+        import comtypes
+        comtypes.CoInitialize()
+    except Exception:            # noqa: BLE001
+        log.debug("COM could not start on the caret thread", exc_info=True)
+    while True:
+        hwnd, box, done = _jobs.get()
+        try:
+            box.append(msaa_caret(hwnd) or uia_caret())
+        except Exception:        # noqa: BLE001
+            box.append(None)
+        finally:
+            _busy.clear()
+            done.set()
+
+
+def lookup(hwnd: int, timeout: float = TIMEOUT_S) -> tuple[int, int] | None:
+    """MSAA then UI Automation, asked on the caret thread; None after `timeout` seconds."""
+    global _worker
+    if sys.platform != "win32" or _busy.is_set():
+        return None
+    if _worker is None or not _worker.is_alive():
+        _worker = threading.Thread(target=_serve, name="caret-com", daemon=True)
+        _worker.start()
+    box: list = []
+    done = threading.Event()
+    _busy.set()
+    _jobs.put((hwnd, box, done))
+    if not done.wait(timeout):
+        return None              # still asking a hung program: the next lookup returns None until it ends
+    return box[0] if box else None

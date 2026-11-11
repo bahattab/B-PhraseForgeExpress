@@ -145,7 +145,7 @@ def caret_position() -> tuple[int, int] | None:
     if pos is not None:
         return pos
     from phraseforge.platform import caret
-    return caret.msaa_caret(user32.GetForegroundWindow()) or caret.uia_caret()
+    return caret.lookup(user32.GetForegroundWindow())
 
 
 def _win32_caret() -> tuple[int, int] | None:

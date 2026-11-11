@@ -82,3 +82,28 @@ def test_ansi_and_utf16(tmp_path):
 def test_escapes():
     assert ahk.unescape("a`tb``c`;d") == "a\tb`c;d"
     assert ahk.strip_comment("text `; kept ; dropped") == "text `; kept"
+
+
+def test_zero_turns_options_off():
+    o = ahk.options("*0?0C0O0R0")
+    assert o == {}
+    t = ahk.trigger_for(ahk.Hotstring("x", "y", "*0?0C0", False))
+    assert t.mode == AutotextMode.DELIMITER and t.word_start_only and not t.case_sensitive
+    assert not ahk.trigger_for(ahk.Hotstring("x", "y", "C1", False)).case_sensitive
+    assert ahk.trigger_for(ahk.Hotstring("x", "y", "SIC", False)).case_sensitive   # other letters ignored
+
+
+def test_raw_still_unescapes():
+    hs, _ = ahk.parse(":T:x::a`nb {Enter}\n")
+    assert hs[0].text == "a\nb {Enter}" and hs[0].raw
+
+
+def test_continuation_options():
+    text = "::j::\n(Join, LTrim\n   a  \n   b\n)\n::r::\n(RTrim0\nkeep  \n)\n::c::\n(C\none ; note\n; whole line\ntwo\n)\n"
+    got = {h.abbr: h.text for h in ahk.parse(text)[0]}
+    assert got == {"j": "a,b", "r": "keep  ", "c": "one\ntwo"}
+
+
+def test_unterminated_section_does_not_swallow():
+    hs, skipped = ahk.parse("::a::\n(\nline\n::b::after\n")
+    assert skipped == 1 and [h.abbr for h in hs] == []

@@ -126,7 +126,7 @@ class SpellChecker:
         self._cache: dict[tuple[str, str], bool] = {}
         self._ignored: set[str] = set()
         self._conf: tuple[bool, str, str, frozenset[str]] | None = None   # settings, read once
-        self._have: dict[str, bool] = {}     # is a language's dictionary downloaded (asked once)
+        self._have: dict[str, tuple[bool, float]] = {}     # is a language's dictionary downloaded (asked once)
         self._lock = threading.Lock()
         self.listeners: list[Callable[[str], None]] = []   # called (from any thread) when a dictionary is ready
 
@@ -162,9 +162,13 @@ class SpellChecker:
         own = code_for_language(language)
         if not own or own == code or DICTIONARIES[own][2] != script:
             return code
-        have = self._have.get(own)
-        if have is None:                      # a missing dictionary falls back to the setting's
-            have = self._have[own] = own in self._dicts or installed(own)
+        import time
+        have, when = self._have.get(own, (None, 0.0))
+        if have is None or (not have and time.monotonic() - when > 5):
+            # a missing dictionary falls back to the setting's; "not downloaded" is asked again
+            # every few seconds, so a dictionary downloaded meanwhile is picked up
+            have = own in self._dicts or installed(own)
+            self._have[own] = (have, time.monotonic())
         return own if have else code
 
     def user_words(self) -> set[str]:

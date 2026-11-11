@@ -30,6 +30,7 @@ def test_off_windows_nothing_runs():
         pytest.skip("Windows has the real layers")
     assert caret.msaa_caret(123) is None
     assert caret.uia_caret() is None
+    assert caret.lookup(123) is None
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Win32 layers")
@@ -41,6 +42,23 @@ def test_layers_in_order(monkeypatch):
     monkeypatch.setattr(caret, "uia_caret", lambda: seen.append("uia") or (5, 6))
     assert windows.caret_position() == (5, 6)
     assert seen == ["win32", "msaa", "uia"]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the caret thread is Windows-only")
+def test_hung_program_does_not_block(monkeypatch):
+    import threading
+    import time
+    release = threading.Event()
+    monkeypatch.setattr(caret, "msaa_caret", lambda hwnd: release.wait(5) and None)
+    monkeypatch.setattr(caret, "uia_caret", lambda: None)
+    t0 = time.monotonic()
+    assert caret.lookup(1, timeout=0.2) is None
+    assert caret.lookup(1, timeout=0.2) is None            # still stuck: answered at once
+    assert time.monotonic() - t0 < 1.0
+    release.set()
+    time.sleep(0.3)
+    monkeypatch.setattr(caret, "msaa_caret", lambda hwnd: (7, 8))
+    assert caret.lookup(1, timeout=1) == (7, 8)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Win32 layers")
