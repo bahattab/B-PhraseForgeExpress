@@ -126,6 +126,7 @@ class SpellChecker:
         self._cache: dict[tuple[str, str], bool] = {}
         self._ignored: set[str] = set()
         self._conf: tuple[bool, str, str, frozenset[str]] | None = None   # settings, read once
+        self._have: dict[str, bool] = {}     # is a language's dictionary downloaded (asked once)
         self._lock = threading.Lock()
         self.listeners: list[Callable[[str], None]] = []   # called (from any thread) when a dictionary is ready
 
@@ -145,15 +146,26 @@ class SpellChecker:
     def refresh(self) -> None:
         """Re-read the spell.* settings (after Settings closes)."""
         self._conf = None
+        self._have = {}
 
     def enabled(self) -> bool:
         return self._settings()[0]
 
-    def code_for(self, script: str) -> str:
-        """The dictionary for a script; "" (off) for a code that is not in DICTIONARIES."""
+    def code_for(self, script: str, language: str = "") -> str:
+        """The dictionary for a script; "" (off) for a code that is not in DICTIONARIES.
+        language: the phrase version being edited (G-17); its dictionary wins for its own script
+        when spell checking is set up for that script."""
         s = self._settings()
         code = s[2] if script == "arabic" else s[1]
-        return code if code in DICTIONARIES else ""
+        if code not in DICTIONARIES:
+            return ""
+        own = code_for_language(language)
+        if not own or own == code or DICTIONARIES[own][2] != script:
+            return code
+        have = self._have.get(own)
+        if have is None:                      # a missing dictionary falls back to the setting's
+            have = self._have[own] = own in self._dicts or installed(own)
+        return own if have else code
 
     def user_words(self) -> set[str]:
         return set(self._settings()[3])
@@ -227,17 +239,18 @@ class SpellChecker:
         with self._lock:
             self._dicts.pop(code, None)
             self._failed.pop(code, None)
+            self._have.pop(code, None)
             self._cache = {k: v for k, v in self._cache.items() if k[0] != code}
             self._suggested = {k: v for k, v in self._suggested.items() if k[0] != code}
 
     # ---------------------------------------------------------------- checking
-    def is_misspelled(self, word: str) -> bool:
+    def is_misspelled(self, word: str, language: str = "") -> bool:
         if not self.enabled():
             return False
         w = normalize(word)
         if len(w) < 2 or w in self._ignored or w in self._settings()[3]:
             return False
-        code = self.code_for(script_of(w))
+        code = self.code_for(script_of(w), language)
         d = self.dictionary(code)
         if d is None:
             return False
@@ -250,13 +263,14 @@ class SpellChecker:
 
     MAX_SEARCHES = 3          # a slow word must not hold up suggestions for the next one
 
-    def suggest_within(self, word: str, timeout: float = 0.4, limit: int = 6) -> list[str] | None:
+    def suggest_within(self, word: str, timeout: float = 0.4, limit: int = 6,
+                       language: str = "") -> list[str] | None:
         """Suggestions found within `timeout` seconds, or None if the search is still running.
         Hunspell suggestions can take seconds for a long Arabic word (30 s measured), so the
         search runs in a background thread and its result is kept: the menu opens at once,
         and the next right-click on the word shows what was found."""
         w = normalize(word)
-        key = (self.code_for(script_of(w)), w)
+        key = (self.code_for(script_of(w), language), w)
         if key in self._suggested:
             return self._suggested[key]
         with self._lock:
@@ -271,7 +285,7 @@ class SpellChecker:
             try:
                 if len(self._suggested) > 500:
                     self._suggested.clear()
-                self._suggested[key] = self.suggest(word, limit)
+                self._suggested[key] = self.suggest(word, limit, language)
             except Exception:
                 log.exception("spelling suggestions failed")
                 self._suggested[key] = []
@@ -283,9 +297,9 @@ class SpellChecker:
         done.wait(timeout)
         return self._suggested.get(key)
 
-    def suggest(self, word: str, limit: int = 6) -> list[str]:
+    def suggest(self, word: str, limit: int = 6, language: str = "") -> list[str]:
         w = normalize(word)
-        d = self.dictionary(self.code_for(script_of(w)))
+        d = self.dictionary(self.code_for(script_of(w), language))
         if d is None:
             return []
         out = []
@@ -295,6 +309,52 @@ class SpellChecker:
             if len(out) >= limit:
                 break
         return out
+
+
+# names a phrase language may be given (Settings > Display > Phrase languages) -> dictionary
+_LANGUAGE_NAMES = {"english": "en_US", "english (us)": "en_US", "american": "en_US", "english (uk)": "en_GB",
+                   "british": "en_GB", "en-gb": "en_GB", "en-us": "en_US", "german": "de_DE", "deutsch": "de_DE",
+                   "spanish": "es_ES", "español": "es_ES", "espanol": "es_ES", "italian": "it_IT",
+                   "italiano": "it_IT", "portuguese": "pt_BR", "português": "pt_BR", "portugues": "pt_BR",
+                   "turkish": "tr_TR", "türkçe": "tr_TR", "turkce": "tr_TR", "arabic": "ar", "العربية": "ar",
+                   "عربي": "ar", "persian": "fa_IR", "farsi": "fa_IR", "فارسی": "fa_IR", "فارسي": "fa_IR",
+                   "en": "en_US", "de": "de_DE", "es": "es_ES", "it": "it_IT", "pt": "pt_BR", "tr": "tr_TR",
+                   "fa": "fa_IR"}
+
+
+def code_for_language(language: str) -> str:
+    """The dictionary for a phrase language ("German", "de", "de_DE", "Deutsch"), or ""."""
+    name = " ".join((language or "").split()).lower()
+    if not name:
+        return ""
+    for code in DICTIONARIES:
+        if name in (code.lower(), code.lower().replace("_", "-")):
+            return code
+    return _LANGUAGE_NAMES.get(name, "")
+
+
+class LanguageChecker:
+    """The shared checker seen through one phrase version's language: is_misspelled and the
+    suggestions use that language's dictionary; everything else is the shared checker's."""
+
+    def __init__(self, checker: SpellChecker, language: str = ""):
+        self._checker = checker
+        self.language = language
+
+    def is_misspelled(self, word: str) -> bool:
+        return self._checker.is_misspelled(word, self.language)
+
+    def suggest_within(self, word: str, timeout: float = 0.4, limit: int = 6) -> list[str] | None:
+        return self._checker.suggest_within(word, timeout, limit, self.language)
+
+    def suggest(self, word: str, limit: int = 6) -> list[str]:
+        return self._checker.suggest(word, limit, self.language)
+
+    def code_for(self, script: str) -> str:
+        return self._checker.code_for(script, self.language)
+
+    def __getattr__(self, name):
+        return getattr(self._checker, name)
 
 
 _CHECKERS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()

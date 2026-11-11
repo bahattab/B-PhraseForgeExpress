@@ -52,6 +52,7 @@ SCHEMA: dict[str, str] = {
     "popup.hotkey": DEFAULT_SETTINGS["popup.hotkey"],
     "hotkey.clear_clipboard_cache": "",
     "hotkey.pause": "",
+    "hotkey.next_language": "",
     "hotkey.popup_search": "",
     "pause.repetitions": "1",
     "pause.seconds": "10",

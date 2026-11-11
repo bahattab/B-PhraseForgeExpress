@@ -74,6 +74,7 @@ COMMAND_HOTKEY_SETTINGS = {
     "hotkey.open_settings": "open_settings",
     "hotkey.clear_clipboard_cache": "clear_clipboard_cache",
     "hotkey.pause": "pause",
+    "hotkey.next_language": "next_language",      # G-17: cycle the phrase language level
     "hotkey.popup_search": "popup_search",
     "onenote.send_hotkey": "onenote_send_clipboard",
     "onenote.clip_hotkey": "onenote_clip",

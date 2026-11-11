@@ -935,6 +935,7 @@ class SettingsDialog(QDialog):
                          else self.active_lang.currentText().strip(),
                          self._set_active_language)
         gl.addWidget(_row("Version inserted by autotext and hotkeys:", self.active_lang))
+        gl.addWidget(_row("Hotkey to switch to the next language:", self.bind("hotkey.next_language", Hotkey())))
         lay.addWidget(g)
         g, gl = _group("Dates in phrases")
         self.date_lang = self.bind("date.lang", DataCombo([("English", "en"), ("Arabic", "ar"), ("German", "de")]))

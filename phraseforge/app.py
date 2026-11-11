@@ -655,6 +655,15 @@ class PhraseForgeApp(QObject):
             lambda: self.sticky_notes().delete_note(int(arg)) if arg.isdigit() else None))
         # Search files (Listary-style launcher, phraseforge/filesearch.py)
         reg("file_search", lambda arg, hwnd: post(lambda: self._show_file_search(hwnd)))
+        reg("next_language", lambda arg, hwnd: post(self._next_language))   # G-17 level hotkey
+
+    def _next_language(self) -> None:
+        """Switch the version that autotext and hotkeys insert to the next phrase language."""
+        from phraseforge import levels
+        new = levels.next_language(self.store.setting("phrase.active_language", ""),
+                                   self.store.setting("phrase.languages", "[]"))
+        self.store.set_setting("phrase.active_language", new)
+        self.tray.notify("PhraseForge", f"Phrase language: {new or 'Default'}")
 
     def register_command(self, name: str, fn: Callable[[str, int], None]) -> None:
         self._commands[name] = fn

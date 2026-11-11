@@ -654,7 +654,8 @@ class PhraseEditor(QWidget):
         try:                              # spell check (Settings > Spell check); optional
             from phraseforge import spell
             from phraseforge.ui.spell_ui import SpellHighlighter
-            self.spell_checker = spell.checker_for(store)
+            # seen through the language version being edited (G-17): German text, German dictionary
+            self.spell_checker = spell.LanguageChecker(spell.checker_for(store))
             self.spell_highlighter = SpellHighlighter(self.content_edit.document(), self.spell_checker)
         except Exception:
             log.exception("spell check unavailable")
@@ -710,6 +711,7 @@ class PhraseEditor(QWidget):
             self._versions = dict(self.store.phrase_versions(p.id)) if hasattr(self.store, "phrase_versions") else {}
             self._deleted_versions = set()
             self._lang = ""
+            self._spell_language()
             self._default = (p.content, p.content_format)
             self._fill_lang_bar()
         finally:
@@ -790,7 +792,8 @@ class PhraseEditor(QWidget):
         was_dirty = self.dirty
         self._stash_language()
         self._lang = self.lang_bar.tabData(index) or ""
-        text, fmt = self._versions.get(self._lang, self._default) if self._lang else self._default
+        self._spell_language()
+        text, fmt =self._versions.get(self._lang, self._default) if self._lang else self._default
         self._loading = True
         try:
             self.content_edit.set_content(text, html=(fmt == "html"))
@@ -798,6 +801,12 @@ class PhraseEditor(QWidget):
             self._loading = False
         self.dirty = was_dirty
         self._fill_lang_bar()
+
+    def _spell_language(self) -> None:
+        if self.spell_checker is not None and self.spell_checker.language != self._lang:
+            self.spell_checker.language = self._lang
+            if self.spell_highlighter is not None:
+                self.spell_highlighter.rehighlight()
 
     def current_language(self) -> str:
         return self._lang
