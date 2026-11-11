@@ -182,7 +182,9 @@ class PluginEngine(Engine):
         self.kind = "ai_engine" if "ai_engine" in manifest.kinds else "translator"
 
     def _call(self, method: str, params: dict | None = None, timeout: float = AI_TIMEOUT_S, settings=None,
-              on_progress=None):
+              on_progress=None, side: bool = False):
+        """side=True runs the call in a second process of the plugin, stopped afterwards, so a long
+        call (a model download) does not block every other call to the plugin."""
         from phraseforge import policy
         from phraseforge.plugins.host import PluginError, PluginTimeout
         if not self.mgr.is_enabled(self.manifest.id):
@@ -196,12 +198,17 @@ class PluginEngine(Engine):
             if typed:
                 secrets[name] = typed
         p["secrets"] = secrets
+        proc = None
         try:
-            return self.mgr.process(self.manifest.id).call(method, p, timeout=timeout, on_progress=on_progress)
+            proc = self.mgr.side_process(self.manifest.id) if side else self.mgr.process(self.manifest.id)
+            return proc.call(method, p, timeout=timeout, on_progress=on_progress)
         except PluginTimeout:
             raise ai.AIError(f"plugin {self.manifest.id}: timeout") from None
         except Exception as e:                    # noqa: BLE001 - uninstalled meanwhile, bad answer, ...
             raise ai.AIError(f"plugin {self.manifest.id}: {e}") from None
+        finally:
+            if side and proc is not None:
+                proc.stop()
 
     def _dict(self, method: str, keys) -> dict:
         res = self._call(method, timeout=10)
@@ -268,7 +275,7 @@ class PluginEngine(Engine):
     def pull_model(self, settings: dict, model: str, progress=None) -> None:
         """Download a model through the plugin; progress(status) gets each $/progress piece."""
         self._need("model_management", "download models")
-        self._call("pull_model", {"model": model}, timeout=PULL_TIMEOUT_S, settings=settings,
+        self._call("pull_model", {"model": model}, timeout=PULL_TIMEOUT_S, settings=settings, side=True,
                    on_progress=(lambda text: progress(_status(text))) if progress else (lambda text: None))
 
     def list_languages(self, settings: dict) -> list[str]:

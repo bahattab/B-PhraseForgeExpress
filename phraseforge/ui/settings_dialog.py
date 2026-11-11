@@ -1212,9 +1212,8 @@ class SettingsDialog(QDialog):
         from PySide6.QtCore import QTimer
         from PySide6.QtWidgets import QProgressDialog
         from phraseforge import ai
-        if not ai.capabilities(provider).get("models"):
-            QMessageBox.information(self, APP, "This plugin engine cannot download models.")
-            return
+        # whether the plugin can download models is asked on the worker thread (pull_model), so a
+        # slow plugin cannot freeze this dialog
         name, ok = QInputDialog.getText(self, APP, "Model to download with the plugin engine:")
         if not ok or not name.strip():
             return
@@ -1229,6 +1228,9 @@ class SettingsDialog(QDialog):
             finally:
                 state["finished"] = True
         dlg = QProgressDialog(f"Downloading {name}...", "Hide", 0, 0, self)
+        lbl = QLabel(dlg)
+        lbl.setTextFormat(Qt.PlainText)
+        dlg.setLabel(lbl)
         dlg.setWindowTitle(APP)
         dlg.setMinimumDuration(0)
         timer = QTimer(dlg)
@@ -1238,10 +1240,11 @@ class SettingsDialog(QDialog):
             if state["finished"]:
                 timer.stop()
                 dlg.reset()
-                if state["error"]:
-                    QMessageBox.warning(self, APP, f"The download failed: {state['error'][:300]}")
-                else:
-                    QMessageBox.information(self, APP, f"{name} is ready to use.")
+                box = QMessageBox(QMessageBox.Warning if state["error"] else QMessageBox.Information, APP,
+                                  f"The download failed: {state['error'][:300]}" if state["error"]
+                                  else f"{name} is ready to use.", QMessageBox.Ok, self)
+                box.setTextFormat(Qt.PlainText)   # the plugin wrote the error text: never rich text
+                box.exec()
         timer.timeout.connect(tick)
         threading.Thread(target=work, daemon=True, name="plugin-pull").start()
         timer.start(200)

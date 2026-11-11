@@ -104,3 +104,41 @@ def test_no_usage_no_count(eng, monkeypatch, usage):
 def test_status_lines_are_plain():
     assert engines._status("<b>big</b>\n\nline " + "x" * 300) .startswith("\u2039b\u203abig")
     assert len(engines._status("y" * 500)) == 200
+
+
+def test_pull_runs_in_its_own_process(eng, monkeypatch):
+    """A long download must not hold the lock every other call to the plugin uses."""
+    import threading
+    main = eng.mgr.process("echo-ai")
+    started, release = threading.Event(), threading.Event()
+    real = engines.PluginEngine._call
+
+    def slow_side(self, method, params=None, **k):
+        if k.get("side"):
+            proc = self.mgr.side_process(self.manifest.id)
+            assert proc is not main
+            started.set()
+            release.wait(10)
+            proc.stop()
+            return {}
+        return real(self, method, params, **k)
+    monkeypatch.setattr(engines.PluginEngine, "_call", slow_side)
+    t = threading.Thread(target=lambda: eng.pull_model({}, "m"))
+    t.start()
+    assert started.wait(10)
+    assert ai.complete({}, "still works", P) == "echo: still works"      # not "busy"
+    release.set()
+    t.join(10)
+
+
+def test_side_process_is_stopped(eng, monkeypatch):
+    made = []
+    real = eng.mgr.side_process
+
+    def spy(pid):
+        p = real(pid)
+        made.append(p)
+        return p
+    monkeypatch.setattr(eng.mgr, "side_process", spy)
+    eng.pull_model({}, "echo-2")
+    assert len(made) == 1 and not made[0].running

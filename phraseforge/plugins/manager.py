@@ -203,6 +203,12 @@ class PluginManager:
                 p = self._procs[pid] = PluginProcess(m, self.root / pid, sandbox=self.store.setting("plugins.sandbox", "1") != "0")
             return p
 
+    def side_process(self, pid: str) -> PluginProcess:
+        """A second, uncached process of the plugin for one long call (a model download), so it
+        does not hold the lock of the process every other call uses. The caller stops it."""
+        m = self.installed()[pid]
+        return PluginProcess(m, self.root / pid, sandbox=self.store.setting("plugins.sandbox", "1") != "0")
+
     def stop(self, pid: str) -> None:
         with self._lock:
             p = self._procs.pop(pid, None)
