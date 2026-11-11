@@ -116,3 +116,41 @@ def test_dispatch_import_export_roundtrip(tmp_path):
         t = Store(":memory:")
         io_formats.import_file(t, tmp_path / name)
         assert t.search("Hello")[0].content == "Hi {#date}"
+
+
+def test_json_export_carries_attached_files(tmp_path, monkeypatch):
+    import base64
+    from phraseforge import paths
+    from phraseforge.importers import files as fl
+    pc1, pc2 = tmp_path / "pc1", tmp_path / "pc2"
+    pc1.mkdir(); pc2.mkdir()
+    monkeypatch.setattr(paths, "data_dir", lambda: pc1)
+    src = tmp_path / "Offer.pdf"
+    src.write_bytes(b"%PDF offer")
+    macro = fl.attach_file(src)
+    s = Store(":memory:")
+    s.add_phrase(Phrase("Offer", "Attached: " + macro))
+    out = tmp_path / "e.json"
+    io.export_json(s, out)
+    d = json.loads(out.read_text(encoding="utf-8"))
+    (item,) = d["attachments"].values()
+    assert item["name"] == "Offer.pdf" and base64.b64decode(item["data"]) == b"%PDF offer"
+
+    monkeypatch.setattr(paths, "data_dir", lambda: pc2)
+    counts = io.import_json(Store(":memory:"), out)
+    assert counts["attachments"] == 1
+    kept = fl.resolve_attachment(macro[len('{#pastefile "'):-2])
+    assert kept is not None and kept.read_bytes() == b"%PDF offer"
+
+
+def test_import_drops_attachments_that_do_not_match(tmp_path, monkeypatch):
+    import base64
+    from phraseforge import paths
+    from phraseforge.importers import files as fl
+    monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+    bad = {"format": "phraseforge", "phrases": [], "attachments": {
+        "0123456789abcdef": {"name": "x.txt", "data": base64.b64encode(b"evil").decode()},
+        "zz": {"name": "../../x", "data": "aGk="},
+        "fedcba9876543210": {"name": "y", "data": "not base64!"}}}
+    assert io.import_dict(Store(":memory:"), bad)["attachments"] == 0
+    assert not (fl.assets_dir() / fl.ATTACHED).exists() or not any((fl.assets_dir() / fl.ATTACHED).rglob("*.txt"))

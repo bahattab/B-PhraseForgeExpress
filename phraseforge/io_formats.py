@@ -28,10 +28,53 @@ _PHRASE_FIELDS = ("description", "content", "content_format", "output_mode", "ap
 
 
 # ------------------------------------------------------------------ JSON
+def _embed_attachments(d: dict) -> None:
+    """Put the files attached to the exported phrases into the export (base64), so the file
+    works on another PC; files missing here or over EMBED_TOTAL_MAX in all are left out."""
+    import base64
+    from phraseforge.importers import files as fl
+    texts = []
+    for p in d.get("phrases", []):
+        texts.append(p.get("content", ""))
+        texts += [v.get("content", "") for v in (p.get("versions") or {}).values() if isinstance(v, dict)]
+    total, out = 0, {}
+    for h, name in sorted(fl.attachment_refs(texts).items()):
+        path = fl.attachment_path(h, name)
+        if path is None or not path.is_file():
+            continue
+        size = path.stat().st_size
+        if total + size > fl.EMBED_TOTAL_MAX:
+            continue
+        total += size
+        out[h] = {"name": path.name, "data": base64.b64encode(path.read_bytes()).decode("ascii")}
+    if out:
+        d["attachments"] = out
+
+
 def export_json(store: Store, path: str | Path) -> int:
     d = store.export_dict()
+    _embed_attachments(d)
     Path(path).write_text(json_dumps(d), encoding="utf-8")
     return len(d["phrases"])
+
+
+def _restore_attachments(d: dict) -> int:
+    """Keep the files embedded in an export; each only when its SHA-256 matches its hash."""
+    import base64
+    import binascii
+    from phraseforge.importers import files as fl
+    n = 0
+    for h, item in (d.get("attachments") or {}).items():
+        if not isinstance(item, dict) or not isinstance(item.get("data"), str):
+            continue
+        if len(item["data"]) > fl.MAX_ATTACHMENT * 4 // 3 + 8:
+            continue
+        try:
+            data = base64.b64decode(item["data"], validate=True)
+        except (binascii.Error, ValueError):
+            continue
+        n += fl.store_attachment(str(h), str(item.get("name", "")), data)
+    return n
 
 
 @untrusted_import
@@ -77,7 +120,10 @@ def import_dict(store: Store, d: dict, into_folder_id: int | None = None) -> dic
         store.set_var(v["name"], v["value"], v.get("scope", "global"))
     if d.get("excluded_apps"):
         store.set_excluded_apps(store.excluded_apps() | set(d["excluded_apps"]))
-    return {"folders": len(id_map) - 1, "phrases": n}
+    out = {"folders": len(id_map) - 1, "phrases": n}
+    if d.get("attachments"):
+        out["attachments"] = _restore_attachments(d)
+    return out
 
 
 @untrusted_import

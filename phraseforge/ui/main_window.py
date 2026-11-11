@@ -2360,6 +2360,8 @@ class MainWindow(QMainWindow):
             return
         try:
             d = self.store.export_dict()
+            from phraseforge.io_formats import _embed_attachments
+            _embed_attachments(d)             # attached files go to the new PC too
             from phraseforge.db import is_secret_setting
             # plain JSON: API keys and the proxy password are not written (re-enter them there)
             d["settings"] = {k: v for k, v in self.store.settings().items() if not is_secret_setting(k)}

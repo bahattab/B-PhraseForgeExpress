@@ -213,3 +213,69 @@ def test_api_keys_never_sync(tmp_path, remote_factory):
         if f.is_file() and not f.name.startswith("A.db"):
             data = f.read_bytes()
             assert b"key-from-A" not in data and sealed not in data, f
+
+
+# ---------------------------------------------------------------- attached files (G-21)
+def _pc(tmp_path, name, monkeypatch=None):
+    data = tmp_path / name
+    data.mkdir(exist_ok=True)
+    return data, Store(data / "p.db")
+
+
+def _use(monkeypatch, data):
+    from phraseforge import paths
+    monkeypatch.setattr(paths, "data_dir", lambda: data)
+
+
+@pytest.mark.parametrize("encrypted", [False, True])
+def test_attached_files_follow_the_phrases(tmp_path, monkeypatch, encrypted):
+    from phraseforge.importers import files as fl
+    cloud = FolderRemote(tmp_path / "cloud")
+    d1, s1 = _pc(tmp_path, "pc1")
+    d2, s2 = _pc(tmp_path, "pc2")
+    for s in (s1, s2):
+        if encrypted:
+            s.set_setting("sync.encrypt", "1")
+            s.set_setting("sync.passphrase", "correct horse")
+    src = tmp_path / "Price list.pdf"
+    src.write_bytes(b"%PDF demo " * 100)
+
+    _use(monkeypatch, d1)
+    macro = fl.attach_file(src)
+    s1.add_phrase(Phrase("Prices", "See attached " + macro))
+    r1 = CloudSync(s1, cloud, "pc1").sync()
+    assert r1.action == "pushed" and r1.summary.get("attachments_up") == 1
+    att = [p for p in (tmp_path / "cloud").iterdir() if p.name.startswith("pf-att-") and p.suffix == ".db"]
+    assert len(att) == 1
+    if encrypted:
+        assert b"%PDF demo" not in att[0].read_bytes()
+
+    _use(monkeypatch, d2)
+    cs2 = CloudSync(s2, cloud, "pc2")
+    r2 = cs2.sync()
+    assert r2.action == "pulled" and r2.summary.get("attachments_down") == 1
+    cs2.apply_pull(r2.pulled_file, r2.remote_rev)
+    kept = fl.resolve_attachment(macro[len('{#pastefile "'):-2])
+    assert kept is not None and kept.read_bytes() == src.read_bytes() and kept.name == "Price list.pdf"
+    assert CloudSync(s2, cloud, "pc2").sync().summary.get("attachments_down") is None     # nothing left to do
+    s1.close(); s2.close()
+
+
+def test_a_swapped_attachment_in_the_cloud_is_not_used(tmp_path, monkeypatch):
+    from phraseforge.importers import files as fl
+    cloud = FolderRemote(tmp_path / "cloud")
+    d1, s1 = _pc(tmp_path, "pc1")
+    d2, s2 = _pc(tmp_path, "pc2")
+    src = tmp_path / "a.txt"
+    src.write_bytes(b"real")
+    _use(monkeypatch, d1)
+    macro = fl.attach_file(src)
+    s1.add_phrase(Phrase("A", macro))
+    CloudSync(s1, cloud, "pc1").sync()
+    att = next(p for p in (tmp_path / "cloud").iterdir() if p.name.startswith("pf-att-") and p.suffix == ".db")
+    att.write_bytes(b"evil")                                  # someone with access to the folder
+    _use(monkeypatch, d2)
+    r = CloudSync(s2, cloud, "pc2").sync()
+    assert r.action == "pulled" and "attachments_down" not in r.summary
+    assert fl.resolve_attachment(macro[len('{#pastefile "'):-2]) is None
+    s1.close(); s2.close()
