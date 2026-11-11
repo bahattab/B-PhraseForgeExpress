@@ -161,6 +161,7 @@ def _post(url: str, headers: dict, payload: dict, timeout: float) -> dict:
 
 
 MAX_STREAM_CHARS = 4 * 1024 * 1024      # a streamed reply longer than this is cut off
+MAX_STREAM_LINE = 4 * 1024 * 1024       # one SSE / NDJSON line (it grew without limit)
 
 
 def _stream_lines(url: str, headers: dict, payload: dict, timeout: float):
@@ -172,9 +173,25 @@ def _stream_lines(url: str, headers: dict, payload: dict, timeout: float):
             if r.status_code >= 400:
                 r.read()
                 raise AIError(f"HTTP {r.status_code}: {r.text[:300]}")
-            yield from r.iter_lines()
+            buf = ""                          # lines are split here so one line cannot grow forever
+            for chunk in r.iter_text():
+                buf += chunk
+                while (i := buf.find("\n")) >= 0:
+                    line, buf = buf[:i].rstrip("\r"), buf[i + 1:]
+                    yield line
+                if len(buf) > MAX_STREAM_LINE:
+                    raise AIError("the service sent a line longer than 4 MB")
+            if buf:
+                yield buf.rstrip("\r")
     except httpx.HTTPError as e:
         raise AIError(str(e)) from e
+
+
+class _Unfinished(AIError):
+    pass
+
+
+UNFINISHED = "the reply stopped before it was finished (connection lost?)"
 
 
 def _sse_events(lines):
@@ -184,6 +201,7 @@ def _sse_events(lines):
             continue
         body = line[5:].strip()
         if body == "[DONE]":
+            yield {"__done__": True}
             return
         try:
             obj = json.loads(body)
@@ -371,6 +389,10 @@ def chat(settings: dict[str, str], history: list[dict], provider: str = "", mode
                     usage.update(ev.get("usage") or {})
                 elif kind == "error":
                     raise AIError(str((ev.get("error") or {}).get("message", ev))[:300])
+                elif kind == "message_stop":
+                    break
+            else:                         # the stream ended without message_stop: not the whole reply
+                raise _Unfinished(UNFINISHED)
             _record(provider, model, {"usage": usage}, len(images or []))
             return out.text
         data = _post("https://api.anthropic.com/v1/messages", headers, payload, timeout_s)
@@ -405,6 +427,8 @@ def chat(settings: dict[str, str], history: list[dict], provider: str = "", mode
                 if msg.get("done"):
                     last = msg
                     break
+            else:
+                raise _Unfinished(UNFINISHED)
             _record(provider, model, last, len(images or []))
             return out.text
         data = _post(f"{base}/api/chat", {}, {"model": model, "stream": False,
@@ -425,15 +449,22 @@ def chat(settings: dict[str, str], history: list[dict], provider: str = "", mode
         payload = {"model": model, "messages": _with_system(history, system), "stream": True}
         if provider == "openai":
             payload["stream_options"] = {"include_usage": True}
+        finished = False
         for ev in _sse_events(_stream_lines(url, {"Authorization": f"Bearer {key}"}, payload, timeout_s)):
+            if ev.get("__done__"):
+                finished = True
+                break
             if ev.get("error"):
                 err = ev["error"]
                 raise AIError(str(err.get("message", err) if isinstance(err, dict) else err)[:300])
             for ch in ev.get("choices") or []:
                 if isinstance(ch, dict):
                     out.add((ch.get("delta") or {}).get("content"))
+                    finished = finished or bool(ch.get("finish_reason"))
             if isinstance(ev.get("usage"), dict):
                 usage = ev["usage"]
+        if not finished:                  # no finish_reason and no [DONE]: the reply was cut off
+            raise _Unfinished(UNFINISHED)
         _record(provider, model, {"usage": usage}, len(images or []))
         return out.text
     data = _post(url, {"Authorization": f"Bearer {key}"},
