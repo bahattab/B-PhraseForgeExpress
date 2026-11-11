@@ -1714,4 +1714,6 @@ AR_EXTRA = {
     "Weekdays, dates, a random delay or a single run": "أيام الأسبوع، تواريخ، تأخير عشوائي أو تشغيل واحد",
     "Pick a class, join several with \"+\" (Space+Comma), or type \"Custom:\" followed by the characters.": "اختر فئة، أو اجمع عدة فئات بـ «+» (Space+Comma)، أو اكتب «Custom:» متبوعة بالأحرف.",
     "Type a short abbreviation such as <b>sig#</b> and PhraseForge expands it into a full phrase. Or press a hotkey to pick a phrase from the popup menu.<br><br>This short setup picks your popup hotkey and adds a few sample phrases.": "اكتب اختصارًا قصيرًا مثل <b>sig#</b> وسيوسّعه PhraseForge إلى عبارة كاملة. أو اضغط اختصار لوحة مفاتيح لتختار عبارة من القائمة المنبثقة.<br><br>هذا الإعداد القصير يختار اختصار القائمة المنبثقة ويضيف بعض العبارات النموذجية.",
+    "Update PhraseForge": "تحديث PhraseForge",
+    "Download and install": "تنزيل وتثبيت",
 }

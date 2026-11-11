@@ -2922,16 +2922,77 @@ class MainWindow(QMainWindow):
         if not getattr(self, "_quiet_updates", False):
             box = QMessageBox(QMessageBox.Information, "Check for updates", msg, QMessageBox.Close, self)
             if rel is not None and not err and updates.is_newer(rel["version"], __version__):
+                inst = box.addButton("Download and install", QMessageBox.AcceptRole) \
+                    if updates.can_install(rel) else None
                 dl = box.addButton("Download", QMessageBox.AcceptRole) if rel.get("setup_url") else None
                 btn = box.addButton("Open download page", QMessageBox.AcceptRole)
                 box.exec()
-                if dl is not None and box.clickedButton() is dl:
+                if inst is not None and box.clickedButton() is inst:
+                    self.install_update(rel)
+                elif dl is not None and box.clickedButton() is dl:
                     QDesktopServices.openUrl(QUrl(updates.safe_release_url(rel["setup_url"]) or updates.RELEASES_PAGE))
                 elif box.clickedButton() is btn:
                     QDesktopServices.openUrl(QUrl(updates.safe_release_url(rel["url"]) or updates.RELEASES_PAGE))
             else:
                 box.exec()
         return msg
+
+    def install_update(self, rel: dict, downloader=None, starter=None) -> str:
+        """Download the signed setup in the background, verify it, then run it after the user
+        agrees (FR-APP-05). Returns what happened: "started", "cancelled" or the error."""
+        import tempfile
+        import threading
+        from PySide6.QtCore import QEventLoop, QTimer
+        from PySide6.QtWidgets import QProgressDialog
+        from phraseforge import updates
+        state = {"done": 0, "total": 0, "path": None, "error": None, "finished": False, "cancel": False}
+        folder = tempfile.mkdtemp(prefix="phraseforge-update-")
+
+        def work():
+            try:
+                state["path"] = (downloader or updates.download_verified)(
+                    rel, folder, progress=lambda d, t: state.update(done=d, total=t),
+                    cancelled=lambda: state["cancel"])
+            except Exception as e:     # noqa: BLE001 - any failure ends the dialog
+                state["error"] = str(e) or type(e).__name__
+            finally:
+                state["finished"] = True
+        dlg = QProgressDialog(f"Downloading PhraseForge v{rel['version']}...", "Cancel", 0, 1000, self)
+        dlg.setWindowTitle("Update PhraseForge")
+        dlg.setMinimumDuration(0)
+        dlg.canceled.connect(lambda: state.update(cancel=True))
+        loop = QEventLoop()
+        timer = QTimer(dlg)
+
+        def tick():
+            t = state["total"]
+            dlg.setValue(int(state["done"] * 1000 / t) if t else 0)
+            if state["finished"]:
+                timer.stop()
+                dlg.reset()
+                loop.quit()
+        timer.timeout.connect(tick)
+        threading.Thread(target=work, daemon=True, name="update-download").start()
+        timer.start(150)
+        loop.exec()
+        if state["cancel"]:
+            return "cancelled"
+        if state["error"]:
+            QMessageBox.warning(self, "Update PhraseForge", f"The update was not installed: {state['error'][:300]}")
+            return state["error"]
+        ok = QMessageBox.question(self, "Update PhraseForge",
+                                  f"PhraseForge v{rel['version']} was downloaded and its signature checked.\n"
+                                  "Close PhraseForge and run the setup now?")
+        if ok != QMessageBox.Yes:
+            return "cancelled"
+        import subprocess
+        (starter or (lambda p: subprocess.Popen([str(p)], close_fds=True)))(state["path"])
+        quit_signal = getattr(self.tray, "quit", None) if self.tray is not None else None
+        if quit_signal is not None and hasattr(quit_signal, "emit"):
+            quit_signal.emit()                # the app's own quit: saves notes, stops hooks and plugins
+        else:
+            QApplication.instance().quit()
+        return "started"
 
     ISSUES_URL = "https://github.com/bahattab/B-PhraseForgeExpress/issues"
 

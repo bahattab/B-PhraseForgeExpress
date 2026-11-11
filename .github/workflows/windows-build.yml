@@ -161,11 +161,19 @@ jobs:
           Compress-Archive -Path dist\B-PhraseForgeExpress\* -DestinationPath "dist\B-PhraseForgeExpress-${{ steps.ver.outputs.version }}-win64.zip"
           Get-ChildItem dist -File | Select-Object Name, @{n="MB";e={[math]::Round($_.Length/1MB,1)}}
 
+      - name: Sign the setup for in-app updates (only when the RELEASE_SIGNING_KEY secret is set)
+        env:
+          PHRASEFORGE_RELEASE_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          $setup = (Get-ChildItem dist\B-PhraseForgeExpress-Setup-*.exe).FullName
+          python tools/sign_release.py $setup
+
       - uses: actions/upload-artifact@v4
         with:
           name: B-PhraseForgeExpress-${{ steps.ver.outputs.version }}-windows
           path: |
             dist/B-PhraseForgeExpress-Setup-*.exe
+            dist/B-PhraseForgeExpress-Setup-*.exe.sig
             dist/B-PhraseForgeExpress-portable.exe
             dist/B-PhraseForgeExpress-*-win64.zip
           if-no-files-found: error
@@ -180,6 +188,7 @@ jobs:
           name: B-PhraseForgeExpress ${{ inputs.release_tag || github.ref_name }}
           files: |
             dist/B-PhraseForgeExpress-Setup-*.exe
+            dist/B-PhraseForgeExpress-Setup-*.exe.sig
             dist/B-PhraseForgeExpress-portable.exe
             dist/B-PhraseForgeExpress-*-win64.zip
           generate_release_notes: true
