@@ -210,4 +210,5 @@ class Tray(QSystemTrayIcon):
         if not getattr(self, "_click_hooked", False):
             self.messageClicked.connect(lambda: (getattr(self, "_on_message_click", None) or (lambda: None))())
             self._click_hooked = True
-        self.showMessage(title, text, QSystemTrayIcon.Information, ms)
+        from phraseforge.ui import i18n
+        self.showMessage(i18n.tr(title), i18n.tr(text), QSystemTrayIcon.Information, ms)
