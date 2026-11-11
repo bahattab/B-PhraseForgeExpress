@@ -20,6 +20,9 @@ from pathlib import Path
 from phraseforge.host import Cancelled, KeyAction
 from phraseforge.macros.registry import MacroError, macro, register
 
+import logging
+_log = logging.getLogger(__name__)
+
 
 def _arg(args, i, default=""):
     return args[i] if len(args) > i else default
@@ -523,6 +526,83 @@ def _odbc_string(engine: str, opts) -> str:
 OUTLOOK_FIELDS = ("title", "firstname", "lastname", "senderemail", "recipientemail", "subject", "body", "gender")
 
 
+def outlook_item():
+    """The mail open in Outlook (Inspector), else the first selected one (Explorer), or None.
+    Uses the running Outlook only: GetActiveObject never starts it."""
+    try:
+        import win32com.client  # type: ignore
+        app = win32com.client.GetActiveObject("Outlook.Application")
+    except Exception:
+        _log.warning("Outlook is not running: Outlook macros give empty text")
+        return None
+    try:
+        insp = app.ActiveInspector()
+        item = insp.CurrentItem if insp is not None else None
+        if item is None:
+            exp = app.ActiveExplorer()
+            sel = exp.Selection if exp is not None else None
+            item = sel.Item(1) if sel is not None and sel.Count else None
+        return item
+    except Exception:
+        _log.warning("Outlook has no open or selected item", exc_info=True)
+        return None
+
+
+OLMAIL_FIELDS = ("from", "fromname", "to", "cc", "bcc", "subject", "body", "htmlbody", "attachments")
+MAX_OLMAIL = 1_000_000           # characters; a huge mail body is cut
+
+
+def olmail_field(item, field: str) -> str:
+    """One field of an Outlook MailItem (FR-OL-01). Lists are joined with "; " as Outlook
+    shows them; attachments are their file names."""
+    def get(name):
+        v = getattr(item, name, "")
+        return "" if v is None else str(v)
+    if field == "from":
+        addr = get("SenderEmailAddress")
+        if get("SenderEmailType").upper() == "EX":      # an Exchange user: ask for the SMTP address
+            try:
+                addr = str(item.Sender.GetExchangeUser().PrimarySmtpAddress or addr)
+            except Exception:                           # noqa: BLE001
+                pass
+        return addr
+    if field == "fromname":
+        return get("SenderName")
+    if field in ("to", "cc", "bcc"):
+        return get(field.upper() if field != "to" else "To")
+    if field == "subject":
+        return get("Subject")
+    if field == "body":
+        return get("Body")[:MAX_OLMAIL]
+    if field == "htmlbody":
+        return get("HTMLBody")[:MAX_OLMAIL]
+    if field == "attachments":
+        a = getattr(item, "Attachments", None)
+        if a is None:
+            return ""
+        return "; ".join(str(a.Item(i).FileName) for i in range(1, int(a.Count) + 1))
+    raise MacroError(f"unknown Outlook field {field!r}")
+
+
+@macro("olmail", "Files & data", "{#olmail -field subject}",
+       "A field of the e-mail open or selected in Outlook: " + ", ".join(OLMAIL_FIELDS) +
+       ". Empty text when Outlook is not running (it is never started).", "{#olmail -field subject}")
+def _olmail(rt, args, opts):
+    field = (opts.get("field") or _arg(args, 0, "subject")).strip().lower()
+    if field not in OLMAIL_FIELDS:
+        raise MacroError(f"olmail: -field must be one of {', '.join(OLMAIL_FIELDS)}")
+    item = outlook_item()
+    if item is None:
+        return ""
+    try:
+        return olmail_field(item, field)
+    except MacroError:
+        raise
+    except Exception:                                   # noqa: BLE001 - not a mail item, Outlook busy
+        _log.warning("Outlook field %s could not be read", field, exc_info=True)
+        return ""
+
+
 @macro("outlook", "Files & data", "{#outlook subject}",
        "Field of the e-mail currently open/selected in Outlook: " + ", ".join(OUTLOOK_FIELDS) +
        ". Outputs nothing if Outlook is not available.")
@@ -530,18 +610,9 @@ def _outlook(rt, args, opts):
     field = _arg(args, 0, "subject").lower()
     if field not in OUTLOOK_FIELDS:
         raise MacroError(f"unknown Outlook field {field!r}")
-    try:
-        import win32com.client  # type: ignore
-        app = win32com.client.GetActiveObject("Outlook.Application")
-        insp = app.ActiveInspector()
-        item = insp.CurrentItem if insp is not None else None
-        if item is None:
-            sel = app.ActiveExplorer().Selection
-            item = sel.Item(1) if sel.Count else None
-        if item is None:
-            return ""
-    except Exception:
-        return ""      # Outlook not running / not installed
+    item = outlook_item()
+    if item is None:
+        return ""
     try:
         sender = str(getattr(item, "SenderName", "") or "")
         first, _, last = sender.partition(" ")
