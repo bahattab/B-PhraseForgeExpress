@@ -2220,6 +2220,8 @@ def main(argv: list[str] | None = None) -> int:
     sys.excepthook = lambda *a: log.error("".join(traceback.format_exception(*a)))
     # Qt 6 sets per-monitor DPI awareness itself; setting it here first made Qt warn.
     qapp = QApplication(argv)
+    from phraseforge.ui import gc_guard
+    gc_guard.install(qapp)                # Qt objects are only ever freed on this thread (R160)
     qapp.setApplicationName("PhraseForge")
     qapp.setQuitOnLastWindowClosed(False)
     from phraseforge.single_instance import SingleInstance, instance_name

@@ -2966,3 +2966,33 @@ def test_uia_sees_a_wpf_password_box():
         assert got is True
     finally:
         p.kill()
+
+
+# ---------------------------------------------------------------- 0.6.21: garbage collector on the GUI thread
+def test_garbage_is_collected_on_the_gui_thread_only(qapp):
+    """R160: the cyclic collector ran in whichever thread allocated (hook, worker, plugin reader)
+    and could free a Qt object there, crashing at random. The app collects from a GUI timer."""
+    import gc
+    from pathlib import Path
+    from phraseforge.ui.gc_guard import GuiGarbageCollector
+    was_enabled = gc.isenabled()
+    g = GuiGarbageCollector(interval_ms=10)
+    try:
+        g.start()
+        assert not gc.isenabled() and g.timer.isActive()
+        gc.collect()
+        assert g.check() is None                       # nothing piled up yet
+        g.threshold = (0, 10**9, 10**9)                # any new object passes the youngest threshold
+        junk = []
+        for _ in range(50):
+            a, b = [], []
+            a.append(b)
+            b.append(a)                                # a cycle only the collector frees
+            junk.append(a)
+        del junk, a, b
+        assert g.check() == 0
+    finally:
+        g.timer.stop()
+        (gc.enable if was_enabled else gc.disable)()
+    src = (Path(__file__).parent.parent / "phraseforge" / "app.py").read_text(encoding="utf-8")
+    assert "gc_guard.install(qapp)" in src             # installed right after the QApplication
