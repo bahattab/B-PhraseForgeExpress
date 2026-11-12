@@ -311,7 +311,64 @@ class CloudSync:
                          key=lambda f: f.name, reverse=True)
         for old in backups[max(1, keep):]:
             self.remote.delete(old.name)
+        try:
+            self.prune_attachments()
+        except Exception as e:                     # the backup is made; cleaning up can wait
+            log.warning("unused attached files were not removed: %s", e)
         return name
+
+    def restore_backup(self, name: str) -> Path:
+        """Download a cloud backup (apply it with apply_pull) and fetch the attached files its
+        phrases use, while they are still in the cloud folder."""
+        path = self.download(name, allow_older=True)
+        try:
+            self.sync_attachments(path)
+        except SyncError:
+            raise
+        except Exception as e:
+            log.warning("attached files of %s were not fetched: %s", name, e)
+        return path
+
+    PRUNE_EVERY_DAYS = 7
+
+    def prune_attachments(self, force: bool = False) -> int:
+        """Remove attached files from the cloud that no phrase uses any more: not on this PC,
+        not in the sync copy, not in any kept backup. At most once a week; when one of those
+        copies cannot be read, nothing is removed. Returns the number removed."""
+        last = self.store.setting("sync.att_pruned", "")
+        if not force and last:
+            try:
+                if (datetime.now() - datetime.fromisoformat(last)).days < self.PRUNE_EVERY_DAYS:
+                    return 0
+            except ValueError:
+                pass
+        files = self.remote.list()
+        there = [f.name for f in files if f.name.startswith(self.ATT_PREFIX) and f.name.endswith(".db")]
+        if not there:
+            self.store.set_setting("sync.att_pruned", datetime.now().isoformat(timespec="seconds"))
+            return 0
+        refs: dict[str, str] = {}
+        self._attachment_refs(self.store.conn, refs)
+        for f in files:
+            if f.name != SYNC_NAME and not f.name.startswith(BACKUP_PREFIX):
+                continue
+            path = self.download(f.name, allow_older=True)     # any failure: remove nothing
+            try:
+                con = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+                try:
+                    self._attachment_refs(con, refs)
+                finally:
+                    con.close()
+            finally:
+                self._discard(path)
+        removed = 0
+        for name in there:
+            h = name[len(self.ATT_PREFIX):-len(".db")]
+            if h not in refs:
+                self.remote.delete(name)
+                removed += 1
+        self.store.set_setting("sync.att_pruned", datetime.now().isoformat(timespec="seconds"))
+        return removed
 
     def list_backups(self) -> list[RemoteFile]:
         return sorted((f for f in self.remote.list() if f.name.startswith(BACKUP_PREFIX)),
