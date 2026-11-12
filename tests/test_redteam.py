@@ -2996,3 +2996,38 @@ def test_garbage_is_collected_on_the_gui_thread_only(qapp):
         (gc.enable if was_enabled else gc.disable)()
     src = (Path(__file__).parent.parent / "phraseforge" / "app.py").read_text(encoding="utf-8")
     assert "gc_guard.install(qapp)" in src             # installed right after the QApplication
+
+
+# ---------------------------------------------------------------- 0.6.22: instant translation off the worker
+def test_slow_translation_does_not_hold_up_the_expansion_worker():
+    """R146: the translation ran on the expansion worker, so a slow service delayed every
+    expansion behind it (up to minutes). The worker now only copies the selection."""
+    import threading
+    import time
+    from phraseforge.app import PhraseForgeApp
+    shown, release = [], threading.Event()
+
+    class Fake:
+        store = type("S", (), {"settings": lambda self: {"translate.instant_to": "Arabic"}})()
+        poster = type("P", (), {"posted": type("E", (), {"emit": lambda self, fn: fn()})()})()
+        tray = type("T", (), {"notify": lambda self, t, m: shown.append(("notify", m))})()
+
+        def _caret_or_cursor(self):
+            return (10, 10)
+
+        def _bubble(self):
+            return type("B", (), {"show_busy": lambda s, t, x, y, request=0: shown.append("busy"),
+                                  "show_result": lambda s, t, o, l, request=0, cut=False: shown.append(o),
+                                  "show_error": lambda s, m, request=0: shown.append(m)})()
+
+    def slow(text, lang):
+        release.wait(5)                          # a service that takes its time
+        return "مرحبا"
+    t0 = time.monotonic()
+    PhraseForgeApp._instant_translate(Fake(), 1, lambda: "Hello", slow)
+    assert time.monotonic() - t0 < 1 and shown == ["busy"]   # the worker is free again at once
+    release.set()
+    deadline = time.monotonic() + 5
+    while len(shown) < 2 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert shown == ["busy", "مرحبا"]

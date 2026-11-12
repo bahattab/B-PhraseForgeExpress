@@ -1790,9 +1790,13 @@ class PhraseForgeApp(QObject):
         self._with_triggers_paused(lambda: self.output.execute([TextAction(out)], app_exe=self._exe_of(hwnd)))
         return out
 
-    def _instant_translate(self, hwnd: int, get_selection=None, translate_fn=None, target: str = "") -> None:
+    def _instant_translate(self, hwnd: int, get_selection=None, translate_fn=None, target: str = "",
+                           sync: bool = False) -> None:
         """Instant translation hotkey (worker thread): translate the selected text and show it
-        in the translation window next to the caret (instant_translate.py)."""
+        in the translation window next to the caret (instant_translate.py). The selection is
+        copied here, on the worker; the translation itself runs on its own thread, so a slow
+        service does not hold up expansions for minutes (R146). The window shows only the
+        answer to its latest request."""
         from phraseforge import instant_translate as it
         if get_selection is None:
             from phraseforge.platform import windows
@@ -1813,13 +1817,20 @@ class PhraseForgeApp(QObject):
             b.back_language = settings.get("translate.instant_back") or "English"
             b.show_busy(text, *self._caret_or_cursor(), request=rid)
         post(busy)
-        try:
-            out, lang = it.translate(settings, text, target, translate_fn)
-        except Exception as e:     # noqa: BLE001 - shown in the window
-            msg = f"Could not translate: {e}"
-            post(lambda: self._bubble().show_error(msg, request=rid))
-            return
-        post(lambda: self._bubble().show_result(text, out, lang, request=rid, cut=cut))
+
+        def work():
+            try:
+                out, lang = it.translate(settings, text, target, translate_fn)
+            except Exception as e:     # noqa: BLE001 - shown in the window
+                msg = f"Could not translate: {e}"
+                post(lambda: self._bubble().show_error(msg, request=rid))
+                return
+            post(lambda: self._bubble().show_result(text, out, lang, request=rid, cut=cut))
+        if sync:
+            work()
+        else:
+            import threading
+            threading.Thread(target=work, name="pf-instant-translate", daemon=True).start()
 
     def _bubble(self):
         b = getattr(self, "_translate_bubble", None)
