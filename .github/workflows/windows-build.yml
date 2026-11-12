@@ -18,7 +18,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 60   # OCR set-up (up to 10 min) + tests (about 25) + EXE, installer and checks
     defaults:
       run:
         shell: pwsh
