@@ -2840,3 +2840,129 @@ def test_replace_needs_the_original_window(monkeypatch):
     fake._replace_with_translation("translated")
     jobs[0][1]()
     assert typed == [] and notes
+
+
+# ---------------------------------------------------------------- 0.6.20: passwords in browser fields
+def _pw_recorder():
+    from phraseforge.recorder import Recorder
+    t = [0.0]
+    r = Recorder(clock=lambda: t[0])
+    r.start()
+    return r, t
+
+
+def _type(r, t, text):
+    for ch in text:
+        t[0] += 0.03
+        r.key(ord(ch.upper()), ch, set())
+
+
+def test_password_typed_before_the_watch_saw_the_field_is_taken_out():
+    """R159: only classic password boxes were seen (EM_GETPASSWORDCHAR); a browser or Electron
+    password field was recorded, and with sync on and encryption off it went to the cloud."""
+    from phraseforge.recorder import PasswordWatch
+    r, t = _pw_recorder()
+    state = [False]
+    w = PasswordWatch(r, lambda: state[0])
+    w.poll()                                    # user name field: no password
+    _type(r, t, "bob")
+    t[0] += 0.05
+    w.poll()
+    _type(r, t, "hunter2")                      # typed into the password field before the next poll
+    state[0] = True
+    w.poll()
+    _type(r, t, "xy")                           # still in the password field
+    state[0] = False
+    t[0] += 0.05
+    w.poll()
+    _type(r, t, "ok")
+    macro = r.stop()
+    assert macro.startswith("bob") and macro.endswith("ok")
+    import re
+    assert re.sub(r"\{#[^}]*\}", "", macro) == "bobok"   # only a pause is left where they were
+    assert r.skipped_passwords == 9
+
+
+def test_unknown_answers_keep_the_keys_in_doubt_and_the_last_check_runs_at_stop():
+    """R159: a busy program (no answer in time) must not clear the keys typed since the last 'no',
+    and a password typed just before the stop hotkey is caught by the check at stop."""
+    from phraseforge.recorder import PasswordWatch
+    r, t = _pw_recorder()
+    answers = iter([False, None, True])
+    w = PasswordWatch(r, lambda: next(answers))
+    w.poll()
+    _type(r, t, "pass")
+    w.poll()                                    # cannot tell
+    _type(r, t, "word")
+    w.stop()                                    # no thread was started: just the final check
+    assert r.stop() == ""
+
+
+def test_recording_controller_runs_the_password_watch(qapp):
+    """R159: the controller starts the watch with the hooks and lets it check once more before
+    the macro is made."""
+    from phraseforge.recorder import PasswordWatch
+    from phraseforge.ui import recording_bar
+    state = [False]
+    watches = []
+
+    def watch(rec):
+        watches.append(PasswordWatch(rec, lambda: state[0], period=60))
+        return watches[-1]
+
+    class Session:
+        def __init__(self, rec):
+            pass
+
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+    got = []
+    ctl = recording_bar.RecordingController(Store(":memory:"), got.append, post=lambda f: f(),
+                                            session_factory=Session, password_watch=watch)
+    ctl.start()
+    ctl.recorder.key(ord("S"), "s", set())
+    state[0] = True                             # the field the user typed into is a password field
+    ctl.finish()
+    assert got == [""] and len(watches) == 1 and watches[0]._thread is None
+
+
+def test_uia_password_check_is_none_off_windows():
+    from phraseforge.platform import caret
+    import os
+    if os.name == "nt":
+        pytest.skip("Windows answers for real")
+    assert caret.focused_is_password() is None
+
+
+def test_uia_sees_a_wpf_password_box():
+    """R159: a WPF PasswordBox (like a browser password field) has no EM_GETPASSWORDCHAR; UI
+    Automation's IsPassword is what tells the recorder."""
+    import os
+    import subprocess
+    import time
+    from pathlib import Path
+    if os.name != "nt":
+        pytest.skip("Windows only")
+    from phraseforge.platform import caret, windows
+    caret.warm_up()
+    script = Path(__file__).parent / "fixtures" / "wpf_textbox.ps1"
+    p = subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
+                          "20", "password"])
+    try:
+        for _ in range(80):
+            time.sleep(0.25)
+            if windows.foreground_app()[1] == "PF caret test":
+                break
+        else:
+            pytest.skip("the test window did not come to the front (no interactive desktop?)")
+        time.sleep(0.7)
+        assert windows.focused_is_password() is False        # the classic check does not see it
+        got = caret.focused_is_password(timeout=5)
+        if windows.foreground_app()[1] != "PF caret test":
+            pytest.skip("the test window lost the focus during the test")
+        assert got is True
+    finally:
+        p.kill()

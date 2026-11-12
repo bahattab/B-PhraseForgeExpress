@@ -167,6 +167,12 @@ class _Com:
             return None
         return l, t, l + max(1, w), t + h
 
+    def is_password(self) -> bool:
+        """UI Automation IsPassword of the focused element: the password fields of browsers,
+        Electron, WPF and UWP, which EM_GETPASSWORDCHAR does not see."""
+        el = self.uia.GetFocusedElement()
+        return bool(el and el.CurrentIsPassword)
+
     def uia_caret(self) -> Rect | None:
         U = self.U
         el = self.uia.GetFocusedElement()
@@ -304,3 +310,16 @@ def caret_point(use_accessibility: bool = True) -> tuple[int, int] | None:
     """Physical screen point just below the caret (where a menu or tip should open)."""
     rect, _src = caret_rect(use_accessibility)
     return (rect[0], rect[3]) if rect else None
+
+
+def focused_is_password(timeout: float = TIMEOUT_S) -> bool | None:
+    """True/False when UI Automation says whether the focused element is a password field,
+    None when it cannot tell in time (not Windows, our own or a hung window, a busy program)."""
+    if os.name != "nt":
+        return None
+    from phraseforge.platform._win32 import user32
+    hwnd = _foreground()
+    if not hwnd or _own_window(hwnd) or user32.IsHungAppWindow(hwnd):
+        return None
+    got = _get_worker().call(lambda com: com.is_password(), timeout)
+    return None if got is None else bool(got)

@@ -1724,7 +1724,7 @@ AR_EXTRA = {
     'Clear list': 'مسح القائمة',
     'Forget every suggestion, dismissed ones included': 'نسيان كل الاقتراحات، ومنها المرفوضة',
     'Forget every suggestion, dismissed ones included? Text you write often may be suggested again later.': 'نسيان كل الاقتراحات، ومنها المرفوضة؟ قد يُقترح عليك لاحقًا نص تكتبه كثيرًا.',
-    'Passwords typed in browsers and some programs are recorded too: stop recording before you type a password.': 'كلمات المرور التي تُكتب في المتصفحات وبعض البرامج تُسجَّل أيضًا: أوقف التسجيل قبل كتابة كلمة مرور.',
+    'Keys typed in password fields are left out when the program says the field is one; to be sure, stop recording before you type a password.': 'تُستبعد المفاتيح المكتوبة في حقول كلمات المرور عندما يُعلن البرنامج أن الحقل حقل كلمة مرور؛ وللتأكد، أوقف التسجيل قبل كتابة كلمة مرور.',
     'This source came from another PC or file and has not been approved on this PC.': 'هذا المصدر جاء من جهاز آخر أو من ملف، ولم يُعتمد على هذا الجهاز.',
     'This dynamic folder was set up on another PC or in a file you opened. Approving it lets PhraseForge on this PC read the source below and turn it into phrases, which your sync may then upload.': 'أُعدّ هذا المجلد الديناميكي على جهاز آخر أو في ملف فتحته. اعتماده يسمح لـPhraseForge على هذا الجهاز بقراءة المصدر أدناه وتحويله إلى عبارات، وقد ترفعها المزامنة بعد ذلك.',
     'Path:': 'المسار:',

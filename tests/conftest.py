@@ -56,3 +56,15 @@ def _relock_folders():
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "real_layout_default: use the app's own default layout")
+    # Python's cyclic garbage collector runs in whichever thread allocates when a threshold is
+    # crossed. Many tests run background threads (plugin readers, the network filter, sockets),
+    # so a cycle holding a widget from an earlier Qt test could be freed there, off the GUI
+    # thread, and crash the run at random (an access violation or abort in a later test). Collect
+    # only here, on the main thread, after each test.
+    gc.disable()
+
+
+@pytest.fixture(autouse=True)
+def _collect_on_the_main_thread():
+    yield
+    gc.collect()
