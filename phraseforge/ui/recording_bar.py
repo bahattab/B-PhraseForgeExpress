@@ -34,8 +34,8 @@ class RecordingBar(QWidget):
         secs = int(time.monotonic() - self._started)
         self.label.setText("● " + tr("Recording {time} · {n} steps · stop with {key}").format(
             time=f"{secs // 60}:{secs % 60:02d}", n=len(self.recorder.events), key=self.recorder.stop_chord))
-        self.label.setToolTip(tr("Passwords typed in browsers and some programs are recorded too: "
-                                 "stop recording before you type a password."))
+        self.label.setToolTip(tr("Keys typed in password fields are left out when the program says "
+                                 "the field is one; to be sure, stop recording before you type a password."))
 
     def place(self) -> None:
         """Top centre of the primary screen."""
@@ -50,7 +50,8 @@ class RecordingController:
     on_done(macro text). session_factory(recorder) returns an object with start()/stop()
     (platform.record_hook.RecordSession on Windows; a fake in tests)."""
 
-    def __init__(self, store, on_done, post=None, session_factory=None, triggers=None, password_check=None):
+    def __init__(self, store, on_done, post=None, session_factory=None, triggers=None, password_check=None,
+                 password_watch=None):
         from phraseforge.recorder import Recorder
         self.store = store
         self.on_done = on_done
@@ -61,6 +62,9 @@ class RecordingController:
         self.session = None
         self.bar: RecordingBar | None = None
         self._was_paused = False
+        # watch(recorder) -> PasswordWatch: password fields that only UI Automation knows (R159)
+        self.password_watch = password_watch
+        self._watch = None
 
     @property
     def active(self) -> bool:
@@ -84,7 +88,15 @@ class RecordingController:
         self.bar.show()
         try:
             self.session.start()
+            self._watch = self._make_watch()
+            if self._watch is not None:
+                self._watch.start()
         except Exception:                            # noqa: BLE001 - no stuck bar left on screen (R158)
+            try:
+                self.session.stop()
+            except Exception:                        # noqa: BLE001
+                pass
+            self._watch = None
             self.session = None
             if self.triggers is not None:
                 self.triggers.paused = self._was_paused
@@ -92,9 +104,25 @@ class RecordingController:
             self.bar = None
             raise
 
+    def _make_watch(self):
+        if self.password_watch is not None:
+            return self.password_watch(self.recorder)
+        import os
+        if os.name != "nt" or self.session_factory is not None:   # tests' fake sessions: no COM
+            return None
+        from phraseforge.platform import caret
+        from phraseforge.recorder import PasswordWatch
+        return PasswordWatch(self.recorder, caret.focused_is_password)
+
     def finish(self) -> str | None:
         if not self.active:
             return None
+        if self._watch is not None:                 # its last check runs before the macro is made
+            try:
+                self._watch.stop()
+            except Exception:                       # noqa: BLE001
+                pass
+            self._watch = None
         text = self.recorder.stop() if self.recorder.recording else self.recorder.macro()
         try:
             self.session.stop()

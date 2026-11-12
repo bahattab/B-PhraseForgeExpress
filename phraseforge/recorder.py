@@ -17,12 +17,15 @@ phrase that replays it with the existing macros:
 
 Recording stops with the stop hotkey (recorder.stop_hotkey, default
 ctrl+shift+f12), which is not recorded itself. Keys typed in password fields
-are not recorded. The Windows hooks live in platform/record_hook.py; this
+are not recorded: classic ones are seen at once (password_check), the ones only
+UI Automation knows (browsers, Electron, WPF) by PasswordWatch, which takes the
+keys typed into them out again (R159). The Windows hooks live in platform/record_hook.py; this
 module only collects events and writes the macro, so it is tested without
 Windows.
 """
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Iterable
@@ -174,12 +177,16 @@ class Recorder:
         self.events: list = []
         self.recording = False
         self.skipped_passwords = 0
+        self._lock = threading.Lock()
+        self._secret_since: float | None = None    # a password field is focused since then (R159)
         self.stop_chord = norm_chord(self.setting("recorder.stop_hotkey"))
         self.on_stop: Callable[[], None] | None = None
 
     def start(self) -> None:
-        self.events.clear()
-        self.skipped_passwords = 0
+        with self._lock:
+            self.events.clear()
+            self.skipped_passwords = 0
+            self._secret_since = None
         self.recording = True
 
     def stop(self) -> str:
@@ -210,18 +217,85 @@ class Recorder:
             if self.on_stop:
                 self.on_stop()
             return True
-        if vk not in MODIFIER_VKS and self.password_check():
-            self.skipped_passwords += 1             # never record what goes into a password field
-            return False
-        self.events.append(ev)
+        with self._lock:
+            if vk not in MODIFIER_VKS and (self._secret_since is not None or self.password_check()):
+                self.skipped_passwords += 1         # never record what goes into a password field
+                return False
+            self.events.append(ev)
         return False
+
+    # ---- called by PasswordWatch (fields only UI Automation knows are password fields)
+    def password_focused(self, since: float) -> None:
+        """A password field has been focused since `since` (at the latest). The watch polls,
+        so keys typed into it before it was seen are taken out again (R159)."""
+        with self._lock:
+            if self._secret_since is None or since < self._secret_since:
+                self._secret_since = since
+            keep = [e for e in self.events
+                    if not (isinstance(e, RecKey) and e.vk not in MODIFIER_VKS and e.t >= self._secret_since)]
+            self.skipped_passwords += len(self.events) - len(keep)
+            self.events[:] = keep
+
+    def password_left(self) -> None:
+        with self._lock:
+            self._secret_since = None
 
     def click(self, button: str, x: int, y: int, rel: tuple[int, int] | None = None) -> None:
         if button not in ("left", "right"):
             return                                  # a middle click would replay as a left click
         if self.recording and self.setting("recorder.record_mouse") == "1":
-            self.events.append(RecClick(self.clock(), button, x, y, *(rel or (None, None))))
+            with self._lock:
+                self.events.append(RecClick(self.clock(), button, x, y, *(rel or (None, None))))
 
     def wheel(self, delta: int) -> None:
         if self.recording and self.setting("recorder.record_mouse") == "1":
-            self.events.append(RecWheel(self.clock(), delta))
+            with self._lock:
+                self.events.append(RecWheel(self.clock(), delta))
+
+
+class PasswordWatch:
+    """While recording, asks every `period` seconds whether the focused field is a password
+    field (check() -> True/False, or None when it cannot tell). The keyboard hook must answer
+    at once, so it cannot wait for UI Automation; this thread can, and tells the recorder,
+    which drops the keys typed since the last poll that saw no password field (R159)."""
+
+    def __init__(self, recorder: Recorder, check: Callable[[], bool | None], period: float = 0.1):
+        self.recorder = recorder
+        self.check = check
+        self.period = period
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.clear_since = recorder.clock()    # no password field was focused at this time
+
+    def start(self) -> None:
+        self._stop.clear()
+        self.clear_since = self.recorder.clock()
+        self._thread = threading.Thread(target=self._run, name="pf-record-password", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Stops the thread, then checks once more: the stop hotkey may come right after a
+        password was typed, before the next poll."""
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(2)
+            self._thread = None
+        self.poll()
+
+    def poll(self) -> None:
+        asked = self.recorder.clock()          # before the check, which can take a while
+        try:
+            state = self.check()
+        except Exception:                      # noqa: BLE001 - keep watching
+            state = None
+        if state:
+            self.recorder.password_focused(self.clear_since)
+        elif state is False:
+            self.recorder.password_left()
+            self.clear_since = asked
+        # None (cannot tell): the keys since the last "no" stay in doubt until the next answer
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            self.poll()
+            self._stop.wait(self.period)
