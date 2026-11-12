@@ -2173,7 +2173,7 @@ class SettingsDialog(QDialog):
             name, picked = QInputDialog.getItem(self, "Restore from cloud backup",
                                                 "Replace all phrases on this PC with:", names, 0, False)
             if picked and QMessageBox.question(self, "Restore", f"Replace all phrases with {name}?") == QMessageBox.Yes:
-                ok, path = _run_with_wait(self, "Downloading...", lambda: cs.download(name))
+                ok, path = _run_with_wait(self, "Downloading...", lambda: cs.restore_backup(name))
                 if ok:
                     cs.apply_pull(path)
                     QMessageBox.information(self, "Backup & Sync", "Phrases restored.")

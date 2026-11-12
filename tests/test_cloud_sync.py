@@ -279,3 +279,58 @@ def test_a_swapped_attachment_in_the_cloud_is_not_used(tmp_path, monkeypatch):
     assert r.action == "pulled" and "attachments_down" not in r.summary
     assert fl.resolve_attachment(macro[len('{#pastefile "'):-2]) is None
     s1.close(); s2.close()
+
+
+def _att_names(cloud_dir):
+    return sorted(p.name for p in cloud_dir.iterdir() if p.name.startswith("pf-att-") and p.suffix == ".db")
+
+
+def test_unused_attachments_are_pruned_but_backups_keep_theirs(tmp_path, monkeypatch):
+    from phraseforge.importers import files as fl
+    cloud_dir = tmp_path / "cloud"
+    cloud = FolderRemote(cloud_dir)
+    d1, s1 = _pc(tmp_path, "pc1")
+    _use(monkeypatch, d1)
+    a, b = tmp_path / "a.txt", tmp_path / "b.txt"
+    a.write_bytes(b"first file")
+    b.write_bytes(b"second file")
+    pa = s1.add_phrase(Phrase("A", fl.attach_file(a)))
+    s1.add_phrase(Phrase("B", fl.attach_file(b)))
+    cs = CloudSync(s1, cloud, "pc1")
+    cs.sync()
+    assert len(_att_names(cloud_dir)) == 2
+
+    s1.delete_phrase(pa.id)                          # A is gone from the phrases ...
+    cs.sync()
+    assert cs.prune_attachments(force=True) == 1     # ... and from every copy: removed
+    assert len(_att_names(cloud_dir)) == 1
+
+    cs.backup_now()                                  # a backup still uses B
+    s1.delete_phrase(next(p for p in s1.phrases() if p.description == "B").id)
+    cs.sync()
+    assert cs.prune_attachments(force=True) == 0     # the backup keeps B
+    assert len(_att_names(cloud_dir)) == 1
+    assert cs.prune_attachments() == 0               # once a week only
+    s1.close()
+
+
+def test_restoring_a_backup_fetches_its_attachments(tmp_path, monkeypatch):
+    from phraseforge.importers import files as fl
+    cloud = FolderRemote(tmp_path / "cloud")
+    d1, s1 = _pc(tmp_path, "pc1")
+    d2, s2 = _pc(tmp_path, "pc2")
+    _use(monkeypatch, d1)
+    src = tmp_path / "doc.pdf"
+    src.write_bytes(b"%PDF backup")
+    macro = fl.attach_file(src)
+    s1.add_phrase(Phrase("Doc", macro))
+    cs1 = CloudSync(s1, cloud, "pc1")
+    cs1.sync()
+    name = cs1.backup_now()
+    _use(monkeypatch, d2)
+    cs2 = CloudSync(s2, cloud, "pc2")
+    path = cs2.restore_backup(name)
+    cs2.apply_pull(path)
+    kept = fl.resolve_attachment(macro[len('{#pastefile "'):-2])
+    assert kept is not None and kept.read_bytes() == b"%PDF backup"
+    s1.close(); s2.close()
