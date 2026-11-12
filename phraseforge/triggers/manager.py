@@ -252,7 +252,7 @@ class TriggerManager:
         blocks = mode in ("replay", "discard") and hook is not None and hasattr(hook, "begin_block")
         if busy and before == 0 and blocks:
             try:
-                hook.begin_block(self._opt.get("block_max_ms", 10000))
+                hook.begin_block(self._opt.get("block_max_ms", 10000), replay=mode == "replay")
             except Exception:
                 log.exception("keys not held back during output")
         if not busy:

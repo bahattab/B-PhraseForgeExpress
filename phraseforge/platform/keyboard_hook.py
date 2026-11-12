@@ -151,37 +151,61 @@ class KeyboardHook:
         self._blocking = False
         self._block_until = 0.0
         self._held: list[tuple[int, int, int]] = []
+        self._block_replay = True
+        self._block_gen = 0
+        self._flushing = False
+        self._end_lock = threading.Lock()
 
     # FR-TRG-06 (same contract as NativeKeyboardHook; best effort, the callback runs Python)
-    def begin_block(self, max_ms: int = 10000) -> None:
+    def begin_block(self, max_ms: int = 10000, replay: bool = True) -> None:
         import time
         with self._block_lock:
-            if not self._blocking:
-                self._held = []
+            # keys still held from an earlier block stay: only end_block sends or drops them (R161)
             self._blocking = True
+            self._block_gen += 1
+            self._block_replay = replay
             self._block_until = time.monotonic() + max(0.1, max_ms / 1000)
 
     def end_block(self, replay: bool = True) -> int:
         sent = 0
-        while True:
-            with self._block_lock:
-                batch, self._held = self._held, []
-                if not batch:
-                    self._blocking = False
-                    break
-            sent += send_held_keys(keys_to_send(batch, replay))
+        with self._end_lock:                    # end_block and the flush at the limit, one at a time
+            while True:
+                with self._block_lock:
+                    batch, self._held = self._held, []
+                    if not batch:
+                        self._blocking = False
+                        break
+                sent += send_held_keys(keys_to_send(batch, replay))
         return sent
 
     def _hold_back(self, kb) -> bool:
+        """Past the time limit or with the buffer nearly full the key is still held, and a
+        thread sends everything held, in order (R161: letting it pass at once put it ahead of
+        the keys still held). Only a full buffer lets a key pass."""
         import time
         with self._block_lock:
             if not self._blocking:
                 return False
-            if time.monotonic() < self._block_until and len(self._held) < MAX_BLOCKED:
+            held = len(self._held) < MAX_BLOCKED
+            if held:
                 self._held.append((kb.vkCode, kb.scanCode, kb.flags))
-                return True
-            self._blocking = False
-            return False
+            flush = time.monotonic() >= self._block_until or len(self._held) >= MAX_BLOCKED - 32
+            start = flush and not self._flushing
+            if start:
+                self._flushing = True
+            gen = self._block_gen
+        if start:
+            threading.Thread(target=self._flush_at_limit, args=(gen,), name="pf-block-flush",
+                             daemon=True).start()
+        return held
+
+    def _flush_at_limit(self, gen: int) -> None:
+        try:
+            if gen == self._block_gen:          # not a newer block PhraseForge began meanwhile
+                self.end_block(self._block_replay)
+        finally:
+            with self._block_lock:
+                self._flushing = False
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
