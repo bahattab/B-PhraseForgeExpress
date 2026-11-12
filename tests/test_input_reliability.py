@@ -342,7 +342,7 @@ class BlockingHook(FakeHook):
         super().__init__(on_key)
         self.calls = []
 
-    def begin_block(self, ms):
+    def begin_block(self, ms, replay=True):
         self.calls.append(("begin", ms))
 
     def end_block(self, replay=True):
@@ -606,3 +606,54 @@ def test_dead_mouse_reader_is_not_reported_as_running():
     h._running = True
     h._thread = None
     assert h.running is False
+
+
+# ---------------------------------------------------------------- R161: keys at the hold-back limit
+def test_python_hook_keeps_order_at_the_hold_back_limit(monkeypatch):
+    """R161: past the time limit the next key passed at once, ahead of the keys still held,
+    and begin_block threw away keys left from a block that had hit its limit."""
+    from types import SimpleNamespace
+    from phraseforge.platform import keyboard_hook as kh
+    sent = []
+    monkeypatch.setattr(kh, "send_held_keys", lambda keys: sent.extend(keys) or len(keys))
+    hook = kh.KeyboardHook(lambda ev: False)
+    kb = lambda vk: SimpleNamespace(vkCode=vk, scanCode=0, flags=0)   # noqa: E731
+    hook.begin_block(100)
+    assert hook._hold_back(kb(0x41)) and hook._hold_back(kb(0x42))
+    hook.begin_block(100)                       # a second block: the held keys stay
+    time.sleep(0.15)                            # the limit passes
+    assert hook._hold_back(kb(0x43))            # held too, not let through ahead of A and B
+    deadline = time.time() + 3
+    while len(sent) < 3 and time.time() < deadline:
+        time.sleep(0.02)
+    assert [k[0] for k in sent] == [0x41, 0x42, 0x43]
+    assert not hook._hold_back(kb(0x44))        # blocking ended with the flush
+    assert hook.end_block() == 0
+
+
+@needs_dll
+def test_real_hook_keeps_order_at_the_hold_back_limit():
+    """R161 (pfhook.dll v4): keys typed after the limit used to pass at once while the ones
+    before it waited for end_block; now the DLL sends them all, in order, by itself."""
+    seen = []
+    hook = NativeKeyboardHook(lambda ev: seen.append((ev.vk, ev.down)) or False, budget_ms=200)
+    hook.start()
+    try:
+        proc = _inject(0.3, 10)                 # 10 presses and releases, 50 ms apart
+        deadline = time.time() + 10
+        while not seen and time.time() < deadline:
+            time.sleep(0.005)
+        if not seen:
+            proc.wait(10)
+            pytest.skip("no keyboard input reaches hooks on this machine (no interactive desktop)")
+        hook.begin_block(150)                   # keys are held for 150 ms, then the limit is reached
+        proc.wait(10)
+        deadline = time.time() + 3
+        while len([s for s in seen if s[0] == 0x87]) < 20 and time.time() < deadline:
+            time.sleep(0.05)
+        st = hook.stats()
+        assert st["blocked"] > 0, "no key was held back before the limit"
+        assert [s for s in seen if s[0] == 0x87] == [(0x87, True), (0x87, False)] * 10
+        assert hook.end_block(replay=True) == 0     # the DLL already sent everything
+    finally:
+        hook.stop()

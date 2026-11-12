@@ -24,7 +24,7 @@ from typing import Callable
 log = logging.getLogger(__name__)
 
 DLL_NAME = "pfhook.dll"
-EXPECTED_VERSION = 3
+EXPECTED_VERSION = 4
 MK_LEFT, MK_RIGHT, MK_WHEEL = 1, 2, 3            # PFMouse.kind (v3: recorder mouse hook)
 REPLAY_MAGIC = 0x50465252          # "PFRR": keys sent again after output (FR-TRG-06)
 
@@ -118,6 +118,8 @@ def load_library():
         lib.pf_stats.restype = None
         lib.pf_block_begin.argtypes = [ctypes.c_uint32]
         lib.pf_block_begin.restype = None
+        lib.pf_block_begin2.argtypes = [ctypes.c_uint32, ctypes.c_int]
+        lib.pf_block_begin2.restype = None
         lib.pf_block_end.argtypes = [ctypes.c_int]
         lib.pf_block_end.restype = ctypes.c_uint32
         lib.pf_mouse_start.argtypes = [ctypes.c_size_t]
@@ -205,9 +207,15 @@ class NativeKeyboardHook:
                 "running": bool(s.running), "blocked": s.blocked, "replayed": s.replayed}
 
     # ---------------------------------------------------------------- FR-TRG-06
-    def begin_block(self, max_ms: int = 10000) -> None:
-        """Hold the user's keys back while PhraseForge types (at most max_ms)."""
-        if self._running:
+    def begin_block(self, max_ms: int = 10000, replay: bool = True) -> None:
+        """Hold the user's keys back while PhraseForge types (at most max_ms). replay: what the
+        DLL does with them if the limit is reached first (the same as end_block will)."""
+        if not self._running:
+            return
+        begin2 = getattr(self._lib, "pf_block_begin2", None)
+        if begin2 is not None:
+            begin2(int(max_ms), 1 if replay else 0)
+        else:
             self._lib.pf_block_begin(int(max_ms))
 
     def end_block(self, replay: bool = True) -> int:

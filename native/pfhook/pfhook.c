@@ -23,7 +23,7 @@
 #include <windows.h>
 
 #define PF_API __declspec(dllexport)
-#define PF_VERSION 3
+#define PF_VERSION 4
 
 #define RING_SIZE 1024u                 /* power of two */
 #define MAX_RULES 256
@@ -87,6 +87,10 @@ static volatile LONG g_block;
 static ULONGLONG g_block_until;         /* safety: stop holding keys back after this tick */
 static PFKey g_blocked[MAX_BLOCKED];
 static int g_nblocked;
+static volatile LONG g_block_replay = 1; /* what a flush at the limit does: 1 replay, 0 drop (v4) */
+static volatile LONG g_flush_pending;   /* a flush at the limit has been submitted (v4) */
+static volatile LONG g_block_gen;       /* +1 per pf_block_begin2: a late flush skips a newer block */
+static SRWLOCK g_end_lock = SRWLOCK_INIT; /* one pf_block_end at a time (Python or the flush) */
 PF_API UINT32 pf_block_end(int replay);
 
 static HHOOK g_hook;
@@ -193,24 +197,40 @@ static void record_time(LARGE_INTEGER t0) {
     g_stats.hist[b]++;
 }
 
-/* Hold a key back while output runs. Returns 1 when held (swallow it). Past the time limit
- * or a full buffer, blocking ends by itself and keys pass again. */
+static VOID CALLBACK flush_at_limit(PTP_CALLBACK_INSTANCE inst, PVOID ctx) {
+    (void)inst;
+    /* PhraseForge may have ended this block and begun the next one meanwhile: leave that one */
+    if ((LONG)(ULONG_PTR)ctx == g_block_gen) pf_block_end((int)g_block_replay);
+    InterlockedExchange(&g_flush_pending, 0);
+}
+
+/* Hold a key back while output runs. Returns 1 when held (swallow it).
+ * Past the time limit, or when the buffer is nearly full, the key is still held, and a flush
+ * on a pool thread sends (or drops) everything held, in order, and ends blocking. Letting the
+ * new key pass at once (before v4) put it ahead of the keys still held: typed text came out
+ * reordered. Only a completely full buffer lets a key pass. */
 static int hold_back(const KBDLLHOOKSTRUCT *kb) {
-    int held = 0;
+    int held = 0, flush = 0;
+    LONG gen;
     AcquireSRWLockExclusive(&g_block_lock);
+    gen = g_block_gen;
     if (g_block) {
-        if (GetTickCount64() < g_block_until && g_nblocked < MAX_BLOCKED) {
+        if (g_nblocked < MAX_BLOCKED) {
             g_blocked[g_nblocked].vk = kb->vkCode;
             g_blocked[g_nblocked].scan = kb->scanCode;
             g_blocked[g_nblocked].flags = kb->flags;
             g_nblocked++;
             g_stats.blocked++;
             held = 1;
-        } else {
-            InterlockedExchange(&g_block, 0);
         }
+        if (GetTickCount64() >= g_block_until || g_nblocked >= MAX_BLOCKED - 32) flush = 1;
     }
     ReleaseSRWLockExclusive(&g_block_lock);
+    if (flush && InterlockedCompareExchange(&g_flush_pending, 1, 0) == 0
+            && !TrySubmitThreadpoolCallback(flush_at_limit, (PVOID)(ULONG_PTR)gen, NULL)) {
+        InterlockedExchange(&g_flush_pending, 0);
+        InterlockedExchange(&g_block, 0);   /* no pool thread: stop holding (the old way) */
+    }
     return held;
 }
 
@@ -414,23 +434,30 @@ PF_API int pf_reply(UINT32 seq, int swallow) {
     return 1;
 }
 
-/* FR-TRG-06: hold the user's keys back from now on, for at most max_ms. */
-PF_API void pf_block_begin(UINT32 max_ms) {
+/* FR-TRG-06: hold the user's keys back from now on, for at most max_ms; replay says what a
+ * flush at the limit does with them (the same as the pf_block_end PhraseForge will call).
+ * Keys still held from an earlier block are kept: only pf_block_end sends or drops them
+ * (before v4 they were thrown away here). */
+PF_API void pf_block_begin2(UINT32 max_ms, int replay) {
     if (max_ms < 100) max_ms = 100;
     if (max_ms > 120000) max_ms = 120000;
     AcquireSRWLockExclusive(&g_block_lock);
-    if (!g_block) g_nblocked = 0;
     g_block_until = GetTickCount64() + max_ms;
+    InterlockedIncrement(&g_block_gen);
+    InterlockedExchange(&g_block_replay, replay ? 1 : 0);
     InterlockedExchange(&g_block, 1);
     ReleaseSRWLockExclusive(&g_block_lock);
 }
+
+PF_API void pf_block_begin(UINT32 max_ms) { pf_block_begin2(max_ms, 1); }
 
 /* Stop holding keys back. replay = 1 sends them again in order (marked REPLAY_MAGIC, so the
  * hook lets them through and PhraseForge sees them as typing); 0 drops them. Keys typed while
  * the replay is being sent are held too and sent after it. Returns the number of keys sent. */
 PF_API UINT32 pf_block_end(int replay) {
-    static PFKey batch[MAX_BLOCKED];      /* only one caller at a time: PhraseForge's output lock */
+    static PFKey batch[MAX_BLOCKED];      /* one caller at a time: g_end_lock */
     UINT32 sent = 0;
+    AcquireSRWLockExclusive(&g_end_lock);
     for (;;) {
         int n;
         AcquireSRWLockExclusive(&g_block_lock);
@@ -443,6 +470,7 @@ PF_API UINT32 pf_block_end(int replay) {
         sent += send_keys(batch, n, replay);
     }
     g_stats.replayed += sent;
+    ReleaseSRWLockExclusive(&g_end_lock);
     return sent;
 }
 

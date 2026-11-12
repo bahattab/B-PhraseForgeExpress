@@ -91,7 +91,7 @@ def test_app_hotkey_flow(app):
                                   "show_result": lambda s, t, o, l, request=0, cut=False: shown.append(("result", o, l)),
                                   "show_error": lambda s, m, request=0: shown.append(("error", m))})()
     f = Fake()
-    PhraseForgeApp._instant_translate(f, 1, lambda: "Hello", lambda t, lang: "مرحبا")
+    PhraseForgeApp._instant_translate(f, 1, lambda: "Hello", lambda t, lang: "مرحبا", sync=True)
     assert shown == [("busy", "Hello"), ("result", "مرحبا", "Arabic")]
     shown.clear()
     PhraseForgeApp._instant_translate(f, 1, lambda: "")
@@ -100,7 +100,7 @@ def test_app_hotkey_flow(app):
 
     def boom(t, lang):
         raise RuntimeError("offline")
-    PhraseForgeApp._instant_translate(f, 1, lambda: "Hello", boom)
+    PhraseForgeApp._instant_translate(f, 1, lambda: "Hello", boom, sync=True)
     assert shown[-1] == ("error", "Could not translate: offline")
 
 
