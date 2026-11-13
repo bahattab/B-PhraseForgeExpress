@@ -886,8 +886,12 @@ class PhraseForgeApp(QObject):
         from phraseforge.learning import Learner
         from phraseforge.platform.windows import focused_is_password
         from phraseforge.triggers.manager import TriggerManager
+        deep = None
+        if os.name == "nt":                 # browser / Electron / WPF password fields too (R162)
+            from phraseforge.platform import caret
+            deep = caret.focused_is_password
         self.learner = Learner(self.store, password_check=focused_is_password,
-                               on_reminder=self._abbreviation_reminder)
+                               on_reminder=self._abbreviation_reminder, deep_password_check=deep)
         self.tip = None                     # SmartComplete / autocomplete suggestion, created on demand
         try:
             from phraseforge.learning import WordLearner

@@ -12,7 +12,9 @@ description) is called once (at most every REMIND_EVERY_S seconds per phrase).
 from __future__ import annotations
 
 import logging
+import queue
 import re
+import threading
 import time
 from typing import Callable
 
@@ -32,9 +34,16 @@ def normalize_candidate(text: str) -> str:
 
 class Learner:
     def __init__(self, store, password_check: Callable[[], bool] | None = None,
-                 on_reminder: Callable[[str, str], None] | None = None, clock=time.monotonic):
+                 on_reminder: Callable[[str, str], None] | None = None, clock=time.monotonic,
+                 deep_password_check: Callable[[], bool | None] | None = None):
         self.store = store
         self._password_check = password_check
+        # password fields only UI Automation knows (browsers, Electron, WPF; R162). That check can
+        # take a while and feed_char runs on the keyboard hook thread, so it runs on a thread of
+        # its own; the sentence's save waits behind it in the same queue.
+        self._deep = deep_password_check
+        self._deep_jobs: queue.Queue | None = None
+        self._deep_result: dict | None = None
         self._buf: list[str] = []
         self._tainted = False   # current sentence started in a password field
         self.on_reminder = on_reminder
@@ -135,13 +144,19 @@ class Learner:
             if ch.isspace():
                 return None
             self._tainted = self._is_password()
+            self._deep_result = self._ask_deep() if not self._tainted else None
         if ch in SENTENCE_END:
             if ch != "\n":
                 self._buf.append(ch)
             text = "".join(self._buf)
-            tainted = self._tainted
+            tainted, deep = self._tainted, self._deep_result
             self.reset()
-            return None if tainted else self._commit(text)
+            if tainted:
+                return None
+            if deep is not None:
+                self._deep_jobs.put(lambda: self._commit_unless_password(text, deep))
+                return None                 # saved on the check thread, after the check
+            return self._commit(text)
         self._buf.append(ch)
         if len(self._buf) > MAX_BUFFER:
             self.reset()
@@ -154,6 +169,46 @@ class Learner:
             if r:
                 out.append(r)
         return out
+
+    # ------------------------------------------------------------ UI Automation check (R162)
+    def _ask_deep(self) -> dict | None:
+        if self._deep is None:
+            return None
+        if self._deep_jobs is None:
+            self._deep_jobs = queue.Queue()
+            threading.Thread(target=self._deep_loop, name="pf-learn-password", daemon=True).start()
+        box: dict = {}
+
+        def check():
+            try:
+                box["password"] = self._deep()
+            except Exception:                  # noqa: BLE001 - cannot tell
+                box["password"] = None
+        self._deep_jobs.put(check)
+        return box
+
+    def _deep_loop(self) -> None:
+        while True:
+            job = self._deep_jobs.get()
+            try:
+                job()
+            except Exception:                  # noqa: BLE001 - keep the thread alive
+                log.exception("learning: password check failed")
+            finally:
+                self._deep_jobs.task_done()
+
+    def _commit_unless_password(self, text: str, box: dict) -> None:
+        if box.get("password"):                # typed into a password field: never learned
+            return
+        self._commit(text)
+
+    def flush(self, timeout: float = 5.0) -> None:
+        """Wait until sentences already finished are checked and saved (tests, shutdown)."""
+        if self._deep_jobs is None:
+            return
+        done = threading.Event()
+        self._deep_jobs.put(done.set)
+        done.wait(timeout)
 
     def _commit(self, text: str) -> str | None:
         cand = normalize_candidate(text)
