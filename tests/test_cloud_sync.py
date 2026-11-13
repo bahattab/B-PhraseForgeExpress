@@ -300,9 +300,12 @@ def test_unused_attachments_are_pruned_but_backups_keep_theirs(tmp_path, monkeyp
     cs.sync()
     assert len(_att_names(cloud_dir)) == 2
 
-    s1.delete_phrase(pa.id)                          # A is gone from the phrases ...
+    s1.trash_phrase(pa.id)                           # A is in the Trash: still kept
     cs.sync()
-    assert cs.prune_attachments(force=True) == 1     # ... and from every copy: removed
+    assert cs.prune_attachments(force=True) == 0
+    s1.delete_trash()                                # emptied: gone from every copy, removed
+    cs.sync()
+    assert cs.prune_attachments(force=True) == 1
     assert len(_att_names(cloud_dir)) == 1
 
     cs.backup_now()                                  # a backup still uses B
