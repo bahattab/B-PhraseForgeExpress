@@ -425,6 +425,25 @@ class CloudSync:
             except sqlite3.Error:
                 continue
             attachment_refs((c for (c,) in rows), refs)
+        try:                                        # phrases in the Trash keep their files too
+            rows = con.execute("SELECT data FROM trash WHERE data LIKE '%attached/%'").fetchall()
+        except sqlite3.Error:
+            rows = []
+        for (data,) in rows:
+            try:
+                snap = json.loads(data or "null")
+            except ValueError:
+                continue
+            texts, todo = [], [snap]
+            while todo:                             # every string anywhere in the snapshot
+                v = todo.pop()
+                if isinstance(v, str):
+                    texts.append(v)
+                elif isinstance(v, dict):
+                    todo.extend(v.values())
+                elif isinstance(v, list):
+                    todo.extend(v)
+            attachment_refs(texts, refs)
 
     def sync_attachments(self, pulled: Path | None = None) -> tuple[int, int]:
         """Carry the files attached to phrases: upload those the cloud lacks, download those
