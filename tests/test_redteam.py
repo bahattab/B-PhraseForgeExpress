@@ -3031,3 +3031,29 @@ def test_slow_translation_does_not_hold_up_the_expansion_worker():
     while len(shown) < 2 and time.monotonic() < deadline:
         time.sleep(0.02)
     assert shown == ["busy", "مرحبا"]
+
+
+# ---------------------------------------------------------------- 0.6.23: learning and password fields
+def test_learning_skips_sentences_typed_into_uia_password_fields():
+    """R162: autotext learning only skipped classic password boxes; a password typed into a
+    browser or Electron field (and ended with Enter) could become a suggestion. A UI Automation
+    check now runs off the hook thread, and the sentence is saved only after it said no."""
+    import threading
+    from phraseforge.learning import Learner
+    store = Store(":memory:")
+    state, asked = [True], []
+
+    def deep():
+        asked.append(threading.current_thread().name)
+        return state[0]
+    L = Learner(store, password_check=lambda: False, deep_password_check=deep)
+    for _ in range(3):
+        L.feed_text("MySecretPassw0rd!\n")
+    L.flush()
+    assert store.suggestions(min_count=1) == [] and asked
+    assert all(n == "pf-learn-password" for n in asked)          # never on the hook thread
+    state[0] = None                                               # a program that cannot tell
+    for _ in range(3):
+        L.feed_text("Thank you for your message. ")
+    L.flush()
+    assert [s["text"] for s in store.suggestions(min_count=3)] == ["Thank you for your message."]
