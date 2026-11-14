@@ -127,7 +127,8 @@ def export_to_onenote(store: Store, client: OneNote, path: str, folder_id: int |
 
     def phrases_under(fid, prefix):
         out = []
-        for p in sorted(store.phrases(fid), key=lambda p: (p.sort, p.description.lower())):
+        from phraseforge.security import exportable
+        for p in sorted(exportable(store, store.phrases(fid)), key=lambda p: (p.sort, p.description.lower())):
             out.append((prefix, p))
         for f in sorted(store.folders(fid), key=lambda f: (f.sort, f.name.lower())):
             out.extend(phrases_under(f.id, f"{prefix}{f.name} / " if prefix or f.name else ""))

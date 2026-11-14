@@ -2359,7 +2359,8 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            d = self.store.export_dict()
+            from phraseforge.security import exportable_dict
+            d = exportable_dict(self.store, self.store.export_dict())   # locked folders stay here (R171)
             from phraseforge.io_formats import _embed_attachments
             _embed_attachments(d)             # attached files go to the new PC too
             from phraseforge.db import is_secret_setting
@@ -2376,9 +2377,8 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            with open(path, encoding="utf-8") as fh:
-                d = json.load(fh)
             from phraseforge import io_formats
+            d = io_formats.read_json_file(path)        # size checked before reading (R169)
             io_formats.import_dict(self.store, d)
             from phraseforge.db import is_device_setting
             for k, v in (d.get("settings") or {}).items():
@@ -2790,9 +2790,10 @@ class MainWindow(QMainWindow):
     def phrases_for_print(self) -> list[Phrase]:
         if self.sel_kind == "phrase":
             return [self.store.get_phrase(self.sel_id)]
+        from phraseforge.security import exportable
         if self.sel_kind == "folder":
-            return self.store.phrases(self.sel_id)
-        return self.store.phrases()
+            return exportable(self.store, self.store.phrases(self.sel_id))
+        return exportable(self.store, self.store.phrases())
 
     def export_document(self, kind: str | None = None, path: str | None = None, show_message: bool = True):
         """Selected phrase, selected folder or all phrases as a document. kind is the extension
