@@ -3222,3 +3222,32 @@ def test_exports_leave_out_locked_folders(tmp_path):
     LOCKS.add(f.id)
     io_formats.export_json(store, tmp_path / "z.json")
     assert "IBAN" in json.dumps(json.loads((tmp_path / "z.json").read_text(encoding="utf-8")))
+
+
+# ---------------------------------------------------------------- 0.6.26: cloud download size
+def test_cloud_download_is_size_limited(tmp_path, monkeypatch):
+    """R172: a cloud copy was downloaded in full before its size was checked, so a huge file
+    planted in the sync folder or on Drive filled the disk. Both remotes now refuse it, and a
+    Drive file that reports a small size but sends more is cut off at the limit."""
+    import shutil
+    from phraseforge.cloud import sync as cs
+    from tests.test_cloud_sync import FakeDrive
+    monkeypatch.setattr(cs, "MAX_DOWNLOAD", 1000)
+    big = tmp_path / "big"
+    big.write_bytes(b"x" * 5000)
+    folder = tmp_path / "cloud"
+    folder.mkdir()
+    shutil.copyfile(big, folder / cs.SYNC_NAME)
+    drive = FakeDrive(tmp_path)
+    gd = cs.GDriveRemote(drive, "PhraseForge")
+    gd.put(big, cs.SYNC_NAME, {})
+    for remote in (cs.FolderRemote(folder), gd):
+        s = cs.CloudSync(Store(":memory:"), remote, device="a")
+        with pytest.raises(cs.SyncError, match="larger"):
+            s.download(cs.SYNC_NAME, allow_older=True)
+    # a lying size in the listing: the stream itself is cut off at the limit
+    monkeypatch.setattr(drive, "list", lambda fid: [dict(f, size=10) for f in FakeDrive.list(drive, fid)])
+    dest = tmp_path / "out"
+    with pytest.raises(cs.DownloadTooLarge):
+        gd.get(cs.SYNC_NAME, dest, max_bytes=1000)
+    assert dest.stat().st_size <= 1000
