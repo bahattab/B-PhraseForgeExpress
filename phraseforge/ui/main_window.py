@@ -853,6 +853,8 @@ class MainWindow(QMainWindow):
                                ("From PhraseExpress (.txt files)...", "import", self.import_phraseexpress),
                                ("From PhraseExpress (folder of .txt files)...", "folder_tree",
                                 self.import_phraseexpress_folder),
+                               ("PhraseExpress settings (config.xml)...", "settings",
+                                self.import_phraseexpress_config),
                                ("TextExpander / macOS (.csv / .textexpander / .plist)...", "textexpander", self.import_textexpander),
                                ("AutoHotkey hotstrings (.ahk)...", "import", self.import_autohotkey),
                                None,
@@ -2485,6 +2487,39 @@ class MainWindow(QMainWindow):
                                                 "PhraseExpress phrase files (*.pexdb *.pexdbhub *.pxp);;All files (*)")
         if paths:
             self.import_phraseexpress_path(paths if len(paths) > 1 else paths[0])
+
+    def import_phraseexpress_config(self) -> None:
+        """PhraseExpress options from %APPDATA%\\PhraseExpress\\config.xml: AI presets and engines,
+        glossaries, delimiters and excluded programs. API keys are never imported."""
+        start = os.path.join(os.environ.get("APPDATA", ""), "PhraseExpress") if os.environ.get("APPDATA") else ""
+        path, _ = QFileDialog.getOpenFileName(self, "Import PhraseExpress settings", start,
+                                              "PhraseExpress settings (config.xml);;XML (*.xml)")
+        if not path:
+            return
+        from phraseforge.importers import pe_config
+        try:
+            data = pe_config.parse_config(path)
+        except Exception as e:
+            QMessageBox.warning(self, "Import PhraseExpress settings", str(e))
+            return
+        found = [tr(f"{len(data.presets)} AI preset(s)"), tr(f"{len(data.glossaries)} glossary(ies)")]
+        if data.ai_engine or data.translation_engine:
+            found.append(tr("AI and translation engines"))
+        if data.leading is not None or data.trailing is not None:
+            found.append(tr("autotext delimiters"))
+        if data.excluded_apps or data.allowed_apps:
+            found.append(tr("program lists"))
+        ask = tr(f"Found: {', '.join(found)}.") + "\n\n" + tr(
+            "Import them? Presets and glossaries with the same name are replaced; nothing else is deleted.")
+        if QMessageBox.question(self, "Import PhraseExpress settings", ask) != QMessageBox.Yes:
+            return
+        rep = pe_config.apply_config(self.store, data)
+        parts = [tr(f"Added {rep.presets_added} AI preset(s), updated {rep.presets_updated}."),
+                 tr(f"Imported {rep.glossaries} glossary(ies).")]
+        if rep.changed:
+            parts.append(tr(f"Also set: {', '.join(tr(c) for c in rep.changed)}."))
+        msg = parts[0] + " " + parts[1] + "".join("\n\n" + x for x in parts[2:] + [tr(n) for n in rep.notes])
+        QMessageBox.information(self, "Import PhraseExpress settings", msg)
 
     def import_phraseexpress_folder(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "Import a folder exported from PhraseExpress")
