@@ -116,19 +116,45 @@ class MouseHook:
 
 
 class RecordSession:
-    """Both hooks around one Recorder. The keyboard hook swallows the stop hotkey."""
+    """Both hooks around one Recorder. The keyboard path swallows the stop hotkey.
+
+    Keys come from the trigger manager's keyboard hook when there is one (use_key_source):
+    pfhook.dll has a single keyboard hook, so a second one would fight the first. Without a
+    manager the recorder installs its own keyboard hook (native when it loads)."""
 
     def __init__(self, recorder):
         self.recorder = recorder
-        self.keys = KeyboardHook(lambda ev: ev.down and recorder.key(ev.vk, ev.char, ev.modifiers),
-                                 pass_foreign_injected=False)
+        self.keys = None
+        self.key_source = None
+        self._listening = False
         from phraseforge.platform.native_hook import make_mouse_hook
         self.mouse = make_mouse_hook(recorder)       # pfhook.dll when it loads (G-05)
         self.mouse_failed = False
 
+    def use_key_source(self, manager) -> None:
+        self.key_source = manager
+
+    def _on_key(self, ev) -> bool:
+        # the user's keys only: foreign injected input (FR-INP) and our own are not recorded
+        return bool(ev.down and not ev.injected and self.recorder.key(ev.vk, ev.char, ev.modifiers))
+
     def start(self) -> None:
         self.recorder.start()
-        self.keys.start()
+        source = self.key_source
+        if source is not None and source.keys_hooked:
+            source.add_key_listener(self._on_key)
+            self._listening = True
+        else:
+            from phraseforge.platform.native_hook import make_keyboard_hook
+            self.keys = make_keyboard_hook(self._on_key, pass_foreign_injected=False)
+            try:
+                self.keys.start()
+            except OSError:
+                if not getattr(self.keys, "native", False):
+                    raise
+                log.warning("native keyboard hook failed for recording; using the Python hook")
+                self.keys = KeyboardHook(self._on_key, pass_foreign_injected=False)
+                self.keys.start()
         try:
             self.mouse.start()
         except OSError as e:                         # the native hook failed: use the Python one
@@ -141,5 +167,10 @@ class RecordSession:
                 self.mouse_failed = True
 
     def stop(self) -> None:
-        self.keys.stop()
+        if self._listening and self.key_source is not None:
+            self.key_source.remove_key_listener(self._on_key)
+            self._listening = False
+        if self.keys is not None:
+            self.keys.stop()
+            self.keys = None
         self.mouse.stop()

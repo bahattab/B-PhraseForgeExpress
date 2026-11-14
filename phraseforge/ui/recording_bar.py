@@ -82,6 +82,8 @@ class RecordingController:
             self._was_paused = self.triggers.paused
             self.triggers.paused = True
         self.session = factory(self.recorder)
+        if self.triggers is not None and hasattr(self.session, "use_key_source"):
+            self.session.use_key_source(self.triggers)   # one keyboard hook for the app (see RecordSession)
         self.bar = RecordingBar(self.recorder)
         self.bar.stop_clicked.connect(self.finish)
         self.bar.place()

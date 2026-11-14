@@ -209,6 +209,7 @@ class TriggerManager:
         self._suspend = 0
         self._suspend_lock = threading.Lock()
         self._hook = None
+        self._key_listeners: list = []         # the macro recorder (G-05): fed by this hook, see add_key_listener
         self._watcher = None
         self._queue: queue.Queue = queue.Queue()
         self._stop = threading.Event()
@@ -228,6 +229,21 @@ class TriggerManager:
     @property
     def paused(self) -> bool:
         return self._paused
+
+    @property
+    def keys_hooked(self) -> bool:
+        """True while this manager's keyboard hook is installed and reading keys."""
+        return self._hook is not None and bool(getattr(self._hook, "running", True))
+
+    def add_key_listener(self, fn) -> None:
+        """fn(ev) runs on the hook thread for every key, even while triggers are paused; True swallows it.
+        The macro recorder uses this instead of a second keyboard hook: pfhook.dll has one keyboard hook."""
+        if fn not in self._key_listeners:
+            self._key_listeners.append(fn)
+
+    def remove_key_listener(self, fn) -> None:
+        if fn in self._key_listeners:
+            self._key_listeners.remove(fn)
 
     @paused.setter
     def paused(self, value: bool) -> None:
@@ -529,6 +545,12 @@ class TriggerManager:
         program and cannot be swallowed any more. Actions then erase one more character
         (the key itself) instead of relying on the swallow."""
         self._late = bool(getattr(ev, "late", False))
+        for fn in list(self._key_listeners):
+            try:
+                if fn(ev):
+                    return True                           # a listener (the recorder's stop key) swallows it
+            except Exception:                             # noqa: BLE001 - a listener must not break the hook
+                log.exception("key listener failed")
         if ev.vk == VK_CAPITAL and self._opt.get("disable_capslock"):
             return True                                   # Caps Lock disabled (down and up)
         if self._double_ctrl is not None and self._double_ctrl.feed(ev.vk, ev.down) and self._active():
