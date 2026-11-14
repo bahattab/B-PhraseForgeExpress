@@ -176,7 +176,7 @@ def _from_template(text: str) -> str:
     if hit is not None:
         return hit
     out = text
-    if len(text) <= 4000:
+    if len(text) <= 500:                    # a long crafted text took seconds to match (R167)
         for anchor, rx, ar in _templates():
             if anchor not in text:
                 continue

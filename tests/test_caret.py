@@ -128,7 +128,15 @@ def _near(a, b, px=12):
 
 
 def test_caret_in_a_wpf_text_box(wpf_window):
+    # caret_rect gives MSAA and UI Automation TIMEOUT_S (0.25 s) together, on purpose: the popup
+    # must not wait, it falls back to the mouse. On a busy CI runner WPF's first answers can take
+    # longer than that, which made this test fail now and then. What it checks is that the caret
+    # is found, so it asks again for up to 5 s.
     rect, source = caret.caret_rect()
+    deadline = time.monotonic() + 5
+    while not rect and time.monotonic() < deadline:
+        time.sleep(0.2)
+        rect, source = caret.caret_rect()
     assert rect and source, "no caret found"
     l, t, r, b = rect
     wl, wt, wr, wb = wpf_window
@@ -136,8 +144,18 @@ def test_caret_in_a_wpf_text_box(wpf_window):
     # the accessibility routes agree with each other (within a few pixels)
     from phraseforge.platform import windows
     w = caret._get_worker()
-    uia = w.call(lambda com: com.uia_caret(), 5)
-    msaa = w.call(lambda com: com.msaa(), 5)
+
+    def ask(fn):
+        # a lookup the loop above gave up on may still run: call() answers None at once while
+        # the worker is busy, so ask again until it is free (at most 5 s)
+        end = time.monotonic() + 5
+        got = w.call(fn, 5)
+        while got is None and time.monotonic() < end:
+            time.sleep(0.2)
+            got = w.call(fn, max(0.1, end - time.monotonic()))
+        return got
+    uia = ask(lambda com: com.uia_caret())
+    msaa = ask(lambda com: com.msaa())
     if windows.foreground_app()[1] != "PF caret test":
         pytest.skip("the test window lost the focus during the test")
     found = [x for x in (uia, msaa) if x]

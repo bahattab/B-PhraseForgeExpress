@@ -156,7 +156,7 @@ def map_header(row: list[str]) -> dict[int, str] | None:
 def read_rows(path: str | Path) -> list[dict[str, str]]:
     if Path(path).suffix.lower() in (".xlsx", ".xlsm"):       # first sheet with rows
         from phraseforge.importers.files import xlsx_rows
-        rows = next((r for _name, r in xlsx_rows(path) if r), [])
+        rows = next((r for _name, r in xlsx_rows(path, first_only=True) if r), [])
         rows = [r for r in rows if any(c.strip() for c in r)]
     else:
         text = _read_text(path)
