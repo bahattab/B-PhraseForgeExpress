@@ -127,6 +127,7 @@ class RecordSession:
         self.triggers = triggers
         self.keys = None
         self.tapped = False
+        self._tap_fn = self._tap                     # one object, so detach_tap finds it
         from phraseforge.platform.native_hook import make_mouse_hook
         self.mouse = make_mouse_hook(recorder)       # pfhook.dll when it loads (G-05)
         self.mouse_failed = False
@@ -147,7 +148,7 @@ class RecordSession:
         if self.triggers is not None and self.triggers.attach_tap(self._tap, self._stop_chords()):
             self.tapped = True
         else:
-            self.keys = KeyboardHook(self._tap, pass_foreign_injected=False)
+            self.keys = KeyboardHook(self._tap_fn, pass_foreign_injected=False)
             self.keys.start()
         try:
             self.mouse.start()
@@ -162,7 +163,7 @@ class RecordSession:
 
     def stop(self) -> None:
         if self.tapped:
-            self.triggers.detach_tap(self._tap)
+            self.triggers.detach_tap(self._tap_fn)
             self.tapped = False
         if self.keys is not None:
             self.keys.stop()

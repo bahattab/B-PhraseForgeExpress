@@ -434,7 +434,7 @@ class TriggerManager:
         return True
 
     def detach_tap(self, tap=None) -> None:
-        if tap is not None and self._tap is not tap:
+        if tap is not None and self._tap != tap:   # == : bound methods are new objects each time
             return
         self._tap = None
         self._tap_rules = []

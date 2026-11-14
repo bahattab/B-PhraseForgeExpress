@@ -3311,6 +3311,14 @@ def test_recorder_reads_keys_from_the_native_hook():
         assert all(r[0] != F12 for r in m._hook.rules)
         assert m._hook.on_key(Ev("b", vk=0x42)) is False
         assert [e.vk for e in rec.events] == [0x41]
+
+        class Owner:                                         # a bound method is a new object
+            def tap(self, ev):                               # on every access: detach must
+                return False                                 # still find it
+        o = Owner()
+        assert m.attach_tap(o.tap, [(F12, frozenset())])
+        m.detach_tap(o.tap)
+        assert m._tap is None and all(r[0] != F12 for r in m._hook.rules)
     finally:
         m.stop()
 
