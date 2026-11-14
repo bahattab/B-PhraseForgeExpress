@@ -209,6 +209,8 @@ class TriggerManager:
         self._suspend = 0
         self._suspend_lock = threading.Lock()
         self._hook = None
+        self._tap = None                     # the macro recorder's key tap (R173)
+        self._tap_rules: list = []
         self._watcher = None
         self._queue: queue.Queue = queue.Queue()
         self._stop = threading.Event()
@@ -386,6 +388,7 @@ class TriggerManager:
         (always), and every hotkey chord while Python is late (so it never leaks into the program)."""
         from phraseforge.platform.native_hook import WHEN_ALWAYS, WHEN_DEGRADED
         rules = [(vk, mods, WHEN_DEGRADED) for vk, mods in self.hotkeys.chords()]
+        rules += [(vk, mods, WHEN_DEGRADED) for vk, mods in self._tap_rules]
         if self._opt.get("disable_capslock"):
             rules.append((VK_CAPITAL, frozenset(), WHEN_ALWAYS))
         return rules
@@ -414,6 +417,27 @@ class TriggerManager:
             from phraseforge.platform.keyboard_hook import KeyboardHook
             self._hook = KeyboardHook(self._on_key)
             self._hook.start()
+        self._push_native_rules()
+
+    def attach_tap(self, tap, chords=()) -> bool:
+        """Let the macro recorder read keys from this hook instead of installing a second one
+        (R173). Only when the hook is pfhook.dll: a busy Python then cannot make the keyboard
+        lag while recording. chords: (vk, modifiers) the DLL swallows by itself when Python
+        is late (the stop hotkey). tap(ev) -> True swallows the key. False: no native hook
+        is running, so the caller keeps its own hook."""
+        hook = self._hook
+        if hook is None or not getattr(hook, "native", False) or not getattr(hook, "running", False):
+            return False
+        self._tap_rules = [(int(vk), frozenset(mods)) for vk, mods in chords]
+        self._tap = tap
+        self._push_native_rules()
+        return True
+
+    def detach_tap(self, tap=None) -> None:
+        if tap is not None and self._tap != tap:   # == : bound methods are new objects each time
+            return
+        self._tap = None
+        self._tap_rules = []
         self._push_native_rules()
 
     @property
@@ -531,6 +555,13 @@ class TriggerManager:
         self._late = bool(getattr(ev, "late", False))
         if ev.vk == VK_CAPITAL and self._opt.get("disable_capslock"):
             return True                                   # Caps Lock disabled (down and up)
+        tap = self._tap
+        if tap is not None:                               # the macro recorder (R173)
+            try:
+                if tap(ev):
+                    return True
+            except Exception:
+                log.exception("recorder key tap failed")
         if self._double_ctrl is not None and self._double_ctrl.feed(ev.vk, ev.down) and self._active():
             self._emit(self.on_command, "file_search")    # Listary-style double Ctrl
         if not ev.down:
