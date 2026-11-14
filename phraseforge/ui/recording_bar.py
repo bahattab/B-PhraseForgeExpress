@@ -76,7 +76,10 @@ class RecordingController:
         factory = self.session_factory
         if factory is None:
             from phraseforge.platform.record_hook import RecordSession
-            factory = RecordSession
+            triggers = self.triggers
+
+            def factory(rec):                        # keys from the app's native hook (R173)
+                return RecordSession(rec, triggers=triggers)
         self.recorder.on_stop = lambda: self.post(self.finish)
         if self.triggers is not None:                   # typing while recording must not expand autotext
             self._was_paused = self.triggers.paused

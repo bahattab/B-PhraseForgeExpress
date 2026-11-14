@@ -1,6 +1,7 @@
 """Red-team findings (0.6.1): each test is an attack that worked on 0.6.0 and must now fail."""
 import os
 import sqlite3
+import sys
 import types
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -3251,3 +3252,91 @@ def test_cloud_download_is_size_limited(tmp_path, monkeypatch):
     with pytest.raises(cs.DownloadTooLarge):
         gd.get(cs.SYNC_NAME, dest, max_bytes=1000)
     assert dest.stat().st_size <= 1000
+
+
+# ---------------------------------------------------------------- 0.6.27: recorder keyboard hook
+class _NativeFakeHook:
+    native = True
+    running = True
+
+    def __init__(self, on_key):
+        self.on_key, self.rules = on_key, []
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
+
+    def set_rules(self, rules):
+        self.rules = list(rules)
+
+
+def _tap_manager(hook_cls):
+    from phraseforge.triggers.manager import TriggerManager
+    from tests.test_triggers import FakeWatcher
+    m = TriggerManager(Store(":memory:"), lambda r: None, lambda c: None, hook_factory=hook_cls,
+                       watcher_factory=FakeWatcher, foreground_app=lambda: ("notepad.exe", "t"),
+                       foreground_hwnd=lambda: 1, poll_interval_s=3600)
+    m.start()
+    return m
+
+
+def test_recorder_reads_keys_from_the_native_hook():
+    """R173: macro recording installed a second WH_KEYBOARD_LL hook whose callback ran Python
+    under the GIL, so a busy Python made every key on the PC lag while recording. The
+    recorder now taps the trigger manager's pfhook.dll hook, and the DLL swallows the stop
+    hotkey by itself when Python is late."""
+    from phraseforge.platform.native_hook import WHEN_DEGRADED
+    from phraseforge.recorder import Recorder
+    from tests.test_triggers import Ev, FakeHook
+    py = _tap_manager(FakeHook)
+    try:
+        assert py.attach_tap(lambda ev: True) is False       # Python hook: the recorder keeps its own
+    finally:
+        py.stop()
+    m = _tap_manager(_NativeFakeHook)
+    try:
+        rec = Recorder()
+        rec.start()
+        tap = lambda ev: bool(ev.down and not ev.injected and rec.key(ev.vk, ev.char, ev.modifiers))  # noqa: E731
+        F12 = 0x7B
+        assert m.attach_tap(tap, [(F12, frozenset({"ctrl", "shift"}))]) is True
+        assert (F12, frozenset({"ctrl", "shift"}), WHEN_DEGRADED) in m._hook.rules
+        assert m._hook.on_key(Ev("a", vk=0x41)) is False      # recorded, not swallowed
+        assert [e.vk for e in rec.events] == [0x41]
+        assert m._hook.on_key(Ev(None, vk=F12, mods=("ctrl", "shift"))) is True   # the stop hotkey
+        assert not rec.recording
+        m.detach_tap(tap)
+        assert all(r[0] != F12 for r in m._hook.rules)
+        assert m._hook.on_key(Ev("b", vk=0x42)) is False
+        assert [e.vk for e in rec.events] == [0x41]
+    finally:
+        m.stop()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the record hooks are Windows only")
+def test_record_session_uses_the_tap_not_a_python_hook(monkeypatch):
+    """R173: with a native trigger hook, RecordSession installs no Python keyboard hook."""
+    from phraseforge.platform import native_hook, record_hook
+    from phraseforge.recorder import Recorder
+
+    class Mouse:
+        def __init__(self, rec): pass
+        def start(self): pass
+        def stop(self): pass
+
+    def no_python_hook(*a, **k):
+        raise AssertionError("a Python keyboard hook was installed")
+    monkeypatch.setattr(native_hook, "make_mouse_hook", Mouse)
+    monkeypatch.setattr(record_hook, "KeyboardHook", no_python_hook)
+    m = _tap_manager(_NativeFakeHook)
+    try:
+        s = record_hook.RecordSession(Recorder(), triggers=m)
+        s.start()
+        assert s.tapped and m._tap is not None
+        assert any(r[0] == 0x7B for r in m._hook.rules)    # ctrl+shift+f12, the default stop key
+        s.stop()
+        assert m._tap is None
+    finally:
+        m.stop()
