@@ -27,6 +27,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from phraseforge.security import csv_safe, csv_unsafe
 from phraseforge.db import Store, untrusted_import
 from phraseforge.models import Folder, Phrase, Trigger, TriggerKind
 
@@ -160,7 +161,8 @@ def read_rows(path: str | Path) -> list[dict[str, str]]:
         rows = [r for r in rows if any(c.strip() for c in r)]
     else:
         text = _read_text(path)
-        rows = [r for r in csv.reader(io.StringIO(text), _dialect(text)) if any(c.strip() for c in r)]
+        rows = [[csv_unsafe(c) for c in r] for r in csv.reader(io.StringIO(text), _dialect(text))
+                if any(c.strip() for c in r)]
     if not rows:
         return []
     cols = map_header(rows[0])
@@ -289,7 +291,8 @@ def import_xml(store: Store, path: str | Path, folder_name: str | None = None) -
 
 # ------------------------------------------------------------------ writing
 def _phrases(store: Store, folder_id: int | None = None) -> list[Phrase]:
-    phrases = store.phrases()
+    from phraseforge.security import exportable
+    phrases = exportable(store, store.phrases())
     if folder_id is None:
         return phrases
     keep = {folder_id}
@@ -325,8 +328,8 @@ def export_phraseexpress_csv(store: Store, path: str | Path, folder_id: int | No
         w.writerow(PE_HEADER)
         for p in _phrases(store, folder_id):
             at = "|".join(t.value for t in p.triggers if t.kind == TriggerKind.AUTOTEXT and t.value)
-            w.writerow([p.description, _text_of(store, p, language), at, _trigger(p, TriggerKind.HOTKEY),
-                        folder_path(store, p.folder_id)])
+            w.writerow([csv_safe(c) for c in (p.description, _text_of(store, p, language), at,
+                                              _trigger(p, TriggerKind.HOTKEY), folder_path(store, p.folder_id))])
             rep.exported += 1
     return rep
 
@@ -378,7 +381,8 @@ def export_textexpander_csv(store: Store, path: str | Path, folder_id: int | Non
             if not abbr:
                 rep.skipped += 1
                 continue
-            w.writerow([abbr, to_textexpander(_text_of(store, p, language), rep), p.description])
+            w.writerow([csv_safe(c) for c in (abbr, to_textexpander(_text_of(store, p, language), rep),
+                                              p.description)])
             rep.exported += 1
     if rep.skipped:
         rep.notes.append(f"{rep.skipped} phrase(s) without an autotext were left out.")

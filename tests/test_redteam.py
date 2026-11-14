@@ -3162,3 +3162,63 @@ def test_files_named_in_folder_text_are_kept_in_the_cloud():
     refs = {}
     CloudSync._attachment_refs(store.conn, refs)
     assert refs == {"0123456789abcdef": "terms.pdf"}
+
+
+# ---------------------------------------------------------------- 0.6.25: exports and imports
+def test_an_oversized_export_file_is_refused_before_reading(tmp_path, monkeypatch):
+    """R169: an export or migration file was read and parsed whole with no size limit, and
+    its attached files had no total or count limit."""
+    from phraseforge import io_formats
+    big = tmp_path / "huge.json"
+    big.write_text('{"format": "phraseforge", "phrases": []}' + " " * 2048, encoding="utf-8")
+    monkeypatch.setattr(io_formats, "MAX_IMPORT_JSON", 1024)
+    with pytest.raises(ValueError, match="larger than"):
+        io_formats.import_json(Store(":memory:"), big)
+    (tmp_path / "list.json").write_text("[1, 2]", encoding="utf-8")
+    monkeypatch.setattr(io_formats, "MAX_IMPORT_JSON", 400 * 1024 * 1024)
+    with pytest.raises(ValueError, match="not a PhraseForge export"):
+        io_formats.read_json_file(tmp_path / "list.json")
+
+
+def test_csv_exports_do_not_carry_live_formulas(tmp_path):
+    """R170: cells starting with = + - @ were written as is; Excel runs them when the CSV is
+    opened (=HYPERLINK, DDE). Our own import takes the apostrophe off again."""
+    import csv
+    from phraseforge import io_formats
+    from phraseforge.importers import phraseexpress as pe
+    from phraseforge.models import Phrase
+    store = Store(":memory:")
+    store.add_phrase(Phrase("=HYPERLINK(\"http://evil\",\"x\")", "@SUM(1)"))
+    store.add_phrase(Phrase("List", "- item one"))
+    for fn, name in ((io_formats.export_csv, "a.csv"), (pe.export_phraseexpress_csv, "b.csv")):
+        fn(store, tmp_path / name)
+        cells = [c for row in csv.reader(open(tmp_path / name, encoding="utf-8-sig")) for c in row]
+        assert "'=HYPERLINK(\"http://evil\",\"x\")" in cells and "'@SUM(1)" in cells
+        assert "- item one" in cells
+    back = Store(":memory:")
+    io_formats.import_csv(back, tmp_path / "a.csv")
+    assert {p.content for p in back.phrases()} == {"@SUM(1)", "- item one"}
+
+
+def test_exports_leave_out_locked_folders(tmp_path):
+    """R171: every export wrote the phrases of password-locked folders in plain text, so the
+    folder password could be bypassed with File > Export. Unlocked in this session: included."""
+    import json
+    from phraseforge import io_formats
+    from phraseforge.db import hash_password
+    from phraseforge.importers import phraseexpress as pe
+    from phraseforge.models import Folder, Phrase
+    from phraseforge.security import LOCKS
+    store = Store(":memory:")
+    f = store.add_folder(Folder("Private", password_hash=hash_password("pw")))
+    store.add_phrase(Phrase("Bank", "IBAN DE00 1234", folder_id=f.id))
+    store.add_phrase(Phrase("Hello", "hello there"))
+    io_formats.export_json(store, tmp_path / "x.json")
+    io_formats.export_csv(store, tmp_path / "x.csv")
+    pe.export_phraseexpress_csv(store, tmp_path / "y.csv")
+    for name in ("x.json", "x.csv", "y.csv"):
+        text = (tmp_path / name).read_text(encoding="utf-8-sig")
+        assert "IBAN" not in text and "hello there" in text, name
+    LOCKS.add(f.id)
+    io_formats.export_json(store, tmp_path / "z.json")
+    assert "IBAN" in json.dumps(json.loads((tmp_path / "z.json").read_text(encoding="utf-8")))
