@@ -425,6 +425,12 @@ class CloudSync:
             except sqlite3.Error:
                 continue
             attachment_refs((c for (c,) in rows), refs)
+        try:                                        # text a folder adds around its phrases (R168)
+            rows = con.execute("SELECT text_before, text_after FROM folders "
+                               "WHERE text_before LIKE '%attached/%' OR text_after LIKE '%attached/%'").fetchall()
+        except sqlite3.Error:
+            rows = []
+        attachment_refs((t for pair in rows for t in pair), refs)
         try:                                        # phrases in the Trash keep their files too
             rows = con.execute("SELECT data FROM trash WHERE data LIKE '%attached/%'").fetchall()
         except sqlite3.Error:

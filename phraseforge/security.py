@@ -54,6 +54,13 @@ PRIVILEGED: dict[str, str] = {
 FILE_READERS = frozenset({"textfile", "document", "csv", "image", "xls", "xlsfind", "sql", "pastefile",
                           "sound"})
 NETWORK_READ = "read files from a network share"
+PASTE_LOCAL = "paste files from this PC into other programs"
+
+
+def _attached(path: str) -> bool:
+    """A file attached to a phrase ("attached/<hash>/<name>", kept with PhraseForge)."""
+    p = os.path.expandvars((path or "").strip().strip("\"'").strip()).replace("\\", "/")
+    return p.startswith("attached/") and ".." not in p.split("/")
 _NETWORK_PATH = re.compile(r"^[\\/]{2}")          # \\host\share, //host/share, \\?\UNC\...
 SCOPED_VARS = frozenset({"set", "unset"})          # -scope global (or any scope but local) is shared
 _SCOPE = re.compile(r'-scope\s+["\']?([^\s"\'{}]*)')
@@ -93,7 +100,13 @@ def opens_system_ui(chord: str) -> bool:
 def privileged_reason(name: str, args: list[str], opts: dict[str, str]) -> str | None:
     """Why the call {#name args opts} needs an approved phrase, or None if it is harmless."""
     if name in FILE_READERS:
-        return NETWORK_READ if args and is_network_path(str(args[0])) else None
+        if args and is_network_path(str(args[0])):
+            return NETWORK_READ
+        if name == "pastefile" and not _attached(str(args[0]) if args else ""):
+            # pasting attaches the file itself: {#pastefile "%USERPROFILE%\\.ssh\\id_rsa"}{#key enter}
+            # in a chat window sends it away. Files attached to phrases stay allowed (R164).
+            return PASTE_LOCAL
+        return None
     if name in ("ai", "translate") and plugin_engine(opts.get("provider", "")):
         return PLUGIN_ENGINE_REASON   # the text and images go to plugin code (security R98)
     if name == "ai":      # {#ai -image file:\\host\share\x.png} reads a network file

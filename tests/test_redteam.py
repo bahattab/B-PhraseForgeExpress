@@ -3057,3 +3057,108 @@ def test_learning_skips_sentences_typed_into_uia_password_fields():
         L.feed_text("Thank you for your message. ")
     L.flush()
     assert [s["text"] for s in store.suggestions(min_count=3)] == ["Thank you for your message."]
+
+
+# ---------------------------------------------------------------- 0.6.24: review of #71–#74
+def _bomb_xlsx(path):
+    """A 5 KB workbook that declares the largest sheet Excel allows and has a far-off cell."""
+    import re
+    import zipfile
+    import openpyxl
+    ok = path.with_name("ok.xlsx")
+    wb = openpyxl.Workbook()
+    wb.active["A1"], wb.active["B1"], wb.active["A2"], wb.active["B2"] = "Description", "Content", "x", "y"
+    wb.save(ok)
+    with zipfile.ZipFile(ok) as zin, zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zout:
+        for i in zin.infolist():
+            d = zin.read(i.filename)
+            if i.filename == "xl/worksheets/sheet1.xml":
+                d = re.sub(rb'<dimension ref="[^"]*"/>', b'<dimension ref="A1:XFD1048576"/>', d)
+                d = d.replace(b"</sheetData>", b'<row r="1048576"><c r="XFD1048576" t="inlineStr">'
+                                               b"<is><t>z</t></is></c></row></sheetData>")
+            zout.writestr(i, d)
+    return path
+
+
+def test_a_tiny_workbook_cannot_hang_the_import(tmp_path):
+    """R163 (#71): openpyxl filled every row and column a sheet declared; a 5 KB .xlsx offered by
+    Import > From PhraseExpress kept the app (GUI thread) busy for hours."""
+    import time
+    from phraseforge.importers.files import xlsx_rows
+    bomb = _bomb_xlsx(tmp_path / "bomb.xlsx")
+    t0 = time.monotonic()
+    sheets = xlsx_rows(bomb)
+    assert time.monotonic() - t0 < 10
+    rows = sheets[0][1]
+    assert rows[:2] == [["Description", "Content"], ["x", "y"]] and len(rows) <= 3
+
+
+def test_an_unapproved_phrase_cannot_paste_files_from_this_pc():
+    """R164 (#72): {#pastefile} was gated for network paths only, so an imported or synced phrase
+    could paste %USERPROFILE%\\.ssh\\id_rsa into a chat and press Enter. Files attached to phrases
+    stay allowed."""
+    from phraseforge.security import privileged_reason, scan_privileged
+    assert privileged_reason("pastefile", [r"%USERPROFILE%\.ssh\id_rsa"], {})
+    assert scan_privileged(r'{#pastefile "C:\Users\me\Documents\tax.pdf"}{#key enter}')
+    assert privileged_reason("pastefile", ["attached/0123456789abcdef/offer.pdf"], {}) is None
+    assert privileged_reason("pastefile", ["attached/../../secret.txt"], {})
+    assert privileged_reason("textfile", [r"C:\notes.txt"], {}) is None     # unchanged by design
+
+
+def test_a_planted_attachment_is_not_reused(tmp_path, monkeypatch):
+    """R165 (#72/#73): the folder name is 64 bits of the hash, and a file already there was kept
+    as it was. A file planted under the same name (an import, or a collision) was pasted
+    instead of the user's own."""
+    import hashlib
+    from phraseforge import paths
+    from phraseforge.importers import files
+    monkeypatch.setattr(paths, "data_dir", lambda: tmp_path / "data")
+    (tmp_path / "data").mkdir()
+    real = tmp_path / "offer.pdf"
+    real.write_bytes(b"the real offer")
+    h = hashlib.sha256(b"the real offer").hexdigest()[:16]
+    planted = files.attachment_path(h, "offer.pdf")
+    planted.parent.mkdir(parents=True)
+    planted.write_bytes(b"something else")
+    files.attach_file(real)
+    assert planted.read_bytes() == b"the real offer"
+    planted.write_bytes(b"something else")
+    assert files.store_attachment(h, "offer.pdf", b"the real offer")
+    assert planted.read_bytes() == b"the real offer"
+
+
+def test_attachment_names_windows_treats_as_devices_are_refused(tmp_path, monkeypatch):
+    """R166 (#73): a synced or imported attachment named LPT1 or a.txt:stream was written as is."""
+    from phraseforge import paths
+    from phraseforge.importers import files
+    monkeypatch.setattr(paths, "data_dir", lambda: tmp_path / "data")
+    (tmp_path / "data").mkdir()
+    for bad in ("CON", "lpt1.txt", "nul.tar.gz", "a.txt:secret", "x.", "y ", "a|b"):
+        assert files.attachment_path("0123456789abcdef", bad) is None, bad
+    assert files.attachment_path("0123456789abcdef", "Price list.pdf") is not None
+
+
+def test_long_crafted_text_does_not_stall_the_arabic_templates():
+    """R167 (#72): a 3700-character text shaped like a template took 12 s to match (tried and
+    failed in many ways); every message box or label goes through this."""
+    import time
+    from phraseforge.ui import i18n
+    text = ("Created: " + "\nModified: " * 120 + "\nUsed: " * 120 + " times (last " * 120)[:4000]
+    t0 = time.monotonic()
+    i18n._TEMPLATE_CACHE.clear()
+    i18n._from_template(text)
+    assert time.monotonic() - t0 < 0.5
+
+
+def test_files_named_in_folder_text_are_kept_in_the_cloud():
+    """R168 (#74): the cloud clean-up looked at phrases only; a file pasted by a folder's
+    text-before/after was never uploaded and other PCs lost it."""
+    from phraseforge.cloud.sync import CloudSync
+    from phraseforge.models import Folder
+    store = Store(":memory:")
+    fid = store.add_folder(Folder("Offers")).id
+    store.conn.execute("UPDATE folders SET text_before=? WHERE id=?",
+                       ('{#pastefile "attached/0123456789abcdef/terms.pdf"}', fid))
+    refs = {}
+    CloudSync._attachment_refs(store.conn, refs)
+    assert refs == {"0123456789abcdef": "terms.pdf"}

@@ -216,21 +216,47 @@ def rtf_text(path: str | Path) -> str:
     return rtf_to_text(Path(path).read_bytes().decode("latin-1"))
 
 
-def xlsx_rows(path: str | Path) -> list[tuple[str, list[list[str]]]]:
-    """[(sheet name, rows)] with every cell as text; empty trailing cells dropped."""
+MAX_XLSX_XML = 64 * 1024 * 1024        # unpacked sheets + shared strings; larger is a zip bomb (R163)
+MAX_XLSX_COLS = 64                     # PhraseForge reads a handful of columns
+MAX_XLSX_ROWS = 100_000                # rows with text, in all sheets read
+
+
+def xlsx_rows(path: str | Path, first_only: bool = False) -> list[tuple[str, list[list[str]]]]:
+    """[(sheet name, rows)] with every cell as text; empty trailing cells dropped. first_only:
+    stop after the first sheet that has rows.
+
+    A sheet may declare any size (<dimension ref="A1:XFD1048576"/>) and openpyxl fills every
+    row up to it: a 5 KB file kept the app busy for hours (R163). The declared size is
+    ignored, at most MAX_XLSX_COLS columns are read, and the unpacked size and row count are
+    capped."""
     import openpyxl
+    try:
+        with zipfile.ZipFile(path) as z:
+            unpacked = sum(i.file_size for i in z.infolist()
+                           if i.filename.startswith("xl/worksheets/") or i.filename == "xl/sharedStrings.xml")
+    except zipfile.BadZipFile:
+        raise ValueError(f"{Path(path).name} is not an Excel workbook.") from None
+    if unpacked > MAX_XLSX_XML:
+        raise ValueError(f"{Path(path).name} is too large to import (over {MAX_XLSX_XML // (1024 * 1024)} MB unpacked).")
     wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
     try:
         sheets = []
+        total = 0
         for ws in wb.worksheets:
             rows = []
-            for row in ws.iter_rows(values_only=True):
+            ws.reset_dimensions()
+            for row in ws.iter_rows(values_only=True, max_col=MAX_XLSX_COLS):
                 cells = ["" if v is None else str(v) for v in row]
                 while cells and not cells[-1].strip():
                     cells.pop()
                 if cells:
                     rows.append(cells)
+                    total += 1
+                    if total > MAX_XLSX_ROWS:
+                        raise ValueError(f"{Path(path).name} has more than {MAX_XLSX_ROWS} rows.")
             sheets.append((ws.title, rows))
+            if first_only and rows:
+                break
         return sheets
     finally:
         wb.close()
@@ -284,10 +310,17 @@ def attach_file(path: str | Path) -> str:
     with open(p, "rb") as fh:
         for block in iter(lambda: fh.read(1 << 20), b""):
             h.update(block)
+    if not safe_attachment_name(p.name):
+        raise ValueError(f"{p.name}: rename the file first (Windows reserves this name).")
     folder = assets_dir() / ATTACHED / h.hexdigest()[:16]
     folder.mkdir(parents=True, exist_ok=True)
     target = folder / p.name
-    if not target.exists():
+    if target.exists() and _sha256_file(target) != h.hexdigest():
+        # the folder name is 64 bits of the hash: another file already sits here (planted by an
+        # import, or a collision). Never paste that one in place of the user's file (R165).
+        shutil.copyfile(p, target.with_name(target.name + ".part"))
+        os.replace(target.with_name(target.name + ".part"), target)
+    elif not target.exists():
         shutil.copyfile(p, target)
     rel = target.relative_to(assets_dir()).as_posix()
     return '{#pastefile "' + rel.replace('"', "'") + '"}'
@@ -319,10 +352,28 @@ def attachment_refs(texts, refs: dict[str, str] | None = None) -> dict[str, str]
     return refs
 
 
+_WIN_DEVICE = re.compile(r"(?i)^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(\..*)?$")
+
+
+def safe_attachment_name(name: str) -> bool:
+    """A plain file name Windows stores as a file: no device name (CON, NUL, LPT1.txt), no
+    alternate data stream (a:b), no characters Windows refuses, no trailing dot or space (R166)."""
+    return bool(name) and name not in (".", "..") and not _WIN_DEVICE.match(name) \
+        and not re.search(r'[:<>|?*"\x00-\x1f]', name) and not name.endswith((".", " "))
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
 def attachment_path(h: str, name: str) -> Path | None:
     """Where the attached file <h>/<name> is kept on this PC (None for a bad name)."""
     name = Path(name).name
-    if not re.fullmatch(r"[0-9a-f]{16}", h or "") or name in ("", ".", ".."):
+    if not re.fullmatch(r"[0-9a-f]{16}", h or "") or not safe_attachment_name(name):
         return None
     return assets_dir() / ATTACHED / h / name
 
@@ -333,12 +384,15 @@ def store_attachment(h: str, name: str, data: bytes) -> bool:
     dest = attachment_path(h, name)
     if dest is None or len(data) > MAX_ATTACHMENT or hashlib.sha256(data).hexdigest()[:16] != h:
         return False
-    if dest.is_file():
-        return True
+    if dest.is_file() and _sha256_file(dest)[:16] == h:
+        return True                     # already here (a file that does not match is replaced, R165)
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_name(dest.name + ".part")
-    part.write_bytes(data)
-    os.replace(part, dest)
+    try:
+        part.write_bytes(data)
+        os.replace(part, dest)
+    finally:
+        part.unlink(missing_ok=True)
     return True
 
 
