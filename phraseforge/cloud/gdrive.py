@@ -281,11 +281,15 @@ class GoogleDrive:
         body["parents"] = [folder_id]
         return files.create(body=body, media_body=media, fields="id").execute()["id"]
 
-    def download(self, file_id: str, dest: str | Path) -> None:
+    def download(self, file_id: str, dest: str | Path, max_bytes: int | None = None) -> None:
+        """max_bytes: stop with DownloadTooLarge once the file passes it (R172)."""
         from googleapiclient.http import MediaIoBaseDownload
+
+        from phraseforge.cloud.sync import LimitedWriter
         req = self.service().files().get_media(fileId=file_id)
-        with open(dest, "wb") as fh:
-            dl = MediaIoBaseDownload(fh, req)
+        with open(dest, "wb") as raw:
+            fh = LimitedWriter(raw, max_bytes)
+            dl = MediaIoBaseDownload(fh, req, chunksize=8 * 1024 * 1024)
             done = False
             while not done:
                 _, done = dl.next_chunk()

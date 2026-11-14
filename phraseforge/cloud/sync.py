@@ -50,6 +50,7 @@ from phraseforge.db import DEVICE_SETTING_PREFIXES, SECRET_SETTINGS, Store, is_d
 log = logging.getLogger(__name__)
 
 SYNC_NAME = "phraseforge-sync.db"
+MAX_DOWNLOAD = 1024 * 1024 * 1024        # a sync or backup copy larger than this is refused (R172)
 BACKUP_PREFIX = "backup-"
 
 # settings that belong to this PC only; kept when pulling, removed when pushing (db.py)
@@ -65,11 +66,39 @@ class RemoteFile:
     ref: str = ""            # provider id (Drive file id) or path
 
 
+class DownloadTooLarge(RuntimeError):
+    """A cloud file is larger than the caller allows; nothing past the limit was written."""
+
+
+class LimitedWriter:
+    """File wrapper that refuses to write more than `limit` bytes (R172)."""
+
+    def __init__(self, fh, limit: int | None):
+        self.fh, self.limit, self.written = fh, limit, 0
+
+    def write(self, b) -> int:
+        n = len(b)
+        if self.limit is not None and self.written + n > self.limit:
+            raise DownloadTooLarge(f"The cloud file is larger than {self.limit} bytes.")
+        self.written += n
+        return self.fh.write(b)
+
+    def __getattr__(self, k):
+        return getattr(self.fh, k)
+
+
+def copy_limited(src: Path, dest: Path, limit: int | None) -> None:
+    with open(src, "rb") as fi, open(dest, "wb") as fo:
+        w = LimitedWriter(fo, limit)
+        while chunk := fi.read(1024 * 1024):
+            w.write(chunk)
+
+
 class Remote(Protocol):
     label: str
     def list(self) -> list[RemoteFile]: ...
     def put(self, local: Path, name: str, props: dict) -> None: ...
-    def get(self, name: str, dest: Path) -> None: ...
+    def get(self, name: str, dest: Path, max_bytes: int | None = None) -> None: ...
     def delete(self, name: str) -> None: ...
 
 
@@ -106,8 +135,11 @@ class FolderRemote:
         os.replace(tmp, dst)
         dst.with_suffix(".json").write_text(json.dumps(props, indent=1), encoding="utf-8")
 
-    def get(self, name: str, dest: Path) -> None:
-        shutil.copyfile(self.root / name, dest)
+    def get(self, name: str, dest: Path, max_bytes: int | None = None) -> None:
+        src = self.root / name
+        if max_bytes is not None and src.stat().st_size > max_bytes:
+            raise DownloadTooLarge(f"{name} is larger than {max_bytes} bytes.")
+        copy_limited(src, dest, max_bytes)       # the file can grow while it is copied
 
     def delete(self, name: str) -> None:
         (self.root / name).unlink(missing_ok=True)
@@ -139,11 +171,13 @@ class GDriveRemote:
         existing = self._find(name)
         self.drive.upload(local, name, self._fid(), props, existing.ref if existing else None)
 
-    def get(self, name: str, dest: Path) -> None:
+    def get(self, name: str, dest: Path, max_bytes: int | None = None) -> None:
         f = self._find(name)
         if not f:
             raise FileNotFoundError(name)
-        self.drive.download(f.ref, dest)
+        if max_bytes is not None and f.size > max_bytes:     # Drive reports the size: refuse unread
+            raise DownloadTooLarge(f"{name} is larger than {max_bytes} bytes.")
+        self.drive.download(f.ref, dest, max_bytes=max_bytes)
 
     def delete(self, name: str) -> None:
         f = self._find(name)
@@ -381,7 +415,11 @@ class CloudSync:
         os.close(fd)
         path = Path(tmp)
         try:
-            self.remote.get(name, path)
+            try:
+                self.remote.get(name, path, max_bytes=MAX_DOWNLOAD)
+            except DownloadTooLarge:
+                raise SyncError(f"{name} in the cloud is larger than {MAX_DOWNLOAD // (1024 * 1024)} MB; "
+                                "it was not downloaded.") from None
             from phraseforge import vault
             pw = self.passphrase
             if vault.is_encrypted(path):
@@ -492,7 +530,10 @@ class CloudSync:
         os.close(fd)
         path = Path(tmp)
         try:
-            self.remote.get(remote_name, path)
+            try:
+                self.remote.get(remote_name, path, max_bytes=fl.MAX_ATTACHMENT + 4096)
+            except DownloadTooLarge:
+                return 0
             if path.stat().st_size > fl.MAX_ATTACHMENT + 4096:
                 return 0
             data = path.read_bytes()

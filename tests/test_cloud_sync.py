@@ -34,8 +34,9 @@ class FakeDrive:
                            "props": {k: str(v) for k, v in (props or {}).items()}}
         return fid
 
-    def download(self, file_id, dest):
-        shutil.copyfile(self.files[file_id]["path"], dest)
+    def download(self, file_id, dest, max_bytes=None):
+        from phraseforge.cloud.sync import copy_limited
+        copy_limited(self.files[file_id]["path"], dest, max_bytes)
 
     def delete(self, file_id):
         self.files.pop(file_id)
