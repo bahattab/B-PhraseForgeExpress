@@ -256,6 +256,8 @@ hotkeys and phrase menu work like your own.
 - Phrases > Import: PhraseForge JSON, CSV, folder of .txt files; PhraseExpress CSV export;
   TextExpander CSV / `.textexpander`; macOS Text Replacements `.plist`; OneNote pages.
   PhraseExpress `.pexdb` files are encrypted: export a CSV from PhraseExpress instead.
+  PhraseExpress settings: Import > PhraseExpress settings (config.xml) brings AI presets, engines,
+  glossaries, delimiters and excluded programs from `%APPDATA%\PhraseExpress\config.xml` (API keys are not imported).
 - Phrases > Export: JSON, CSV, text files, Word (.docx) and PDF documents (Arabic right to left),
   and files for PhraseExpress, TextExpander and macOS.
 

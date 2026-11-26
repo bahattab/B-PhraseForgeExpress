@@ -51,8 +51,24 @@ def _embed_attachments(d: dict) -> None:
         d["attachments"] = out
 
 
+MAX_IMPORT_JSON = 400 * 1024 * 1024    # an export with 200 MB of files is about 270 MB (R169)
+MAX_RESTORED = 2000                     # attached files restored from one file
+
+
+def read_json_file(path: str | Path) -> dict:
+    """A PhraseForge export or migration file, refused before reading when it is too large."""
+    p = Path(path)
+    if p.stat().st_size > MAX_IMPORT_JSON:
+        raise ValueError(f"{p.name} is larger than {MAX_IMPORT_JSON // (1024 * 1024)} MB: not a PhraseForge export.")
+    d = json.loads(p.read_text(encoding="utf-8"))
+    if not isinstance(d, dict):
+        raise ValueError(f"{p.name} is not a PhraseForge export.")
+    return d
+
+
 def export_json(store: Store, path: str | Path) -> int:
-    d = store.export_dict()
+    from phraseforge.security import exportable_dict
+    d = exportable_dict(store, store.export_dict())
     _embed_attachments(d)
     Path(path).write_text(json_dumps(d), encoding="utf-8")
     return len(d["phrases"])
@@ -63,12 +79,18 @@ def _restore_attachments(d: dict) -> int:
     import base64
     import binascii
     from phraseforge.importers import files as fl
-    n = 0
-    for h, item in (d.get("attachments") or {}).items():
+    n, total = 0, 0
+    items = d.get("attachments") or {}
+    if not isinstance(items, dict):
+        return 0
+    for h, item in list(items.items())[:MAX_RESTORED]:
         if not isinstance(item, dict) or not isinstance(item.get("data"), str):
             continue
         if len(item["data"]) > fl.MAX_ATTACHMENT * 4 // 3 + 8:
             continue
+        total += len(item["data"]) * 3 // 4
+        if total > fl.EMBED_TOTAL_MAX:          # no more than an export can hold (R169)
+            break
         try:
             data = base64.b64decode(item["data"], validate=True)
         except (binascii.Error, ValueError):
@@ -128,7 +150,7 @@ def import_dict(store: Store, d: dict, into_folder_id: int | None = None) -> dic
 
 @untrusted_import
 def import_json(store: Store, path: str | Path, into_folder_id: int | None = None) -> dict[str, int]:
-    return import_dict(store, json.loads(Path(path).read_text(encoding="utf-8")), into_folder_id)
+    return import_dict(store, read_json_file(path), into_folder_id)
 
 
 # ------------------------------------------------------------------ helpers
@@ -149,14 +171,15 @@ CSV_COLUMNS = ["description", "autotext", "content", "folder", "hotkey"]
 
 
 def export_csv(store: Store, path: str | Path) -> int:
-    phrases = store.phrases()
+    from phraseforge.security import csv_safe, exportable
+    phrases = exportable(store, store.phrases())
     with open(path, "w", newline="", encoding="utf-8-sig") as fh:
         w = csv.writer(fh)
         w.writerow(CSV_COLUMNS)
         for p in phrases:
             at = next((t.value for t in p.triggers if t.kind == TriggerKind.AUTOTEXT), "")
             hk = next((t.value for t in p.triggers if t.kind == TriggerKind.HOTKEY), "")
-            w.writerow([p.description, at, p.content, folder_path(store, p.folder_id), hk])
+            w.writerow([csv_safe(c) for c in (p.description, at, p.content, folder_path(store, p.folder_id), hk)])
     return len(phrases)
 
 
@@ -171,7 +194,8 @@ def import_csv(store: Store, path: str | Path, into_folder_id: int | None = None
     has_header = "description" in header or "content" in header
     cols = header if has_header else CSV_COLUMNS[:len(rows[0])]
     for row in rows[1:] if has_header else rows:
-        rec = dict(zip(cols, row))
+        from phraseforge.security import csv_unsafe
+        rec = dict(zip(cols, (csv_unsafe(c) for c in row)))
         content = rec.get("content", "")
         desc = rec.get("description") or content[:40] or "Phrase"
         triggers = []
@@ -195,7 +219,8 @@ def export_text_folder(store: Store, directory: str | Path) -> int:
     root = Path(directory)
     root.mkdir(parents=True, exist_ok=True)
     n = 0
-    for p in store.phrases():
+    from phraseforge.security import exportable
+    for p in exportable(store, store.phrases()):
         d = root.joinpath(*[_safe(f.name) for f in reversed(store.folder_chain(p.folder_id))])
         d.mkdir(parents=True, exist_ok=True)
         base, i = _safe(p.description), 1

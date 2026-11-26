@@ -274,3 +274,33 @@ def protected(store, folder_id) -> bool:
 
 
 LOCKS = FolderLocks()
+
+
+def exportable(store, phrases):
+    """The phrases an export may write: not those in a password-locked folder that was not
+    unlocked in this session (R171). The folder password guards the phrases in the app;
+    an export used to write them out in plain text anyway."""
+    return [p for p in phrases if not LOCKS.is_locked(store, p.folder_id)]
+
+
+def exportable_dict(store, d: dict) -> dict:
+    """export_dict() without the phrases (and their folders' contents) of locked folders."""
+    d["phrases"] = [p for p in d.get("phrases", []) if not LOCKS.is_locked(store, p.get("folder_id"))]
+    return d
+
+
+_CSV_FORMULA = re.compile(r"^(?:[=+@\t\r]|-[^\s-])")
+
+
+def csv_safe(cell: str) -> str:
+    """A cell Excel and LibreOffice will not run as a formula (R170): =, +, @, tab, CR, or a
+    minus followed by something other than a space get a leading apostrophe. "- item" stays."""
+    cell = "" if cell is None else str(cell)
+    return "'" + cell if _CSV_FORMULA.match(cell) else cell
+
+
+def csv_unsafe(cell: str) -> str:
+    """Undo csv_safe() when reading our own CSV back."""
+    if cell and cell[0] == "'" and _CSV_FORMULA.match(cell[1:]):
+        return cell[1:]
+    return cell

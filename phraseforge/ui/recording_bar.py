@@ -76,14 +76,15 @@ class RecordingController:
         factory = self.session_factory
         if factory is None:
             from phraseforge.platform.record_hook import RecordSession
-            factory = RecordSession
+            triggers = self.triggers
+
+            def factory(rec):                        # keys from the app's native hook (R173)
+                return RecordSession(rec, triggers=triggers)
         self.recorder.on_stop = lambda: self.post(self.finish)
         if self.triggers is not None:                   # typing while recording must not expand autotext
             self._was_paused = self.triggers.paused
             self.triggers.paused = True
         self.session = factory(self.recorder)
-        if self.triggers is not None and hasattr(self.session, "use_key_source"):
-            self.session.use_key_source(self.triggers)   # one keyboard hook for the app (see RecordSession)
         self.bar = RecordingBar(self.recorder)
         self.bar.stop_clicked.connect(self.finish)
         self.bar.place()

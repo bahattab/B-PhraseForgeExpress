@@ -853,6 +853,8 @@ class MainWindow(QMainWindow):
                                ("From PhraseExpress (.txt files)...", "import", self.import_phraseexpress),
                                ("From PhraseExpress (folder of .txt files)...", "folder_tree",
                                 self.import_phraseexpress_folder),
+                               ("PhraseExpress settings (config.xml)...", "settings",
+                                self.import_phraseexpress_config),
                                ("TextExpander / macOS (.csv / .textexpander / .plist)...", "textexpander", self.import_textexpander),
                                ("AutoHotkey hotstrings (.ahk)...", "import", self.import_autohotkey),
                                None,
@@ -2359,7 +2361,8 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            d = self.store.export_dict()
+            from phraseforge.security import exportable_dict
+            d = exportable_dict(self.store, self.store.export_dict())   # locked folders stay here (R171)
             from phraseforge.io_formats import _embed_attachments
             _embed_attachments(d)             # attached files go to the new PC too
             from phraseforge.db import is_secret_setting
@@ -2376,9 +2379,8 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            with open(path, encoding="utf-8") as fh:
-                d = json.load(fh)
             from phraseforge import io_formats
+            d = io_formats.read_json_file(path)        # size checked before reading (R169)
             io_formats.import_dict(self.store, d)
             from phraseforge.db import is_device_setting
             for k, v in (d.get("settings") or {}).items():
@@ -2485,6 +2487,39 @@ class MainWindow(QMainWindow):
                                                 "PhraseExpress phrase files (*.pexdb *.pexdbhub *.pxp);;All files (*)")
         if paths:
             self.import_phraseexpress_path(paths if len(paths) > 1 else paths[0])
+
+    def import_phraseexpress_config(self) -> None:
+        """PhraseExpress options from %APPDATA%\\PhraseExpress\\config.xml: AI presets and engines,
+        glossaries, delimiters and excluded programs. API keys are never imported."""
+        start = os.path.join(os.environ.get("APPDATA", ""), "PhraseExpress") if os.environ.get("APPDATA") else ""
+        path, _ = QFileDialog.getOpenFileName(self, "Import PhraseExpress settings", start,
+                                              "PhraseExpress settings (config.xml);;XML (*.xml)")
+        if not path:
+            return
+        from phraseforge.importers import pe_config
+        try:
+            data = pe_config.parse_config(path)
+        except Exception as e:
+            QMessageBox.warning(self, "Import PhraseExpress settings", str(e))
+            return
+        found = [tr(f"{len(data.presets)} AI preset(s)"), tr(f"{len(data.glossaries)} glossary(ies)")]
+        if data.ai_engine or data.translation_engine:
+            found.append(tr("AI and translation engines"))
+        if data.leading is not None or data.trailing is not None:
+            found.append(tr("autotext delimiters"))
+        if data.excluded_apps or data.allowed_apps:
+            found.append(tr("program lists"))
+        ask = tr(f"Found: {', '.join(found)}.") + "\n\n" + tr(
+            "Import them? Presets and glossaries with the same name are replaced; nothing else is deleted.")
+        if QMessageBox.question(self, "Import PhraseExpress settings", ask) != QMessageBox.Yes:
+            return
+        rep = pe_config.apply_config(self.store, data)
+        parts = [tr(f"Added {rep.presets_added} AI preset(s), updated {rep.presets_updated}."),
+                 tr(f"Imported {rep.glossaries} glossary(ies).")]
+        if rep.changed:
+            parts.append(tr(f"Also set: {', '.join(tr(c) for c in rep.changed)}."))
+        msg = parts[0] + " " + parts[1] + "".join("\n\n" + x for x in parts[2:] + [tr(n) for n in rep.notes])
+        QMessageBox.information(self, "Import PhraseExpress settings", msg)
 
     def import_phraseexpress_folder(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "Import a folder exported from PhraseExpress")
@@ -2790,9 +2825,10 @@ class MainWindow(QMainWindow):
     def phrases_for_print(self) -> list[Phrase]:
         if self.sel_kind == "phrase":
             return [self.store.get_phrase(self.sel_id)]
+        from phraseforge.security import exportable
         if self.sel_kind == "folder":
-            return self.store.phrases(self.sel_id)
-        return self.store.phrases()
+            return exportable(self.store, self.store.phrases(self.sel_id))
+        return exportable(self.store, self.store.phrases())
 
     def export_document(self, kind: str | None = None, path: str | None = None, show_message: bool = True):
         """Selected phrase, selected folder or all phrases as a document. kind is the extension
