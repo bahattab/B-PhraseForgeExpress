@@ -251,29 +251,67 @@ class WordLearner:
         self._word: list[str] = []
         self._corrected = False
         self._dirty = 0
+        self._unreadable = False
         self.last_was_correction = False   # the word just learned had been corrected (sound cue)
         self._load()
 
     # ------------------------------------------------------------ persistence
+    # While the phrase file is encrypted (vault.py) the learned words are written encrypted with
+    # the same key, so the words a user types are not left in plain text next to it (G-04).
+    def _key(self):
+        return getattr(self.store, "vault_key", None)
+
     def _load(self) -> None:
         if not self.path:
             return
         try:
             import json
             from pathlib import Path
+
+            from phraseforge import vault
             p = Path(self.path)
-            if p.is_file():
-                self.counts = {str(k): int(v) for k, v in json.loads(p.read_text(encoding="utf-8")).items()}
+            if not p.is_file():
+                return
+            raw = p.read_bytes()
+            if vault.is_encrypted(p):
+                key = self._key()
+                if key is None:
+                    # cannot happen in normal use (stop() re-saves when encryption is switched off);
+                    # keep the file as it is unless new words are learned
+                    self._unreadable = True
+                    log.warning("learned words are encrypted but the phrase file is not; not read")
+                    return
+                raw = vault.decrypt(raw, key)
+            self.counts = {str(k): int(v) for k, v in json.loads(raw.decode("utf-8")).items()}
         except Exception:
             log.exception("could not read learned words")
 
     def save(self) -> None:
-        if not self.path or not self._dirty:
+        """Write the words when they changed, or when the file's encryption no longer matches the
+        phrase file's (encryption switched on or off since the last save)."""
+        if not self.path:
             return
         try:
             import json
+            import os
             from pathlib import Path
-            Path(self.path).write_text(json.dumps(self.counts, ensure_ascii=False), encoding="utf-8")
+
+            from phraseforge import vault
+            p = Path(self.path)
+            key = self._key()
+            exists = p.is_file()
+            if not self._dirty and (not exists or self._unreadable
+                                    or vault.is_encrypted(p) == (key is not None)):
+                return
+            data = json.dumps(self.counts, ensure_ascii=False).encode("utf-8")
+            tmp = p.with_name(p.name + ".tmp")
+            with open(tmp, "wb") as f:
+                f.write(vault.encrypt(data, key) if key is not None else data)
+                f.flush()
+                os.fsync(f.fileno())
+            if key is not None and exists and not vault.is_encrypted(p):
+                vault.wipe(p)              # overwrite the old plain words before the new file replaces them
+            os.replace(tmp, p)
             self._dirty = 0
         except Exception:
             log.exception("could not save learned words")
