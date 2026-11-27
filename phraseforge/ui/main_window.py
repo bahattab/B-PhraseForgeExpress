@@ -2382,12 +2382,17 @@ class MainWindow(QMainWindow):
             from phraseforge import io_formats
             d = io_formats.read_json_file(path)        # size checked before reading (R169)
             io_formats.import_dict(self.store, d)
+            from phraseforge import policy
             from phraseforge.db import is_device_setting
-            for k, v in (d.get("settings") or {}).items():
-                if not is_device_setting(str(k)):    # this PC's paths, programs, network, sync stay
-                    self.store.set_setting(k, v)
+            settings_locked = policy.current().settings_locked     # Settings kept closed (R174)
+            if not settings_locked:
+                for k, v in (d.get("settings") or {}).items():
+                    if not is_device_setting(str(k)):    # this PC's paths, programs, network, sync stay
+                        self.store.set_setting(k, v)
             self.refresh_tree()
-            QMessageBox.information(self, "Migration Assistant", "Settings and phrases restored.")
+            QMessageBox.information(self, "Migration Assistant",
+                                    tr("Phrases restored. Settings are locked by your administrator and "
+                                       "were not changed.") if settings_locked else "Settings and phrases restored.")
         except Exception as e:
             QMessageBox.warning(self, "Migration Assistant", str(e))
 
@@ -2491,6 +2496,8 @@ class MainWindow(QMainWindow):
     def import_phraseexpress_config(self) -> None:
         """PhraseExpress options from %APPDATA%\\PhraseExpress\\config.xml: AI presets and engines,
         glossaries, delimiters and excluded programs. API keys are never imported."""
+        if not settings_allowed(self):                  # an import is a way into Settings (R174)
+            return
         start = os.path.join(os.environ.get("APPDATA", ""), "PhraseExpress") if os.environ.get("APPDATA") else ""
         path, _ = QFileDialog.getOpenFileName(self, "Import PhraseExpress settings", start,
                                               "PhraseExpress settings (config.xml);;XML (*.xml)")

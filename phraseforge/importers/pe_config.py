@@ -102,6 +102,23 @@ def parse_preset(raw: str) -> dict | None:
     return {"name": name, "prompt": prompt, "model": model}
 
 
+def _declares_dtd(raw: bytes) -> bool:
+    """A DOCTYPE or ENTITY anywhere, in whatever encoding the parser would read (R174). A byte
+    search missed UTF-16/32 files and a DOCTYPE after a comment longer than 4 KB."""
+    text = None
+    for bom, enc in ((b"\xef\xbb\xbf", "utf-8"), (b"\xff\xfe\x00\x00", "utf-32-le"),
+                     (b"\x00\x00\xfe\xff", "utf-32-be"), (b"\xff\xfe", "utf-16-le"), (b"\xfe\xff", "utf-16-be")):
+        if raw.startswith(bom):
+            text = raw[len(bom):].decode(enc, errors="replace")
+            break
+    if text is None:
+        if b"\x00" in raw:             # UTF-16/32 without a byte-order mark: expat still reads it
+            return True
+        text = raw.decode("latin-1")
+    t = text.upper()
+    return "<!DOCTYPE" in t or "<!ENTITY" in t
+
+
 def parse_config(path: str | Path) -> ConfigData:
     import xml.etree.ElementTree as ET
     p = Path(path)
@@ -109,7 +126,7 @@ def parse_config(path: str | Path) -> ConfigData:
         raise ValueError(f"{p.name} is larger than {MAX_CONFIG_BYTES // (1024 * 1024)} MB: "
                          "not a PhraseExpress config.xml.")
     raw = p.read_bytes()
-    if b"<!DOCTYPE" in raw[:4096].upper() or b"<!ENTITY" in raw.upper():
+    if _declares_dtd(raw):
         raise ValueError("This file declares XML entities, which a PhraseExpress config.xml never does.")
     try:
         root = ET.fromstring(raw)
@@ -157,10 +174,28 @@ def parse_config(path: str | Path) -> ConfigData:
 def apply_config(store, d: ConfigData, *, engines: bool = True, presets: bool = True, glossaries: bool = True,
                  delimiters: bool = True, apps: bool = True) -> ConfigReport:
     """Write the parsed settings into PhraseForge. Presets and glossaries are merged by name;
-    nothing the user has is deleted."""
+    nothing the user has is deleted. Refused while the administrator keeps Settings locked, and
+    settings the policy locks one by one are left as they are and named in the notes (R174)."""
+    from phraseforge import policy
     from phraseforge.ui.settings_schema import decode_delimiters
     from phraseforge.ui.settings_schema import presets as current_presets
+    pol = policy.current()
+    if pol.settings_locked:
+        raise policy.PolicyError(pol.notice("Settings"))
     rep = ConfigReport()
+    inner = store
+    locked: list[str] = []
+
+    class _Guarded:                      # set_setting that reports locked keys instead of dropping them
+        def __getattr__(self, k):
+            return getattr(inner, k)
+
+        def set_setting(self, key, value, *a, **k):
+            if pol.setting_locked(key):
+                locked.append(key)
+                return
+            inner.set_setting(key, value, *a, **k)
+    store = _Guarded()
     if engines:
         if d.ai_engine and d.ai_engine != "deepl":
             store.set_setting("ai.provider", d.ai_engine)
@@ -224,12 +259,26 @@ def apply_config(store, d: ConfigData, *, engines: bool = True, presets: bool = 
             store.set_setting("app.restrict_programs", ", ".join(d.allowed_apps))
             store.set_setting("app.restrict_enabled", "1")
             rep.changed.append("Execute only in specific programs")
+    if locked:
+        rep.changed = [c for c in rep.changed if c not in _labels_of(locked)]
+        rep.notes.append("Locked by your administrator, not changed: " + ", ".join(dict.fromkeys(locked)) + ".")
     if d.secrets:
         rep.notes.append("API keys are not imported. Enter them again in Settings: " + ", ".join(d.secrets) + ".")
     if d.hotkeys:
         rep.notes.append("Program hotkeys are not imported (PhraseExpress stores them in an undocumented "
                          "format). Set them again in Settings > Hotkeys: " + ", ".join(d.hotkeys) + ".")
     return rep
+
+
+_KEY_LABELS = {"ai.provider": "AI text engine", "translation.provider": "Translation engine",
+               "translation.ignored_words": "Words not to translate",
+               "autotext.leading_delimiters": "Leading delimiters", "autotext.delimiters": "Trailing delimiters",
+               "app.restrict_programs": "Execute only in specific programs",
+               "app.restrict_enabled": "Execute only in specific programs"}
+
+
+def _labels_of(keys) -> set[str]:
+    return {_KEY_LABELS[k] for k in keys if k in _KEY_LABELS}
 
 
 def import_config(store, path: str | Path, **parts) -> ConfigReport:
