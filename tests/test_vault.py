@@ -188,3 +188,61 @@ def test_settings_dialog_checks_the_passphrase(tmp_path, qapp=None):
     assert d.apply() and s.encrypted and not s.vault_key.opens_without_passphrase
     assert "every time" in status_text(s)
     s.close()
+
+
+# ---------------------------------------------------------------- learned words (autocomplete)
+def _learn(store, path, word):
+    from phraseforge.learning import WordLearner
+    store.set_setting("autocomplete.suggest_words", "1")
+    w = WordLearner(store, path)
+    for ch in word + " ":
+        w.feed_char(ch)
+    return w
+
+
+def test_learned_words_are_encrypted_with_the_phrase_file(tmp_path):
+    from phraseforge.learning import WordLearner
+    db, words = tmp_path / "phrases.db", tmp_path / "learned_words.json"
+    s = Store(db)
+    s.enable_encryption()
+    _learn(s, words, "confidential").save()
+    assert vault.is_encrypted(words) and b"confidential" not in words.read_bytes()
+    assert WordLearner(s, words).suggest("conf") == "confidential"
+    s.close()
+    s = Store(db)
+    assert WordLearner(s, words).suggest("conf") == "confidential"
+    s.close()
+
+
+def test_learned_words_follow_encryption_on_and_off(tmp_path):
+    from phraseforge.learning import WordLearner
+    db, words = tmp_path / "phrases.db", tmp_path / "learned_words.json"
+    s = Store(db)
+    w = _learn(s, words, "plaintextword")
+    w.save()
+    assert b"plaintextword" in words.read_bytes()
+    s.enable_encryption()
+    w.save()                       # nothing new learned: saved again because encryption changed
+    assert vault.is_encrypted(words) and b"plaintextword" not in words.read_bytes()
+    s.disable_encryption()
+    w.save()
+    assert not vault.is_encrypted(words) and b"plaintextword" in words.read_bytes()
+    assert WordLearner(s, words).suggest("plain") == "plaintextword"
+    s.close()
+
+
+def test_unreadable_encrypted_words_are_not_overwritten(tmp_path):
+    from phraseforge.learning import WordLearner
+    db, words = tmp_path / "phrases.db", tmp_path / "learned_words.json"
+    s = Store(db)
+    s.enable_encryption()
+    _learn(s, words, "keepthisword").save()
+    blob = words.read_bytes()
+    s.disable_encryption()
+    s.close()
+    s = Store(db)
+    w = WordLearner(s, words)          # encrypted file, plain phrase file: not read ...
+    assert w.counts == {}
+    w.save()                           # ... and not replaced by an empty plain one
+    assert words.read_bytes() == blob
+    s.close()
