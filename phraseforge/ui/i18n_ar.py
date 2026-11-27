@@ -1850,6 +1850,8 @@ AR_EXTRA = {
     "Words not to translate": "كلمات لا تُترجم",
     "Leading delimiters": "المحددات السابقة",
     "Trailing delimiters": "المحددات اللاحقة",
+    "Locked by your administrator, not changed: {}.": "مقفلة من قبل المسؤول ولم تتغير: {}.",
+    "Phrases restored. Settings are locked by your administrator and were not changed.": "تمت استعادة العبارات. الإعدادات مقفلة من قبل المسؤول ولم تتغير.",
     "API keys are not imported. Enter them again in Settings: {}.": "لا تُستورد مفاتيح API. أدخلها مرة أخرى في الإعدادات: {}.",
     "Program hotkeys are not imported (PhraseExpress stores them in an undocumented format). Set them again in Settings > Hotkeys: {}.": "لا تُستورد اختصارات البرنامج (يحفظها PhraseExpress بصيغة غير موثقة). اضبطها مرة أخرى في الإعدادات > مفاتيح الاختصار: {}.",
 }

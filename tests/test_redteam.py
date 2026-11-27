@@ -3348,3 +3348,76 @@ def test_record_session_uses_the_tap_not_a_python_hook(monkeypatch):
         assert m._tap is None
     finally:
         m.stop()
+
+
+# ---------------------------------------------------------------- 0.6.28: review of #86
+def test_pe_config_entity_check_reads_every_encoding(tmp_path):
+    """R174: the config.xml entity check searched the raw bytes and only the first 4 KB for a
+    DOCTYPE, so a UTF-16 file or a DOCTYPE after a long comment reached the XML parser."""
+    from phraseforge.importers import pe_config
+    bomb = ('<?xml version="1.0"?>\n<!--' + "x" * 5000 + '-->\n<!DOCTYPE x [<!ENTITY a "aaaa">]>\n'
+            '<xml><pexconfig><Other><Version>&a;</Version></Other></pexconfig></xml>')
+    late = bomb.replace("<!ENTITY a \"aaaa\">", "")          # a DOCTYPE with no ENTITY, after 5 KB
+    for name, data in (("u16.xml", b"\xff\xfe" + bomb.encode("utf-16-le")),
+                       ("u16nobom.xml", bomb.encode("utf-16-le")),
+                       ("u32.xml", b"\xff\xfe\x00\x00" + bomb.encode("utf-32-le")),
+                       ("late.xml", late.replace("&a;", "1").encode())):
+        (tmp_path / name).write_bytes(data)
+        with pytest.raises(ValueError, match="entities"):
+            pe_config.parse_config(tmp_path / name)
+    ok = '<?xml version="1.0"?><xml><pexconfig><Other><Version>18</Version></Other></pexconfig></xml>'
+    (tmp_path / "ok.xml").write_bytes(b"\xff\xfe" + ok.encode("utf-16-le"))
+    assert pe_config.parse_config(tmp_path / "ok.xml").version == "18"
+
+
+def test_pe_config_import_respects_the_admin_policy():
+    """R174: the config.xml import changed the AI and translation engines, delimiters and
+    program lists while the administrator kept Settings locked, and listed locked settings
+    as changed. Now it is refused while Settings are locked; locked keys are named as kept."""
+    from phraseforge import policy
+    from phraseforge.importers import pe_config
+    d = pe_config.ConfigData(ai_engine="anthropic", translation_engine="deepl", leading="#32", allowed_apps=["word.exe"])
+    try:
+        policy.set_current(policy.parse("settings_locked = true\n", "test.toml"))
+        store = Store(":memory:")
+        before = {k: store.setting(k, "") for k in ("ai.provider", "translation.provider", "app.restrict_enabled")}
+        with pytest.raises(policy.PolicyError):
+            pe_config.apply_config(store, d)
+        assert {k: store.setting(k, "") for k in before} == before
+        policy.set_current(policy.parse('locked_settings = ["ai.provider"]\n', "test.toml"))
+        rep = pe_config.apply_config(store, d)
+        assert store.setting("ai.provider", "") == before["ai.provider"] != "anthropic"
+        assert store.setting("translation.provider", "") == "deepl"
+        assert "AI text engine" not in rep.changed and "Translation engine" in rep.changed
+        assert any("ai.provider" in n for n in rep.notes)
+    finally:
+        policy.set_current(None)
+
+
+def test_migration_restore_leaves_settings_when_locked(tmp_path, monkeypatch):
+    """R174: Migration Assistant > Restore wrote every setting of the file while the
+    administrator kept Settings locked. Phrases are still restored; settings are not."""
+    import json
+    from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
+    QApplication.instance() or QApplication([])
+    from phraseforge import policy
+    from phraseforge.ui.main_window import MainWindow
+    f = tmp_path / "m.json"
+    f.write_text(json.dumps({"phrases": [{"description": "Hi", "content": "hello"}],
+                             "settings": {"autotext.delimiters": "XYZ"}}), encoding="utf-8")
+    s = Store(tmp_path / "t.db")
+    mw = MainWindow(s)
+    seen = []
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(f), "")))
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: seen.append(a[2])))
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: seen.append(a[2])))
+    try:
+        policy.set_current(policy.parse("settings_locked = true\n", "test.toml"))
+        mw.migration_restore()
+        assert s.setting("autotext.delimiters", "") != "XYZ"
+        assert any(p.content == "hello" for p in s.phrases())
+        assert "locked" in seen[-1]
+    finally:
+        policy.set_current(None)
+        mw.close()
+        s.close()
